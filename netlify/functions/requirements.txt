@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+httpx
+sqlalchemy
+aiosqlite
+greenlet
+python-dotenv
+openai
+pydantic
+pydantic-settings
+asgiref

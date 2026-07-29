@@ -1,0 +1,9 @@
+[build]
+  command = "cd frontend && npm run build"
+  publish = "frontend/.next"
+
+[build.environment]
+  NEXT_PUBLIC_API_URL = "https://ai-buffett-backend.onrender.com"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

@@ -1270,6 +1270,25 @@ async def generate_daily_report(request: dict):
     return {"code": 0, "data": {"date": trade_date, "report": report}}
 
 
+# ── 数据同步 + 缓存 ──
+
+from services.data_sync import data_sync
+
+
+@router.post("/data/sync")
+async def trigger_data_sync(force: bool = False):
+    """手动触发数据同步（东方财富 + AKShare兜底）"""
+    result = await data_sync.sync_concept_flow(force=force)
+    return {"code": 0, "data": result}
+
+
+@router.get("/data/cache-stats")
+async def get_cache_stats():
+    """获取数据缓存统计"""
+    stats = await data_sync.get_cache_stats()
+    return {"code": 0, "data": stats}
+
+
 # ── AI模拟炒股接口 ──
 
 from sim_models import SimAccount, SimPosition, SimTradeRecord, SimDailySummary

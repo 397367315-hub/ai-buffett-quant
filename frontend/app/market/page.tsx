@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { TrendingUp, TrendingDown, DollarSign, Activity, Zap, BarChart3, Loader2, AlertCircle, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Activity, Zap, BarChart3, Loader2, AlertCircle, Clock, RefreshCw } from 'lucide-react';
 import { formatYi, getChangeColor } from '@/lib/api';
 import { apiFetch } from '@/lib/api';
 
@@ -86,6 +86,8 @@ function generatePlainSummary(data: MarketOverview): string[] {
 export default function MarketOverviewPage() {
   const [data, setData] = useState<MarketOverview | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [cacheStats, setCacheStats] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [isEmpty, setIsEmpty] = useState(false);
 
@@ -112,9 +114,27 @@ export default function MarketOverviewPage() {
 
   useEffect(() => {
     fetchOverview();
+    fetchCacheStats();
     const interval = setInterval(fetchOverview, 60000);
     return () => clearInterval(interval);
   }, [fetchOverview]);
+
+  const fetchCacheStats = async () => {
+    try {
+      const res = await apiFetch<any>('/data/cache-stats');
+      setCacheStats(res.data);
+    } catch {}
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      await apiFetch<any>('/data/sync?force=true', { method: 'POST' });
+      await fetchOverview();
+      await fetchCacheStats();
+    } catch (e) { console.error(e); }
+    setSyncing(false);
+  };
 
   if (loading) {
     return (
@@ -168,12 +188,29 @@ export default function MarketOverviewPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text flex items-center gap-2">
-          <Activity size={22} className="text-accent" />
-          今日速览
+      <div className="mb-6 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-text flex items-center gap-2">
+            <Activity size={22} className="text-accent" />
+            今日速览
         </h1>
         <p className="text-text-secondary text-sm mt-1">一眼看懂今天 A 股发生了什么，数据每 60 秒自动刷新</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent text-white rounded-md hover:opacity-90 disabled:opacity-50"
+          >
+            <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
+            {syncing ? '同步中...' : '刷新实时数据'}
+          </button>
+          {cacheStats && (
+            <span className="text-xs text-text-secondary">
+              缓存: {cacheStats.recent_dates?.length || 0}天 | 最新: {cacheStats.latest_date || '无'}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* ── 核心指标卡片 ── */}
