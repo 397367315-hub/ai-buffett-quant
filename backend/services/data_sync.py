@@ -68,28 +68,29 @@ class DataSyncService:
 
     @staticmethod
     async def _fetch_via_akshare() -> list[dict]:
-        """通过AKShare获取概念板块数据"""
+        """通过AKShare获取概念/行业板块数据"""
         try:
             import akshare as ak
-            df = ak.stock_concept_fund_flow_daily()
+            # 概念板块资金流向
+            df = ak.stock_fund_flow_concept()
             if df is None or df.empty:
                 return []
 
             results = []
             for _, row in df.iterrows():
                 results.append({
-                    "code": str(row.get("代码", "")),
-                    "name": str(row.get("名称", "")),
-                    "close_price": float(row.get("最新价", 0) or 0),
-                    "change_pct": float(row.get("涨跌幅", 0) or 0),
-                    "main_net_inflow": int(float(row.get("主力净流入", 0) or 0)),
-                    "main_net_inflow_pct": float(row.get("主力净流入占比", 0) or 0),
-                    "super_large_net_inflow": int(float(row.get("超大单净流入", 0) or 0)),
-                    "large_net_inflow": int(float(row.get("大单净流入", 0) or 0)),
-                    "medium_net_inflow": int(float(row.get("中单净流入", 0) or 0)),
-                    "small_net_inflow": int(float(row.get("小单净流入", 0) or 0)),
-                    "up_count": int(float(row.get("上涨家数", 0) or 0)),
-                    "down_count": int(float(row.get("下跌家数", 0) or 0)),
+                    "code": f"AK{row.get('序号', '')}",
+                    "name": str(row.get("行业", "")),
+                    "close_price": float(row.get("行业指数", 0) or 0),
+                    "change_pct": float(row.get("行业-涨跌幅", 0) or 0),
+                    "main_net_inflow": int(float(row.get("净额", 0) or 0) * 1e8),
+                    "main_net_inflow_pct": 0,
+                    "super_large_net_inflow": 0,
+                    "large_net_inflow": 0,
+                    "medium_net_inflow": 0,
+                    "small_net_inflow": 0,
+                    "up_count": int(float(row.get("公司家数", 0) or 0)),
+                    "down_count": 0,
                     "leading_stock": str(row.get("领涨股", "")),
                 })
             return results
