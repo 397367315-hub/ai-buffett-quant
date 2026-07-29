@@ -2,8 +2,15 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
-import * as echarts from 'echarts';
 import { Play, RotateCcw, TrendingUp, TrendingDown, BarChart3, Bot, Zap, Target, Shield, PieChart, Activity, FileText } from 'lucide-react';
+
+let echartsModule: any = null;
+async function getEcharts() {
+  if (!echartsModule) {
+    echartsModule = await import('echarts');
+  }
+  return echartsModule;
+}
 
 interface StrategyInfo {
   name: string;
@@ -107,7 +114,14 @@ export default function SimTradePage() {
   // 多策略对比图表
   useEffect(() => {
     if (!compareRef.current || Object.keys(strategies).length === 0) return;
-    const chart = echarts.init(compareRef.current);
+    let disposed = false;
+    let chartInstance: any = null;
+
+    (async () => {
+      try {
+        const echarts = await getEcharts();
+        if (disposed || !compareRef.current) return;
+        chartInstance = echarts.init(compareRef.current);
 
     const series: any[] = [];
     const colors: Record<string, string> = { balanced: '#58A6FF', aggressive: '#26A69A', conservative: '#EF5350' };
@@ -140,7 +154,7 @@ export default function SimTradePage() {
     Object.values(strategies).forEach(s => s.daily_data?.forEach(d => allDates.add(d.date)));
     benchmark.forEach(b => allDates.add(b.date));
 
-    chart.setOption({
+    chartInstance.setOption({
       tooltip: { trigger: 'axis', backgroundColor: '#161B22', borderColor: '#30363D', textStyle: { color: '#E6EDF3', fontSize: 11 } },
       legend: { data: series.map(s => s.name), textStyle: { color: '#8B949E', fontSize: 10 }, top: 0 },
       grid: { left: '8%', right: '5%', top: '15%', bottom: '5%' },
@@ -148,18 +162,28 @@ export default function SimTradePage() {
       yAxis: { type: 'value', name: '万元', axisLabel: { color: '#8B949E', fontSize: 10 }, splitLine: { lineStyle: { color: '#21262D' } } },
       series,
     });
-    const h = () => chart.resize();
+    const h = () => chartInstance.resize();
     window.addEventListener('resize', h);
-    return () => { window.removeEventListener('resize', h); chart.dispose(); };
+    return () => { window.removeEventListener('resize', h); chartInstance.dispose(); };
+      } catch(e) { console.error('Chart error:', e); }
+    })();
+    return () => { disposed = true; chartInstance?.dispose(); };
   }, [strategies, benchmark]);
 
   // 单策略收益图
   useEffect(() => {
     if (!chartRef.current || dailySummary.length === 0) return;
-    const chart = echarts.init(chartRef.current);
+    let disposed = false;
+    let chartInstance: any = null;
+
+    (async () => {
+      try {
+        const echarts = await getEcharts();
+        if (disposed || !chartRef.current) return;
+        chartInstance = echarts.init(chartRef.current);
     const dates = dailySummary.map((d: any) => d.date);
     const values = dailySummary.map((d: any) => (d.total_value / 1e4).toFixed(1));
-    chart.setOption({
+    chartInstance.setOption({
       tooltip: { trigger: 'axis', backgroundColor: '#161B22', borderColor: '#30363D', textStyle: { color: '#E6EDF3', fontSize: 11 } },
       legend: { data: ['总资产(万)'], textStyle: { color: '#8B949E', fontSize: 10 }, top: 0 },
       grid: { left: '8%', right: '5%', top: '15%', bottom: '5%' },
@@ -167,9 +191,12 @@ export default function SimTradePage() {
       yAxis: { type: 'value', name: '万元', axisLabel: { color: '#8B949E', fontSize: 10 }, splitLine: { lineStyle: { color: '#21262D' } } },
       series: [{ name: '总资产(万)', type: 'line', data: values, smooth: true, lineStyle: { color: '#58A6FF', width: 2 }, itemStyle: { color: '#58A6FF' }, symbol: 'none' }],
     });
-    const h = () => chart.resize();
+    const h = () => chartInstance.resize();
     window.addEventListener('resize', h);
-    return () => { window.removeEventListener('resize', h); chart.dispose(); };
+    return () => { window.removeEventListener('resize', h); chartInstance.dispose(); };
+      } catch(e) { console.error('Chart error:', e); }
+    })();
+    return () => { disposed = true; chartInstance?.dispose(); };
   }, [dailySummary]);
 
   const handleExecute = async () => {
