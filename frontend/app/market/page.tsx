@@ -198,7 +198,7 @@ export default function MarketOverviewPage() {
           </button>
           {cacheStats && (
             <span className="text-xs text-text-secondary">
-              历史缓存: 板块 {cacheStats.concept_flow?.from || '无'} 至 {cacheStats.concept_flow?.to || '无'} | 日线 {cacheStats.stock_bars?.records || 0} 条
+              历史缓存: 板块 {cacheStats.concept_flow?.from || '无'} 至 {cacheStats.concept_flow?.to || '无'} | 股票 {cacheStats.stock_bars?.stocks || 0} 只 / 日线 {cacheStats.stock_bars?.records || 0} 条
             </span>
           )}
         </div>

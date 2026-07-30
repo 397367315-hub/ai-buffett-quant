@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -131,15 +131,24 @@ class HistoryCacheService:
 
     async def _run_backfill(self, run_id: int, days: int, include_stock_bars: bool, max_stocks: int | None) -> None:
         try:
-            await self._set_run(run_id, status="running", started_at=datetime.utcnow())
+            await self._set_run(
+                run_id,
+                status="running",
+                started_at=datetime.utcnow(),
+                completed_tasks=0,
+                records_written=0,
+                error=None,
+            )
             concept_boards, industry_boards = await asyncio.gather(
-                collector.fetch_concept_flow(page_size=1000),
-                collector.fetch_industry_flow(page_size=1000),
+                collector.fetch_all_concept_flow(),
+                collector.fetch_all_industry_flow(),
             )
             board_jobs = [("concept", row) for row in concept_boards] + [("industry", row) for row in industry_boards]
             stock_universe = await collector.fetch_stock_universe() if include_stock_bars else []
             if max_stocks is not None:
                 stock_universe = stock_universe[:max_stocks]
+            if include_stock_bars and not stock_universe:
+                raise RuntimeError("全市场股票清单为空，未开始个股日线回补")
 
             await self._upsert(
                 MarketBoard,
@@ -158,17 +167,51 @@ class HistoryCacheService:
             )
             await self._set_run(run_id, total_tasks=len(board_jobs) + len(stock_universe) + 1)
 
-            records_written = await self._backfill_boards(run_id, board_jobs, days)
-            records_written += await self._backfill_northbound(days)
+            records_written = 0
+            stock_failures: list[str] = []
             if include_stock_bars:
-                records_written += await self._backfill_stock_bars(run_id, stock_universe, days, len(board_jobs) + 1)
+                stock_written, stock_failures = await self._backfill_stock_bars(
+                    run_id,
+                    stock_universe,
+                    days,
+                    completed_offset=0,
+                    initial_records_written=records_written,
+                )
+                records_written += stock_written
+
+            north_written = await self._backfill_northbound(days)
+            records_written += north_written
+            north_offset = len(stock_universe) if include_stock_bars else 0
+            await self._set_run(
+                run_id,
+                completed_tasks=north_offset + 1,
+                records_written=records_written,
+            )
+
+            board_written, board_failures = await self._backfill_boards(
+                run_id,
+                board_jobs,
+                days,
+                completed_offset=north_offset + 1,
+                initial_records_written=records_written,
+            )
+            records_written += board_written
+
+            warnings = []
+            if stock_failures:
+                warnings.append(f"个股日线未完成 {len(stock_failures)} 只: {','.join(stock_failures[:10])}")
+            if board_failures:
+                warnings.append(f"板块资金流历史未完成 {board_failures} 个")
+            if not north_written:
+                warnings.append("北向历史未返回记录")
 
             await self._set_run(
                 run_id,
-                status="completed",
+                status="completed" if not warnings else "partial",
                 completed_at=datetime.utcnow(),
                 records_written=records_written,
                 completed_tasks=len(board_jobs) + len(stock_universe) + 1,
+                error="; ".join(warnings) or None,
             )
         except Exception as exc:
             await self._set_run(
@@ -178,27 +221,36 @@ class HistoryCacheService:
                 error=f"{type(exc).__name__}: {exc}",
             )
 
-    async def _backfill_boards(self, run_id: int, board_jobs: list[tuple[str, dict]], days: int) -> int:
-        semaphore = asyncio.Semaphore(12)
+    async def _backfill_boards(
+        self,
+        run_id: int,
+        board_jobs: list[tuple[str, dict]],
+        days: int,
+        completed_offset: int,
+        initial_records_written: int,
+    ) -> tuple[int, int]:
+        semaphore = asyncio.Semaphore(8)
 
         async def fetch_one(board_type: str, board: dict):
             async with semaphore:
                 try:
                     history = await collector.fetch_board_flow_history(board["code"], days)
-                    return board_type, history
+                    return board_type, history, None
                 except Exception as exc:
                     print(f"Backfill board {board.get('code')} failed: {type(exc).__name__}")
-                    return board_type, None
+                    return board_type, None, type(exc).__name__
 
         responses = await asyncio.gather(*(fetch_one(board_type, board) for board_type, board in board_jobs))
         written = 0
-        completed = 0
+        completed = completed_offset
+        failures = 0
         for response_batch in _chunks(list(responses), 30):
             concept_rows: list[dict] = []
             industry_rows: list[dict] = []
-            for board_type, payload in response_batch:
+            for board_type, payload, error in response_batch:
                 completed += 1
-                if not payload:
+                if error or not payload or not payload.get("history"):
+                    failures += 1
                     continue
                 target = concept_rows if board_type == "concept" else industry_rows
                 for row in payload["history"]:
@@ -219,8 +271,12 @@ class HistoryCacheService:
                     })
             written += await self._upsert(ConceptFundFlowDaily, concept_rows, ["board_code", "trade_date"])
             written += await self._upsert(IndustryFundFlowDaily, industry_rows, ["board_code", "trade_date"])
-            await self._set_run(run_id, completed_tasks=completed)
-        return written
+            await self._set_run(
+                run_id,
+                completed_tasks=completed,
+                records_written=initial_records_written + written,
+            )
+        return written, failures
 
     async def _backfill_northbound(self, days: int, source_rows: list[dict] | None = None) -> int:
         rows = []
@@ -243,26 +299,43 @@ class HistoryCacheService:
         stock_universe: list[dict],
         days: int,
         completed_offset: int,
-    ) -> int:
-        semaphore = asyncio.Semaphore(16)
+        initial_records_written: int,
+    ) -> tuple[int, list[str]]:
+        cached_codes = await self._cached_stock_codes(days)
+        pending_stocks = [stock for stock in stock_universe if stock["code"] not in cached_codes]
+        semaphore = asyncio.Semaphore(10)
 
         async def fetch_one(stock: dict):
             async with semaphore:
-                try:
-                    data = await collector.fetch_stock_price_history(stock["code"], days)
-                    return stock, data
-                except Exception as exc:
-                    print(f"Backfill stock {stock.get('code')} failed: {type(exc).__name__}")
-                    return stock, None
+                last_error = ""
+                for attempt in range(3):
+                    try:
+                        data = await collector.fetch_stock_price_history(stock["code"], days)
+                        if data.get("history"):
+                            return stock, data, None
+                        raise RuntimeError("empty history")
+                    except Exception as exc:
+                        last_error = type(exc).__name__
+                        if attempt < 2:
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                print(f"Backfill stock {stock.get('code')} failed: {last_error}")
+                return stock, None, last_error
 
         written = 0
-        completed = completed_offset
-        for source_batch in _chunks(stock_universe, 80):
+        failures: list[str] = []
+        completed = completed_offset + len(stock_universe) - len(pending_stocks)
+        await self._set_run(
+            run_id,
+            completed_tasks=completed,
+            records_written=initial_records_written,
+        )
+        for source_batch in _chunks(pending_stocks, 40):
             results = await asyncio.gather(*(fetch_one(stock) for stock in source_batch))
             rows = []
-            for stock, payload in results:
+            for stock, payload, error in results:
                 completed += 1
-                if not payload:
+                if error or not payload:
+                    failures.append(stock["code"])
                     continue
                 for bar in payload["history"]:
                     rows.append({
@@ -273,14 +346,24 @@ class HistoryCacheService:
                         "open_price": bar["open"], "close_price": bar["close"], "high_price": bar["high"], "low_price": bar["low"],
                         "volume": bar["volume"], "amount": bar["amount"], "amplitude": bar["amplitude"],
                         "change_pct": bar["change_pct"], "change_amount": bar["change_amount"], "turnover": bar["turnover"],
-                        "source": "eastmoney", "updated_at": datetime.utcnow(),
+                        "source": payload.get("source", "eastmoney"), "updated_at": datetime.utcnow(),
                     })
             written += await self._upsert(StockDailyBar, rows, ["stock_code", "trade_date"])
-            await self._set_run(run_id, completed_tasks=completed)
-        return written
+            await self._set_run(
+                run_id,
+                completed_tasks=completed,
+                records_written=initial_records_written + written,
+            )
+        return written, failures
+
+    async def _cached_stock_codes(self, days: int) -> set[str]:
+        cutoff = shanghai_now().date() - timedelta(days=max(days, 1))
+        async with async_session() as session:
+            statement = select(StockDailyBar.stock_code).where(StockDailyBar.trade_date >= cutoff).distinct()
+            return set((await session.execute(statement)).scalars().all())
 
     async def cache_current_concept_flow(self) -> dict:
-        rows = await collector.fetch_concept_flow(page_size=1000)
+        rows = await collector.fetch_all_concept_flow()
         if not rows:
             return {"status": "unavailable", "count": 0, "source": "eastmoney"}
         today = shanghai_now().date()
@@ -307,7 +390,7 @@ class HistoryCacheService:
         return {"status": "success", "count": count, "source": "eastmoney", "trade_date": today.isoformat()}
 
     async def cache_current_industry_flow(self) -> dict:
-        rows = await collector.fetch_industry_flow(page_size=1000)
+        rows = await collector.fetch_all_industry_flow()
         if not rows:
             return {"status": "unavailable", "count": 0, "source": "eastmoney"}
         today = shanghai_now().date()
@@ -368,6 +451,9 @@ class HistoryCacheService:
             stock_count, stock_min, stock_max = (await session.execute(
                 select(func.count(), func.min(StockDailyBar.trade_date), func.max(StockDailyBar.trade_date))
             )).one()
+            stock_symbols = (await session.execute(
+                select(func.count(func.distinct(StockDailyBar.stock_code)))
+            )).scalar_one()
             north_count, north_min, north_max = (await session.execute(
                 select(func.count(), func.min(NorthboundDealDaily.trade_date), func.max(NorthboundDealDaily.trade_date))
             )).one()
@@ -376,7 +462,12 @@ class HistoryCacheService:
             )).scalar_one_or_none()
         return {
             "concept_flow": {"records": concept_count, "from": concept_min.isoformat() if concept_min else None, "to": concept_max.isoformat() if concept_max else None},
-            "stock_bars": {"records": stock_count, "from": stock_min.isoformat() if stock_min else None, "to": stock_max.isoformat() if stock_max else None},
+            "stock_bars": {
+                "records": stock_count,
+                "stocks": stock_symbols,
+                "from": stock_min.isoformat() if stock_min else None,
+                "to": stock_max.isoformat() if stock_max else None,
+            },
             "northbound": {"records": north_count, "from": north_min.isoformat() if north_min else None, "to": north_max.isoformat() if north_max else None},
             "latest_run": None if latest_run is None else {
                 "id": latest_run.id, "status": latest_run.status, "dataset": latest_run.dataset,

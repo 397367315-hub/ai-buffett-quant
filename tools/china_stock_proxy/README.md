@@ -60,8 +60,13 @@ DATA_PROXY_TIMEOUT=20
 - `push2his.eastmoney.com`
 - `datacenter.eastmoney.com`
 - `datacenter-web.eastmoney.com`
+- `web.ifzq.gtimg.cn`
 
 板块资金排行请求（`m:90`）会自动规范分类参数，并优先使用
 `push2delay`；当行情节点均不可用时，再转到东方财富网页端可用的
 `/dataapi/bkzj/getbkzj` 接口，避免海外节点返回 502。
 如果后续新增数据源，需要先在 `main.py` 的 `ALLOWED_HOSTS` 中显式加入域名。
+
+全 A 股历史日线使用腾讯财经的公开复权日线接口作为历史缓存来源；实时
+行情、板块和资金流仍使用东方财富。腾讯接口未提供的成交额、换手率等字段
+保持为空，不会被伪造为零。

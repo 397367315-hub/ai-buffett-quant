@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -18,8 +19,8 @@ from config import settings
 
 EASTMONEY_UT = "b2884a393a59ad6402e4dd90d24e112f"
 SHANGHAI_PREFIXES = ("600", "601", "603", "605", "688", "689", "900")
-SHENZHEN_PREFIXES = ("000", "001", "002", "003", "200", "300", "301")
-BEIJING_PREFIXES = ("4", "8")
+SHENZHEN_PREFIXES = ("000", "001", "002", "003", "200", "300", "301", "302")
+BEIJING_PREFIXES = ("4", "8", "92")
 STOCK_CODE_RE = re.compile(r"^(?:SH|SZ|BJ)?[.:-]?(\d{6})(?:\.(?:SH|SZ|BJ))?$")
 BOARD_CODE_RE = re.compile(r"^BK\d{4}$")
 
@@ -39,6 +40,15 @@ def as_float(value: object, default: float = 0.0) -> float:
 
 def as_int(value: object, default: int = 0) -> int:
     return int(as_float(value, float(default)))
+
+
+def as_optional_float(value: object) -> float | None:
+    if value in (None, "", "-"):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def normalize_stock_code(value: object) -> str:
@@ -75,10 +85,18 @@ class EastMoneyDataCollector:
     BASE_URL = "https://push2.eastmoney.com/api/qt/clist/get"
     HISTORY_BASE_URL = "https://push2his.eastmoney.com"
     DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+    TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    MAX_LIST_PAGE_SIZE = 100
+    PAGE_FETCH_CONCURRENCY = 8
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         "Referer": "https://data.eastmoney.com/",
         "Accept": "application/json,text/plain,*/*",
+    }
+    TENCENT_HEADERS = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Referer": "https://gu.qq.com/",
+        "Accept": HEADERS["Accept"],
     }
 
     FLOW_FIELD_MAP = {
@@ -142,7 +160,7 @@ class EastMoneyDataCollector:
     async def check_data_source(self) -> dict:
         params = {
             "pn": "1", "pz": "1", "po": "0", "np": "1", "fid": "f62",
-            "fs": "m:90+t3", "fields": "f12,f14,f62", "fltt": "2", "ut": EASTMONEY_UT,
+            "fs": "m:90+t:3", "fields": "f12,f14,f62", "fltt": "2", "ut": EASTMONEY_UT,
         }
         source = "proxy" if settings.data_proxy_base_url else "direct"
         started_at = time.monotonic()
@@ -184,15 +202,52 @@ class EastMoneyDataCollector:
             return []
         return [self._map_flow_row(item) for item in ((data.get("data") or {}).get("diff") or [])]
 
+    async def _fetch_all_board_flow(self, board_filter: str) -> list[dict]:
+        """Fetch every board page because EastMoney caps a page at 100 rows."""
+        page_size = self.MAX_LIST_PAGE_SIZE
+
+        async def fetch_page(page: int) -> tuple[list[dict], int]:
+            params = {
+                "pn": str(page), "pz": str(page_size), "po": "0", "np": "1",
+                "fid": "f62", "fs": board_filter,
+                "fields": ",".join(self.FLOW_FIELD_MAP), "fltt": "2", "ut": EASTMONEY_UT,
+            }
+            data = await self.fetch_json(self.BASE_URL, params)
+            payload = data.get("data") or {}
+            return [self._map_flow_row(item) for item in (payload.get("diff") or [])], as_int(payload.get("total"))
+
+        first_page, total = await fetch_page(1)
+        if not first_page:
+            raise RuntimeError(f"板块清单为空: {board_filter}")
+
+        pages = max(1, (total + page_size - 1) // page_size)
+        rows = list(first_page)
+        for start in range(2, pages + 1, self.PAGE_FETCH_CONCURRENCY):
+            page_numbers = range(start, min(start + self.PAGE_FETCH_CONCURRENCY, pages + 1))
+            responses = await asyncio.gather(*(fetch_page(page) for page in page_numbers))
+            for page_rows, _ in responses:
+                rows.extend(page_rows)
+
+        by_code = {str(row.get("code") or ""): row for row in rows if row.get("code")}
+        if total and len(by_code) < total:
+            raise RuntimeError(f"板块清单不完整: expected={total}, received={len(by_code)}")
+        return list(by_code.values())
+
     async def fetch_concept_flow(
         self, sort_field: str = "f62", sort_order: int = 0, page: int = 1, page_size: int = 100
     ) -> list[dict]:
-        return await self._fetch_board_flow("m:90+t3", sort_field, sort_order, page, page_size)
+        return await self._fetch_board_flow("m:90+t:3", sort_field, sort_order, page, page_size)
 
     async def fetch_industry_flow(
         self, sort_field: str = "f62", sort_order: int = 0, page: int = 1, page_size: int = 100
     ) -> list[dict]:
-        return await self._fetch_board_flow("m:90+t2", sort_field, sort_order, page, page_size)
+        return await self._fetch_board_flow("m:90+t:2", sort_field, sort_order, page, page_size)
+
+    async def fetch_all_concept_flow(self) -> list[dict]:
+        return await self._fetch_all_board_flow("m:90+t:3")
+
+    async def fetch_all_industry_flow(self) -> list[dict]:
+        return await self._fetch_all_board_flow("m:90+t:2")
 
     async def fetch_market_summary(self) -> dict:
         url = f"{self.HISTORY_BASE_URL}/api/qt/stock/fflow/daykline/get"
@@ -391,56 +446,120 @@ class EastMoneyDataCollector:
                 "close_price": as_float(values[11]),
                 "change_pct": as_float(values[12]),
             })
-        return {"code": code, "name": payload.get("name", ""), "history": history[-days:]}
+        return {
+            "code": code,
+            "name": payload.get("name", ""),
+            "history": self._history_in_window(history, days),
+        }
 
     async def fetch_stock_price_history(self, stock_code: str, days: int = 365) -> dict:
+        """Fetch forward-adjusted daily bars from Tencent's public market API.
+
+        EastMoney's historical endpoint is often unavailable from overseas
+        service regions, even while its realtime endpoints remain reachable.
+        Tencent supplies daily OHLCV coverage for Shanghai, Shenzhen, and
+        Beijing-listed shares. Fields absent from that source remain null.
+        """
         code = normalize_stock_code(stock_code)
-        url = f"{self.HISTORY_BASE_URL}/api/qt/stock/kline/get"
+        symbol = self._tencent_symbol(code)
         params = {
-            "secid": stock_secid(code), "klt": "101", "fqt": "1", "lmt": str(min(max(days + 20, 1), 1000)),
-            "end": "20500101", "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61", "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+            # The spare rows let us calculate the first retained bar's daily
+            # change against the preceding close.
+            "param": f"{symbol},day,,,{min(max(days + 20, 30), 800)},qfq",
         }
-        data = await self.fetch_json(url, params)
-        payload = data.get("data") or {}
+        data = await self.fetch_json(self.TENCENT_KLINE_URL, params, self.TENCENT_HEADERS)
+        payload = ((data.get("data") or {}).get(symbol) or {})
+        series = payload.get("qfqday") or payload.get("day") or []
         history = []
-        for line in payload.get("klines") or []:
-            values = line.split(",")
-            if len(values) < 11:
+        previous_close: float | None = None
+        for values in series:
+            if not isinstance(values, list) or len(values) < 6:
                 continue
+            raw_date = str(values[0] or "")[:10]
+            try:
+                trade_date = date.fromisoformat(raw_date)
+            except ValueError:
+                continue
+            open_price = as_optional_float(values[1])
+            close_price = as_optional_float(values[2])
+            high_price = as_optional_float(values[3])
+            low_price = as_optional_float(values[4])
+            volume_lots = as_optional_float(values[5])
+            change_amount = None
+            change_pct = None
+            amplitude = None
+            if previous_close not in (None, 0) and close_price is not None:
+                change_amount = close_price - previous_close
+                change_pct = change_amount / previous_close * 100
+            if previous_close not in (None, 0) and high_price is not None and low_price is not None:
+                amplitude = (high_price - low_price) / previous_close * 100
             history.append({
-                "trade_date": values[0], "open": as_float(values[1]), "close": as_float(values[2]),
-                "high": as_float(values[3]), "low": as_float(values[4]), "volume": as_int(values[5]),
-                "amount": as_int(values[6]), "amplitude": as_float(values[7]), "change_pct": as_float(values[8]),
-                "change_amount": as_float(values[9]), "turnover": as_float(values[10]),
+                "trade_date": trade_date.isoformat(), "open": open_price, "close": close_price,
+                "high": high_price, "low": low_price,
+                # Tencent reports daily volume in lots; the database contract
+                # uses shares, matching the realtime EastMoney fields.
+                "volume": None if volume_lots is None else int(volume_lots * 100),
+                "amount": None, "amplitude": amplitude, "change_pct": change_pct,
+                "change_amount": change_amount, "turnover": None,
             })
-        return {"code": code, "name": payload.get("name", ""), "history": history[-days:]}
+            previous_close = close_price
+        quote_payload = payload.get("qt") or []
+        quote = quote_payload.get(symbol, []) if isinstance(quote_payload, dict) else quote_payload
+        name = str(quote[1]) if isinstance(quote, list) and len(quote) > 1 else ""
+        return {
+            "code": code,
+            "name": name,
+            "source": "tencent",
+            "history": self._history_in_window(history, days),
+        }
 
     async def fetch_stock_universe(self) -> list[dict]:
-        params = {
-            "pn": "1", "pz": "8000", "po": "0", "np": "1", "fid": "f3",
-            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
-            "fields": "f12,f13,f14", "fltt": "2", "ut": EASTMONEY_UT,
-        }
-        try:
+        page_size = self.MAX_LIST_PAGE_SIZE
+
+        async def fetch_page(page: int) -> tuple[list[dict], int]:
+            params = {
+                "pn": str(page), "pz": str(page_size), "po": "0", "np": "1", "fid": "f3",
+                "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+                "fields": "f12,f13,f14", "fltt": "2", "ut": EASTMONEY_UT,
+            }
             data = await self.fetch_json(self.BASE_URL, params)
+            payload = data.get("data") or {}
+            return payload.get("diff") or [], as_int(payload.get("total"))
+
+        try:
+            first_page, total = await fetch_page(1)
+            if not first_page:
+                raise RuntimeError("股票清单为空")
+            pages = max(1, (total + page_size - 1) // page_size)
+            rows = list(first_page)
+            for start in range(2, pages + 1, self.PAGE_FETCH_CONCURRENCY):
+                page_numbers = range(start, min(start + self.PAGE_FETCH_CONCURRENCY, pages + 1))
+                responses = await asyncio.gather(*(fetch_page(page) for page in page_numbers))
+                for page_rows, _ in responses:
+                    rows.extend(page_rows)
         except Exception as exc:
-            print(f"Error fetching stock universe: {type(exc).__name__}")
-            return []
+            raise RuntimeError(f"获取全市场股票清单失败: {type(exc).__name__}") from exc
+
         records = []
-        for item in ((data.get("data") or {}).get("diff") or []):
+        seen_codes: set[str] = set()
+        for item in rows:
             try:
                 code = normalize_stock_code(item.get("f12"))
             except ValueError:
                 continue
+            if code in seen_codes:
+                continue
+            seen_codes.add(code)
             records.append({"code": code, "name": item.get("f14", ""), "market": item.get("f13")})
+        if total and len(records) < total:
+            raise RuntimeError(f"股票清单不完整: expected={total}, received={len(records)}")
         return records
 
     async def fetch_north_bound_daily(self, days: int = 365) -> list[dict]:
         params = {
             "reportName": "RPT_MUTUAL_DEAL_HISTORY",
             "columns": "MUTUAL_TYPE,TRADE_DATE,FUND_INFLOW,NET_DEAL_AMT,DEAL_AMT,BUY_AMT,SELL_AMT,QUOTA_BALANCE,ACCUM_DEAL_AMT",
-            "filter": '(MUTUAL_TYPE="005")', "pageNumber": "1", "pageSize": str(min(max(days, 1), 1000)),
+            "filter": '(MUTUAL_TYPE="005")', "pageNumber": "1", "pageSize": str(min(max(days + 20, 1), 1000)),
             "sortTypes": "-1", "sortColumns": "TRADE_DATE", "source": "WEB", "client": "WEB",
         }
         try:
@@ -450,13 +569,20 @@ class EastMoneyDataCollector:
             return []
         rows = ((data.get("result") or {}).get("data") or [])
         result = []
+        cutoff = self._history_cutoff(days)
         for item in reversed(rows):
             raw_date = str(item.get("TRADE_DATE") or "")
             if not raw_date:
                 continue
+            try:
+                trade_date = date.fromisoformat(raw_date[:10])
+            except ValueError:
+                continue
+            if trade_date < cutoff:
+                continue
             net_value = item.get("NET_DEAL_AMT")
             result.append({
-                "date": raw_date[:10],
+                "date": trade_date.isoformat(),
                 # 东方财富该字段单位为万元；北向汇总净买入已不再公开时为 null。
                 "deal_amount": int(as_float(item.get("DEAL_AMT")) * 10_000),
                 "net_inflow": None if net_value is None else int(as_float(net_value) * 10_000),
@@ -466,6 +592,30 @@ class EastMoneyDataCollector:
                 "source": "eastmoney",
             })
         return result
+
+    @staticmethod
+    def _history_cutoff(days: int) -> date:
+        return shanghai_now().date() - timedelta(days=max(days, 1))
+
+    @classmethod
+    def _history_in_window(cls, history: list[dict], days: int) -> list[dict]:
+        cutoff = cls._history_cutoff(days)
+        rows = []
+        for row in history:
+            try:
+                if date.fromisoformat(str(row["trade_date"])[:10]) >= cutoff:
+                    rows.append(row)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return rows
+
+    @staticmethod
+    def _tencent_symbol(code: str) -> str:
+        if code.startswith(SHANGHAI_PREFIXES):
+            return f"sh{code}"
+        if code.startswith(BEIJING_PREFIXES):
+            return f"bj{code}"
+        return f"sz{code}"
 
     async def fetch_market_breadth(self) -> dict:
         result: dict[str, dict] = {}

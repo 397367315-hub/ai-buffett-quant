@@ -17,6 +17,7 @@ interface BackfillRun {
   completed_tasks?: number;
   records_written?: number;
   already_running?: boolean;
+  error?: string | null;
 }
 
 const RANGE_LABELS: Record<TimeRange, string> = {
@@ -122,7 +123,7 @@ export default function ProDashboard() {
         const res = await apiFetch<any>(`/data/backfill/${runId}`);
         const nextRun = res.data as BackfillRun;
         setBackfillRun(nextRun);
-        if (nextRun.status === 'completed') {
+        if (['completed', 'partial'].includes(nextRun.status)) {
           await fetchData(timeRange);
         }
       } catch (err) {
@@ -239,8 +240,8 @@ export default function ProDashboard() {
             </span>
           )}
           {backfillRun && (
-            <span className="text-xs text-text-secondary">
-              回补 {backfillRun.status === 'completed' ? '完成' : backfillRun.status === 'failed' ? '失败' : '进行中'}
+            <span className="text-xs text-text-secondary" title={backfillRun.error || undefined}>
+              回补 {backfillRun.status === 'completed' ? '完成' : backfillRun.status === 'partial' ? '部分完成' : backfillRun.status === 'failed' ? '失败' : '进行中'}
               {backfillRun.total_tasks ? ` ${backfillRun.completed_tasks || 0}/${backfillRun.total_tasks}` : ''}
             </span>
           )}

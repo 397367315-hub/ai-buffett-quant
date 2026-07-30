@@ -19,6 +19,7 @@ ALLOWED_HOSTS = {
     "push2his.eastmoney.com",
     "datacenter.eastmoney.com",
     "datacenter-web.eastmoney.com",
+    "web.ifzq.gtimg.cn",
 }
 
 PUSH2_HOST = "push2.eastmoney.com"
@@ -32,7 +33,7 @@ UPSTREAM_HEALTH_PARAMS = {
     "po": "0",
     "np": "1",
     "fid": "f62",
-    "fs": "m:90+t3",
+    "fs": "m:90+t:3",
     "fields": "f12,f14,f62",
     "fltt": "2",
     "ut": "b2884a393a59ad6402e4dd90d24e112f",
