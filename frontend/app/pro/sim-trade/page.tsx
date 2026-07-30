@@ -137,8 +137,51 @@ export default function SimTradePage() {
                 <div><span className="text-text-secondary">收益</span><div className={`font-mono ${getChangeColor(s.total_pnl)}`}>{s.total_pnl>=0?'+':''}{(s.total_pnl/1e4).toFixed(2)}万</div></div>
                 <div><span className="text-text-secondary">交易</span><div className="text-text font-mono">{s.trade_count}笔</div></div>
               </div>
+              {/* CSS条形图：收益率对比 */}
+              <div className="mt-3 pt-3 border-t border-border/50">
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span className="text-text-secondary">收益率</span>
+                  <span className={`font-mono ${getChangeColor(s.total_pnl_pct)}`}>{s.total_pnl_pct>=0?'+':''}{s.total_pnl_pct?.toFixed(2)}%</span>
+                </div>
+                <div className="w-full bg-[#30363D] h-2 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all" style={{
+                    width: `${Math.min(Math.abs(s.total_pnl_pct||0)*5, 100)}%`,
+                    backgroundColor: colorMap[key],
+                    marginLeft: (s.total_pnl_pct||0) < 0 ? 'auto' : '0'
+                  }} />
+                </div>
+              </div>
             </button>
           ))}
+        </div>
+      )}
+
+      {/* 三策略收益对比一览 */}
+      {strategyKeys.length > 1 && (
+        <div className="bg-card border border-border rounded-lg p-5 mb-6">
+          <h3 className="text-sm font-bold text-text mb-3 flex items-center gap-2"><Activity size={14} className="text-accent" /> 策略收益对比</h3>
+          <div className="space-y-3">
+            {Object.entries(strategies).map(([key, s]) => {
+              const maxAbs = Math.max(...Object.values(strategies).map(x => Math.abs(x.total_pnl_pct || 0)), 1);
+              const barWidth = Math.abs(s.total_pnl_pct || 0) / maxAbs * 100;
+              return (
+                <div key={key}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="font-medium text-text">{s.name}</span>
+                    <span className={`font-mono ${getChangeColor(s.total_pnl_pct)}`}>{s.total_pnl_pct>=0?'+':''}{s.total_pnl_pct?.toFixed(2)}%</span>
+                  </div>
+                  <div className="w-full bg-[#30363D] h-2.5 rounded-full overflow-hidden relative">
+                    <div className="absolute left-1/2 top-0 bottom-0 w-px bg-border/50 z-10" />
+                    <div className="h-full rounded-full transition-all absolute" style={{
+                      width: `${barWidth}%`,
+                      backgroundColor: colorMap[key],
+                      [s.total_pnl_pct >= 0 ? 'left' : 'right']: '50%',
+                    }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
