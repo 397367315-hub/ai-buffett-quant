@@ -34,6 +34,12 @@ def _chunks(items: list, size: int) -> Iterable[list]:
 class HistoryCacheService:
     """Caches source records only; failures remain explicit rather than synthetic."""
 
+    # asyncpg rejects statements with 32,767 or more bound parameters.  Keep
+    # a margin for dialect-specific generated binds, while retaining practical
+    # batch sizes for the year-long market-wide backfill.
+    _POSTGRES_BIND_BUDGET = 30_000
+    _SQLITE_BIND_BUDGET = 900
+
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
 
@@ -44,18 +50,29 @@ class HistoryCacheService:
             return postgresql_insert(model)
         return sqlite_insert(model)
 
+    @classmethod
+    def _upsert_batch_size(cls, session, rows: list[dict]) -> int:
+        """Return a bind-safe number of rows for one multi-value INSERT."""
+        if not rows:
+            return 1
+        dialect = session.get_bind().dialect.name
+        bind_budget = cls._POSTGRES_BIND_BUDGET if dialect == "postgresql" else cls._SQLITE_BIND_BUDGET
+        columns_per_row = max(len(row) for row in rows)
+        return max(1, bind_budget // max(columns_per_row, 1))
+
     async def _upsert(self, model, rows: list[dict], keys: list[str]) -> int:
         if not rows:
             return 0
         async with async_session() as session:
-            statement = self._insert_for(session, model).values(rows)
-            updates = {
-                column.name: getattr(statement.excluded, column.name)
-                for column in model.__table__.columns
-                if column.name not in {"id", *keys, "created_at"}
-            }
-            statement = statement.on_conflict_do_update(index_elements=keys, set_=updates)
-            await session.execute(statement)
+            for batch in _chunks(rows, self._upsert_batch_size(session, rows)):
+                statement = self._insert_for(session, model).values(batch)
+                updates = {
+                    column.name: getattr(statement.excluded, column.name)
+                    for column in model.__table__.columns
+                    if column.name not in {"id", *keys, "created_at"}
+                }
+                statement = statement.on_conflict_do_update(index_elements=keys, set_=updates)
+                await session.execute(statement)
             await session.commit()
         return len(rows)
 
