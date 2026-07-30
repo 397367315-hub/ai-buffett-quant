@@ -1322,6 +1322,12 @@ async def sync_local_data(request: dict):
     return {"code": 0, "data": {"status": "success", "count": count, "date": today.isoformat()}}
 
 
+@router.post("/data/push")
+async def push_local_data(request: dict):
+    """接收本地脚本推送的数据（同sync-local，别名）"""
+    return await sync_local_data(request)
+
+
 # ── AI模拟炒股接口 ──
 
 from sim_models import SimAccount, SimPosition, SimTradeRecord, SimDailySummary
