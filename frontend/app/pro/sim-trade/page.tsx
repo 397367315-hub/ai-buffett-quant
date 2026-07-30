@@ -11,6 +11,7 @@ interface StrategyInfo {
   total_pnl: number;
   total_pnl_pct: number;
   trade_count: number;
+  account_id?: number;
 }
 
 interface RiskData {
