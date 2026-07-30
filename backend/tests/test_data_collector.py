@@ -124,6 +124,55 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, ["1", "0"])
 
+    async def test_technical_screener_uses_live_descending_quotes_and_skips_zero_price(self):
+        collector = EastMoneyDataCollector()
+        captured = {}
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            captured.update(params)
+            return {
+                "data": {
+                    "diff": [
+                        {"f2": 0, "f12": "000003", "f14": "PT金田A"},
+                        {
+                            "f2": 25.6, "f3": 3.2, "f5": 1_000_000, "f6": 20_000_000,
+                            "f8": 4.1, "f9": 18.5, "f10": 2.4, "f12": "600519",
+                            "f14": "贵州茅台", "f20": 100_000_000, "f23": 6.0,
+                            "f37": 22.1, "f62": 300_000_000, "f184": 5.5,
+                        },
+                    ]
+                }
+            }
+
+        collector.fetch_json = fake_fetch_json
+        result = await collector.fetch_technical_screener({
+            "min_change": 1,
+            "max_pe": 100,
+            "min_turnover": 1,
+        })
+
+        self.assertEqual(captured["po"], "1")
+        self.assertEqual(captured["fid"], "f10")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["stocks"][0]["code"], "600519")
+        self.assertEqual(result["stocks"][0]["amount"], 20_000_000)
+
+    async def test_intelligent_selection_candidates_merge_multiple_live_rankings(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_technical_screener = AsyncMock(side_effect=[
+            {"stocks": [{"code": "600519", "main_net_inflow": 300_000_000, "volume_ratio": 1.0, "change_pct": 2.0}]},
+            {"stocks": [{"code": "600519", "main_net_inflow": 300_000_000, "volume_ratio": 2.5, "change_pct": 2.0}, {"code": "000001", "main_net_inflow": 0, "volume_ratio": 4.0, "change_pct": 1.0}]},
+            {"stocks": [{"code": "000001", "main_net_inflow": 0, "volume_ratio": 4.0, "change_pct": 5.0}]},
+        ])
+
+        result = await collector.fetch_intelligent_selection_candidates(page_size=100)
+
+        self.assertEqual(result["total"], 2)
+        by_code = {stock["code"]: stock for stock in result["stocks"]}
+        self.assertEqual(by_code["600519"]["selection_sources"], ["fund_flow", "volume"])
+        self.assertEqual(by_code["000001"]["selection_sources"], ["volume", "momentum"])
+
     async def test_tencent_history_preserves_known_fields_and_nulls_unknown_ones(self):
         collector = EastMoneyDataCollector()
 

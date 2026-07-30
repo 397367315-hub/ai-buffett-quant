@@ -203,6 +203,24 @@ class CacheBackfillRun(Base):
     error = Column(Text)
 
 
+class StockSelectionRun(Base):
+    """An auditable snapshot of one intelligent stock-selection pipeline run."""
+
+    __tablename__ = "stock_selection_runs"
+    __table_args__ = (Index("idx_stock_selection_runs_created", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mode = Column(String(20), nullable=False)
+    risk_profile = Column(String(20), nullable=False)
+    candidate_count = Column(Integer, nullable=False, default=0)
+    selected_count = Column(Integer, nullable=False, default=0)
+    source = Column(String(30), nullable=False, default="eastmoney")
+    data_date = Column(Date)
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    result = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class KnowledgeTerm(Base):
     __tablename__ = "knowledge_terms"
 

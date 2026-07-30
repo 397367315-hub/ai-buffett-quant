@@ -112,6 +112,8 @@ class EastMoneyDataCollector:
         "Referer": "https://gu.qq.com/",
         "Accept": HEADERS["Accept"],
     }
+    STOCK_SCREENER_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
+    STOCK_SCREENER_FIELDS = "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f184"
 
     @staticmethod
     def _request_timeout() -> float:
@@ -405,7 +407,7 @@ class EastMoneyDataCollector:
         except ValueError as exc:
             return {"total": 0, "stocks": [], "error": str(exc)}
         params = {
-            "pn": str(page), "pz": str(page_size), "po": "0", "np": "1", "fltt": "2", "invt": "2",
+            "pn": str(page), "pz": str(page_size), "po": "1", "np": "1", "fltt": "2", "invt": "2",
             "fid": "f62", "fs": f"b:{code}",
             "fields": "f2,f3,f5,f6,f8,f9,f10,f12,f14,f15,f16,f20,f21,f23,f37,f45,f62,f184",
             "ut": EASTMONEY_UT,
@@ -789,39 +791,135 @@ class EastMoneyDataCollector:
             "hot_gainers": sorted(sectors, key=lambda item: item["change_pct"], reverse=True)[:5],
         }
 
-    async def fetch_technical_screener(self, filters: dict | None = None) -> dict:
-        criteria = {"min_change": 2, "max_pe": 100, "min_turnover": 3, **(filters or {})}
+    async def _fetch_screener_rows(self, sort_field: str, page_size: int) -> list[dict]:
+        """Fetch one descending, live A-share ranking for a screener workflow."""
+        if sort_field not in {"f3", "f10", "f62"}:
+            raise ValueError(f"Unsupported screener sort field: {sort_field}")
         params = {
-            "pn": "1", "pz": "500", "po": "0", "np": "1", "fltt": "2", "invt": "2", "fid": "f10",
-            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23", "fields": "f2,f3,f5,f8,f9,f10,f12,f14,f20,f23,f37,f62,f184",
+            "pn": "1", "pz": str(min(max(page_size, 1), 500)),
+            # EastMoney uses po=1 for descending rankings. Using po=0 here
+            # surfaces inactive, zero-price symbols before tradable quotes.
+            "po": "1", "np": "1", "fltt": "2", "invt": "2", "fid": sort_field,
+            "fs": self.STOCK_SCREENER_FILTER, "fields": self.STOCK_SCREENER_FIELDS,
             "ut": EASTMONEY_UT,
         }
+        data = await self.fetch_json(self.BASE_URL, params)
+        return (data.get("data") or {}).get("diff") or []
+
+    @staticmethod
+    def _is_special_treatment_stock(name: object) -> bool:
+        normalized = str(name or "").upper()
+        return "ST" in normalized or "退" in normalized
+
+    @staticmethod
+    def _map_screener_stock(item: dict) -> dict | None:
         try:
-            data = await self.fetch_json(self.BASE_URL, params)
+            code = normalize_stock_code(item.get("f12"))
+        except ValueError:
+            return None
+
+        price = as_optional_float(item.get("f2"))
+        # The broad EastMoney A-share filter includes long-delisted records.
+        # A stock picker must never treat a zero-price record as live market data.
+        if price is None or price <= 0:
+            return None
+
+        pe_raw = item.get("f9")
+        pe = None if pe_raw in (None, "-") else as_optional_float(pe_raw)
+        return {
+            "code": code,
+            "name": str(item.get("f14") or ""),
+            "price": price,
+            "change_pct": as_float(item.get("f3")),
+            "volume": as_int(item.get("f5")),
+            "amount": as_int(item.get("f6")),
+            "turnover": as_float(item.get("f8")),
+            "pe": "" if pe is None else pe,
+            "pb": item.get("f23") if item.get("f23") not in (None, "-") else "",
+            "roe": item.get("f37") if item.get("f37") not in (None, "-") else "",
+            "volume_ratio": as_float(item.get("f10")),
+            "market_cap": as_int(item.get("f20")),
+            "main_net_inflow": as_int(item.get("f62")),
+            "main_net_inflow_pct": as_float(item.get("f184")),
+        }
+
+    async def fetch_technical_screener(self, filters: dict | None = None) -> dict:
+        """Return only tradable live quotes matching technical screening criteria."""
+        criteria = {
+            "min_change": 2,
+            "max_pe": 100,
+            "min_turnover": 3,
+            "sort_field": "f10",
+            "page_size": 500,
+            "exclude_special": False,
+            "require_profitable": False,
+            **(filters or {}),
+        }
+        try:
+            rows = await self._fetch_screener_rows(
+                str(criteria["sort_field"]), int(criteria["page_size"]),
+            )
         except Exception as exc:
             print(f"Error fetching technical screener: {type(exc).__name__}")
             return {"total": 0, "stocks": []}
+
         results = []
-        for item in ((data.get("data") or {}).get("diff") or []):
-            try:
-                code = normalize_stock_code(item.get("f12"))
-            except ValueError:
+        for item in rows:
+            stock = self._map_screener_stock(item)
+            if stock is None:
                 continue
-            change_pct, turnover = as_float(item.get("f3")), as_float(item.get("f8"))
-            pe_raw = item.get("f9")
-            pe = None if pe_raw in (None, "-") else as_float(pe_raw)
-            if change_pct < criteria["min_change"] or turnover < criteria["min_turnover"]:
+            pe_value = stock["pe"]
+            pe = None if pe_value == "" else as_optional_float(pe_value)
+            if stock["change_pct"] < as_float(criteria["min_change"]):
                 continue
-            if pe is not None and criteria.get("max_pe") and pe > criteria["max_pe"]:
+            if stock["turnover"] < as_float(criteria["min_turnover"]):
                 continue
-            results.append({
-                "code": code, "name": item.get("f14", ""), "price": as_float(item.get("f2")), "change_pct": change_pct,
-                "volume": as_int(item.get("f5")), "turnover": turnover, "pe": "" if pe is None else pe,
-                "pb": item.get("f23") if item.get("f23") not in (None, "-") else "", "roe": item.get("f37") if item.get("f37") not in (None, "-") else "",
-                "volume_ratio": as_float(item.get("f10")), "market_cap": as_int(item.get("f20")),
-                "main_net_inflow": as_int(item.get("f62")), "main_net_inflow_pct": as_float(item.get("f184")),
-            })
+            if criteria.get("max_pe") and pe is not None and pe > as_float(criteria["max_pe"]):
+                continue
+            if criteria.get("require_profitable") and (pe is None or pe <= 0):
+                continue
+            if criteria.get("exclude_special") and self._is_special_treatment_stock(stock["name"]):
+                continue
+            results.append(stock)
         return {"total": len(results), "stocks": results}
+
+    async def fetch_intelligent_selection_candidates(self, page_size: int = 180) -> dict:
+        """Build a live candidate pool from capital flow, volume and momentum leaders.
+
+        The union avoids a single sorting dimension dominating the stock picker.
+        It intentionally uses only verified, non-zero-price A-share quotes.
+        """
+        base_filters = {
+            "min_change": -100,
+            "max_pe": 0,
+            "min_turnover": 0,
+            "page_size": min(max(page_size, 50), 300),
+            "exclude_special": True,
+        }
+        snapshots = await asyncio.gather(
+            self.fetch_technical_screener({**base_filters, "sort_field": "f62"}),
+            self.fetch_technical_screener({**base_filters, "sort_field": "f10"}),
+            self.fetch_technical_screener({**base_filters, "sort_field": "f3"}),
+        )
+
+        candidates: dict[str, dict] = {}
+        source_names = ("fund_flow", "volume", "momentum")
+        for source_name, snapshot in zip(source_names, snapshots):
+            for stock in snapshot.get("stocks") or []:
+                code = stock["code"]
+                if code not in candidates:
+                    candidates[code] = {**stock, "selection_sources": [source_name]}
+                else:
+                    candidates[code]["selection_sources"].append(source_name)
+
+        def priority(stock: dict) -> float:
+            flow_score = max(-20.0, min(35.0, as_int(stock.get("main_net_inflow")) / 1e8 * 2))
+            volume_score = max(0.0, min(20.0, as_float(stock.get("volume_ratio")) * 5))
+            change_score = max(-15.0, min(20.0, as_float(stock.get("change_pct")) * 3))
+            return flow_score + volume_score + change_score + len(stock.get("selection_sources", [])) * 5
+
+        stocks = sorted(candidates.values(), key=priority, reverse=True)
+        return {"total": len(stocks), "stocks": stocks}
 
 
 collector = EastMoneyDataCollector()

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home } from 'lucide-react';
+import { BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -13,6 +13,7 @@ const proSubItems = [
   { href: '/pro/north-flow', label: '北向资金', icon: TrendingUp },
   { href: '/pro/limit-board', label: '涨跌停板', icon: Zap },
   { href: '/pro/potential', label: '潜力股分析', icon: Sparkles },
+  { href: '/pro/stock-picker', label: '智能选股', icon: BrainCircuit },
   { href: '/pro/rotation', label: '板块轮动', icon: TrendingUp },
   { href: '/pro/dragon-board', label: '龙虎榜', icon: TrendingUp },
   { href: '/pro/block-trade', label: '大宗交易', icon: TrendingUp },

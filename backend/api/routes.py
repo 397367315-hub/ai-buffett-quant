@@ -18,9 +18,15 @@ from services.data_collector import (
 from config import settings
 from services.ai_service import ai_service
 from services.ai_prompts import BEGINNER_SYSTEM_PROMPT, PROFESSIONAL_SYSTEM_PROMPT, DAILY_REPORT_PROMPT_TEMPLATE
+from services.stock_selection_agents import (
+    VALID_RISK_PROFILES,
+    VALID_SELECTION_MODES,
+    stock_selection_agents,
+)
 from models import (
     KnowledgeTerm, LearningCase, ConceptBoard,
     ConceptFundFlowDaily, MarketFundFlowDaily, AIChatHistory, MarketBoard,
+    StockSelectionRun,
 )
 from database import async_session
 from services.history_cache import history_cache
@@ -729,6 +735,93 @@ async def get_technical_screener(
     data = await collector.fetch_technical_screener({"min_change": min_change, "max_pe": max_pe, "min_turnover": min_turnover})
     data.update(_market_metadata(available=bool(data.get("stocks")), data_date=shanghai_now().date().isoformat() if data.get("stocks") else None, is_realtime=True))
     return {"code": 0, "data": data}
+
+
+# ── 智能选股 Agent ──
+
+
+async def _store_stock_selection_run(result: dict) -> int | None:
+    """Persist the complete agent trace without making a live scan depend on DB health."""
+    try:
+        raw_date = result.get("data_date")
+        run = StockSelectionRun(
+            mode=result["mode"],
+            risk_profile=result["risk_profile"],
+            candidate_count=as_int((result.get("candidate_summary") or {}).get("analyzed")),
+            selected_count=as_int((result.get("candidate_summary") or {}).get("selected")),
+            source=result.get("source", "eastmoney"),
+            data_date=date.fromisoformat(raw_date) if raw_date else None,
+            is_realtime=bool(result.get("is_realtime")),
+            result=result,
+        )
+        async with async_session() as session:
+            session.add(run)
+            await session.commit()
+            await session.refresh(run)
+            return run.id
+    except Exception as exc:
+        print(f"Stock selection trace save failed: {type(exc).__name__}")
+        return None
+
+
+@router.post("/stock-selection/run")
+async def run_stock_selection(request: dict | None = None):
+    """Run a source-backed, multi-agent A-share selection workflow."""
+    payload = request or {}
+    mode = str(payload.get("mode", "quick")).strip().lower()
+    risk_profile = str(payload.get("risk_profile", "balanced")).strip().lower()
+    try:
+        top_n = int(payload.get("top_n", 5))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="top_n 必须是整数") from exc
+
+    if mode not in VALID_SELECTION_MODES:
+        raise HTTPException(status_code=422, detail="mode 仅支持 quick 或 full")
+    if risk_profile not in VALID_RISK_PROFILES:
+        raise HTTPException(status_code=422, detail="risk_profile 仅支持 conservative、balanced 或 aggressive")
+    if not 3 <= top_n <= 10:
+        raise HTTPException(status_code=422, detail="top_n 必须在 3 到 10 之间")
+
+    result = await stock_selection_agents.run(mode=mode, risk_profile=risk_profile, top_n=top_n)
+    run_id = await _store_stock_selection_run(result)
+    result["run_id"] = run_id
+    result["trace_available"] = run_id is not None
+    return {"code": 0, "data": result}
+
+
+@router.get("/stock-selection/runs")
+async def list_stock_selection_runs(limit: int = Query(10, ge=1, le=30)):
+    """List recent selection runs so a user can identify an auditable snapshot."""
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(StockSelectionRun)
+            .order_by(StockSelectionRun.created_at.desc())
+            .limit(limit)
+        )).scalars().all()
+    return {"code": 0, "data": [
+        {
+            "id": row.id,
+            "mode": row.mode,
+            "risk_profile": row.risk_profile,
+            "candidate_count": row.candidate_count,
+            "selected_count": row.selected_count,
+            "source": row.source,
+            "data_date": row.data_date.isoformat() if row.data_date else None,
+            "is_realtime": row.is_realtime,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]}
+
+
+@router.get("/stock-selection/runs/{run_id}")
+async def get_stock_selection_run(run_id: int):
+    """Load the saved source data and every agent output for one run."""
+    async with async_session() as session:
+        row = await session.get(StockSelectionRun, run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="未找到该次智能选股记录")
+    return {"code": 0, "data": {"id": row.id, "created_at": row.created_at.isoformat(), **row.result}}
 
 
 # ── 历史数据查询接口 ──
