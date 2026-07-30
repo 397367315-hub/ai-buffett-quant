@@ -4,6 +4,21 @@ from datetime import datetime
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
 
+async def resume_incomplete_backfills() -> list[int]:
+    """Restart persisted cache work after a transient worker or database failure."""
+    from services.history_cache import history_cache
+
+    try:
+        resumed = await history_cache.resume_incomplete_runs()
+        if resumed:
+            print(f"[Scheduler] 已恢复历史数据回补任务: {resumed}")
+        return resumed
+    except Exception as exc:
+        # The next interval retries a temporary database/DNS outage.
+        print(f"[Scheduler] 历史数据回补恢复失败: {type(exc).__name__}")
+        return []
+
+
 async def start_scheduler(data_collector=None, db_session=None):
     from apscheduler.triggers.cron import CronTrigger
     from services.data_sync import data_sync
@@ -22,6 +37,17 @@ async def start_scheduler(data_collector=None, db_session=None):
         id="daily_collection",
         name="每日盘后数据采集",
         replace_existing=True,
+    )
+    scheduler.add_job(
+        resume_incomplete_backfills,
+        "interval",
+        minutes=1,
+        id="resume_history_backfill",
+        name="恢复未完成历史数据回补",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=60,
     )
 
     if not scheduler.running:

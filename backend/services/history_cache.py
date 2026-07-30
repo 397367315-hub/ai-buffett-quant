@@ -56,6 +56,23 @@ class HistoryCacheService:
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
 
+    def _track_task(self, run_id: int, task: asyncio.Task) -> None:
+        """Keep the in-memory task registry aligned with persisted work."""
+        self._tasks[run_id] = task
+
+        def clear_task(finished_task: asyncio.Task) -> None:
+            self._tasks.pop(run_id, None)
+            if finished_task.cancelled():
+                return
+            try:
+                error = finished_task.exception()
+            except asyncio.CancelledError:
+                return
+            if error is not None:
+                print(f"Backfill run {run_id} stopped unexpectedly: {type(error).__name__}: {error}")
+
+        task.add_done_callback(clear_task)
+
     @staticmethod
     def _insert_for(session, model):
         dialect = session.get_bind().dialect.name
@@ -148,8 +165,7 @@ class HistoryCacheService:
             await session.refresh(run)
 
         task = asyncio.create_task(self._run_backfill(run.id, days, include_stock_bars, max_stocks))
-        self._tasks[run.id] = task
-        task.add_done_callback(lambda _: self._tasks.pop(run.id, None))
+        self._track_task(run.id, task)
         return {"run_id": run.id, "status": "queued", "days": days, "include_stock_bars": include_stock_bars}
 
     async def resume_incomplete_runs(self) -> list[int]:
@@ -176,8 +192,7 @@ class HistoryCacheService:
                     None,
                 )
             )
-            self._tasks[run.id] = task
-            task.add_done_callback(lambda _, run_id=run.id: self._tasks.pop(run_id, None))
+            self._track_task(run.id, task)
             resumed.append(run.id)
         return resumed
 
@@ -266,12 +281,20 @@ class HistoryCacheService:
                 error="; ".join(warnings) or None,
             )
         except Exception as exc:
-            await self._set_run(
-                run_id,
-                status="failed",
-                completed_at=datetime.utcnow(),
-                error=f"{type(exc).__name__}: {exc}",
-            )
+            try:
+                await self._set_run(
+                    run_id,
+                    status="failed",
+                    completed_at=datetime.utcnow(),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            except Exception as status_exc:
+                # A later scheduler pass will see the still-running row and
+                # resume it after the database becomes reachable again.
+                print(
+                    f"Backfill run {run_id} failed but status update failed: "
+                    f"{type(status_exc).__name__}"
+                )
 
     async def _backfill_boards(
         self,
