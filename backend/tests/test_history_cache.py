@@ -120,6 +120,15 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 6)
         self.assertEqual(dispose.await_count, 5)
 
+    async def test_database_backfill_failure_is_left_for_scheduler_recovery(self):
+        service = HistoryCacheService()
+        database_error = socket.gaierror(-2, "Name or service not known")
+
+        with patch.object(service, "_set_run", new_callable=AsyncMock, side_effect=database_error) as set_run:
+            await service._run_backfill(3, 365, True, None)
+
+        self.assertEqual(set_run.await_count, 1)
+
     async def test_backfill_database_operation_retries_database_recovery(self):
         service = HistoryCacheService()
         attempts = 0

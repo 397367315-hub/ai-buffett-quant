@@ -282,6 +282,11 @@ class HistoryCacheService:
                 completed_tasks=len(board_jobs) + len(stock_universe) + 1,
                 error="; ".join(warnings) or None,
             )
+        except (DBAPIError, OSError, PostgresConnectionError) as exc:
+            # Preserve the persisted queued/running state after an exhausted
+            # transient database retry. The scheduler will resume this work
+            # once Postgres DNS/connectivity returns.
+            print(f"Backfill run {run_id} paused after database error: {type(exc).__name__}")
         except Exception as exc:
             try:
                 await self._set_run(
