@@ -13,6 +13,8 @@ engine = create_async_engine(
     database_url,
     echo=settings.debug,
     connect_args={"check_same_thread": False} if is_sqlite else {},
+    pool_pre_ping=not is_sqlite,
+    pool_recycle=180 if not is_sqlite else -1,
 )
 
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

@@ -9,8 +9,9 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import DBAPIError
 
-from database import async_session
+from database import async_session, engine
 from models import (
     CacheBackfillRun,
     ConceptFundFlowDaily,
@@ -44,6 +45,7 @@ class HistoryCacheService:
     _BACKFILL_REQUEST_TIMEOUT_SECONDS = 25
     _BACKFILL_FETCH_CONCURRENCY = 6
     _BACKFILL_BATCH_SIZE = 12
+    _DATABASE_OPERATION_ATTEMPTS = 3
 
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
@@ -68,23 +70,41 @@ class HistoryCacheService:
     async def _upsert(self, model, rows: list[dict], keys: list[str]) -> int:
         if not rows:
             return 0
-        async with async_session() as session:
-            for batch in _chunks(rows, self._upsert_batch_size(session, rows)):
-                statement = self._insert_for(session, model).values(batch)
-                updates = {
-                    column.name: getattr(statement.excluded, column.name)
-                    for column in model.__table__.columns
-                    if column.name not in {"id", *keys, "created_at"}
-                }
-                statement = statement.on_conflict_do_update(index_elements=keys, set_=updates)
-                await session.execute(statement)
-            await session.commit()
-        return len(rows)
+
+        async def write_rows():
+            async with async_session() as session:
+                for batch in _chunks(rows, self._upsert_batch_size(session, rows)):
+                    statement = self._insert_for(session, model).values(batch)
+                    updates = {
+                        column.name: getattr(statement.excluded, column.name)
+                        for column in model.__table__.columns
+                        if column.name not in {"id", *keys, "created_at"}
+                    }
+                    statement = statement.on_conflict_do_update(index_elements=keys, set_=updates)
+                    await session.execute(statement)
+                await session.commit()
+            return len(rows)
+
+        return await self._with_database_retry(write_rows)
 
     async def _set_run(self, run_id: int, **values) -> None:
-        async with async_session() as session:
-            await session.execute(update(CacheBackfillRun).where(CacheBackfillRun.id == run_id).values(**values))
-            await session.commit()
+        async def save_run():
+            async with async_session() as session:
+                await session.execute(update(CacheBackfillRun).where(CacheBackfillRun.id == run_id).values(**values))
+                await session.commit()
+
+        await self._with_database_retry(save_run)
+
+    async def _with_database_retry(self, operation):
+        """Retry idempotent cache writes after a transient Postgres disconnect."""
+        for attempt in range(self._DATABASE_OPERATION_ATTEMPTS):
+            try:
+                return await operation()
+            except DBAPIError:
+                if attempt + 1 >= self._DATABASE_OPERATION_ATTEMPTS:
+                    raise
+                await engine.dispose()
+                await asyncio.sleep(attempt + 1)
 
     async def _request_with_deadline(self, awaitable):
         """Apply the backfill-specific deadline around an upstream request."""
@@ -396,9 +416,13 @@ class HistoryCacheService:
 
     async def _cached_stock_codes(self, days: int) -> set[str]:
         cutoff = shanghai_now().date() - timedelta(days=max(days, 1))
-        async with async_session() as session:
-            statement = select(StockDailyBar.stock_code).where(StockDailyBar.trade_date >= cutoff).distinct()
-            codes = set((await session.execute(statement)).scalars().all())
+
+        async def load_codes():
+            async with async_session() as session:
+                statement = select(StockDailyBar.stock_code).where(StockDailyBar.trade_date >= cutoff).distinct()
+                return set((await session.execute(statement)).scalars().all())
+
+        codes = await self._with_database_retry(load_codes)
         # Earlier cache versions multiplied Tencent's 688/689 volumes by 100.
         # Re-fetch those symbols during this run so the corrected parser
         # overwrites every affected record without a destructive migration.

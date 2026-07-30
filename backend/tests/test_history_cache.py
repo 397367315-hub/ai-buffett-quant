@@ -1,7 +1,10 @@
 import asyncio
 import unittest
+from unittest.mock import AsyncMock, patch
 
-from services.history_cache import HistoryCacheService
+from sqlalchemy.exc import OperationalError
+
+from services.history_cache import HistoryCacheService, engine
 
 
 class _Bind:
@@ -58,6 +61,25 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(asyncio.TimeoutError):
             await service._request_with_deadline(asyncio.sleep(0.1))
+
+    async def test_backfill_database_operation_retries_a_connection_failure(self):
+        service = HistoryCacheService()
+        attempts = 0
+
+        async def flaky_operation():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OperationalError("SELECT 1", {}, ConnectionRefusedError())
+            return "written"
+
+        with patch.object(type(engine), "dispose", new_callable=AsyncMock) as dispose:
+            with patch("services.history_cache.asyncio.sleep", new_callable=AsyncMock):
+                result = await service._with_database_retry(flaky_operation)
+
+        self.assertEqual(result, "written")
+        self.assertEqual(attempts, 2)
+        dispose.assert_awaited_once()
 
 
 if __name__ == "__main__":
