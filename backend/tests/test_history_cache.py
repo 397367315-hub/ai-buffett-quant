@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.exc import OperationalError
 
-from services.history_cache import HistoryCacheService, engine
+from services.history_cache import HistoryCacheService, collector, engine
 
 
 class _Bind:
@@ -128,6 +128,45 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
             await service._run_backfill(3, 365, True, None)
 
         self.assertEqual(set_run.await_count, 1)
+
+    async def test_industry_backfill_does_not_write_concept_only_columns(self):
+        service = HistoryCacheService()
+        captured: dict[str, list[dict]] = {}
+
+        async def capture_upsert(model, rows, keys):
+            del keys
+            captured[model.__tablename__] = rows
+            return len(rows)
+
+        payload = {
+            "code": "BK0475",
+            "history": [{
+                "trade_date": "2026-07-30",
+                "close_price": 100.0,
+                "change_pct": 1.0,
+                "main_net_inflow": 1,
+                "main_net_inflow_pct": 1.0,
+                "super_large_net_inflow": 1,
+                "large_net_inflow": 1,
+                "medium_net_inflow": 1,
+                "small_net_inflow": 1,
+            }],
+        }
+
+        service._upsert = capture_upsert
+        service._set_run = AsyncMock()
+        with patch.object(collector, "fetch_board_flow_history", new_callable=AsyncMock, return_value=payload):
+            await service._backfill_boards(
+                run_id=4,
+                board_jobs=[("industry", {"code": "BK0475"})],
+                days=365,
+                completed_offset=0,
+                initial_records_written=0,
+            )
+
+        row = captured["industry_fund_flow_daily"][0]
+        self.assertNotIn("leading_stock", row)
+        self.assertEqual(row["board_code"], "BK0475")
 
     async def test_backfill_database_operation_retries_database_recovery(self):
         service = HistoryCacheService()

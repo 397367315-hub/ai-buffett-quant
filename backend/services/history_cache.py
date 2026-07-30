@@ -340,7 +340,7 @@ class HistoryCacheService:
                     continue
                 target = concept_rows if board_type == "concept" else industry_rows
                 for row in payload["history"]:
-                    target.append({
+                    record = {
                         "board_code": payload["code"],
                         "trade_date": _parse_date(row["trade_date"]),
                         "close_price": row["close_price"],
@@ -353,8 +353,10 @@ class HistoryCacheService:
                         "small_net_inflow": row["small_net_inflow"],
                         "up_count": None,
                         "down_count": None,
-                        "leading_stock": None,
-                    })
+                    }
+                    if board_type == "concept":
+                        record["leading_stock"] = None
+                    target.append(record)
             written += await self._upsert(ConceptFundFlowDaily, concept_rows, ["board_code", "trade_date"])
             written += await self._upsert(IndustryFundFlowDaily, industry_rows, ["board_code", "trade_date"])
             await self._set_run(
