@@ -7,17 +7,17 @@ import Navbar from './Navbar';
 import Footer from './Footer';
 
 export default function AppShell({ children }: { children: ReactNode }) {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, isAuthReady } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
 
   const isLoginPage = pathname === '/login';
 
   useEffect(() => {
-    if (!isLoggedIn && !isLoginPage) {
+    if (isAuthReady && !isLoggedIn && !isLoginPage) {
       router.push('/login');
     }
-  }, [isLoggedIn, isLoginPage, router]);
+  }, [isAuthReady, isLoggedIn, isLoginPage, router]);
 
   // 登录页不显示导航和页脚
   if (isLoginPage) {
@@ -25,7 +25,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }
 
   // 未登录不渲染
-  if (!isLoggedIn) {
+  if (!isAuthReady || !isLoggedIn) {
     return (
       <div className="flex items-center justify-center h-screen bg-bg">
         <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full" />

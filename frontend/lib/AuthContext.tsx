@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 
 interface AuthContextType {
   isLoggedIn: boolean;
+  isAuthReady: boolean;
   username: string;
   login: (username: string, password: string) => Promise<boolean>;
   logout: () => void;
@@ -11,6 +12,7 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType>({
   isLoggedIn: false,
+  isAuthReady: false,
   username: '',
   login: async () => false,
   logout: () => {},
@@ -21,6 +23,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [username, setUsername] = useState('');
 
   useEffect(() => {
@@ -34,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem(SESSION_KEY);
       }
     }
+    setIsAuthReady(true);
   }, []);
 
   const login = async (user: string, pass: string): Promise<boolean> => {
@@ -64,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ isLoggedIn, username, login, logout }}>
+    <AuthContext.Provider value={{ isLoggedIn, isAuthReady, username, login, logout }}>
       {children}
     </AuthContext.Provider>
   );
