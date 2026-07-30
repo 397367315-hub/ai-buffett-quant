@@ -160,6 +160,7 @@ export default function ProDashboard() {
   const sorted = [...conceptData].sort((a, b) => b.main_net_inflow - a.main_net_inflow);
   const top5 = sorted.slice(0, 5);
   const bottom5 = sorted.slice(-5).reverse();
+  const hasOutflow = bottom5.some(item => item.main_net_inflow < 0);
 
   if (loading) {
     return (
@@ -358,7 +359,9 @@ export default function ProDashboard() {
           </div>
 
           <div className="bg-card border border-border rounded-lg p-6">
-            <h3 className="text-lg font-bold text-down mb-4">🔴 资金流出 TOP5</h3>
+            <h3 className={`text-lg font-bold mb-4 ${hasOutflow ? 'text-down' : 'text-text-secondary'}`}>
+              {hasOutflow ? '资金流出 TOP5' : '净流入最低 TOP5'}
+            </h3>
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-text-secondary text-left border-b border-border">

@@ -41,6 +41,21 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["data"]["fund_flow"]["top_outflow"][0]["name"], "低净额")
         self.assertEqual(response["data"]["limit_board"], {"limit_up": 0, "limit_down": 2})
 
+    async def test_concept_summary_uses_the_full_directory_for_true_outflows(self):
+        rows = [
+            {"code": "BK0001", "name": "净流入", "main_net_inflow": 30},
+            {"code": "BK0002", "name": "净流出", "main_net_inflow": -40},
+            {"code": "BK0003", "name": "小流入", "main_net_inflow": 10},
+        ]
+
+        with patch.object(routes.collector, "fetch_all_concept_flow", new=AsyncMock(return_value=rows)):
+            response = await routes.get_concept_summary(range="today", board_code=None)
+
+        rankings = response["data"]["rankings"]
+        self.assertEqual([row["name"] for row in rankings], ["净流入", "小流入", "净流出"])
+        self.assertEqual(response["data"]["summary"]["total_main_inflow"], 0)
+        self.assertEqual(response["data"]["summary"]["outflow_board_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

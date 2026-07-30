@@ -75,14 +75,24 @@ def _flow_ranking(item: dict, rank: int) -> dict:
     }
 
 
-async def _concept_history_rankings(target_date: date, limit: int) -> list[dict]:
+async def _concept_history_rankings(
+    target_date: date,
+    limit: int | None = None,
+    *,
+    ascending: bool = False,
+) -> list[dict]:
     async with async_session() as session:
         statement = (
             select(ConceptFundFlowDaily)
             .where(ConceptFundFlowDaily.trade_date == target_date)
-            .order_by(ConceptFundFlowDaily.main_net_inflow.desc())
-            .limit(limit)
+            .order_by(
+                ConceptFundFlowDaily.main_net_inflow.asc()
+                if ascending
+                else ConceptFundFlowDaily.main_net_inflow.desc()
+            )
         )
+        if limit is not None:
+            statement = statement.limit(limit)
         rows = (await session.execute(statement)).scalars().all()
         codes = [row.board_code for row in rows]
         names = {
@@ -148,7 +158,7 @@ async def get_concept_rank(
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
     if target != today:
-        result = await _concept_history_rankings(target, limit)
+        result = await _concept_history_rankings(target, limit, ascending=order == "asc")
         return {
             "code": 0,
             "data": {
@@ -851,20 +861,24 @@ async def get_concept_available_dates():
 @router.get("/flow/concept/by-date/{target_date}")
 async def get_concept_by_date(
     target_date: str,
-    limit: int = Query(50, ge=1, le=200),
 ):
-    """查询指定日期的概念板块排名"""
+    """查询指定日期的完整概念板块目录。"""
     try:
         d = date.fromisoformat(target_date)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
     if d == shanghai_now().date():
-        realtime = await collector.fetch_concept_flow(page_size=limit)
-        rankings = [_flow_ranking(item, index + 1) for index, item in enumerate(realtime)]
+        try:
+            realtime = await collector.fetch_all_concept_flow()
+        except Exception as exc:
+            print(f"Error fetching complete concept flow: {type(exc).__name__}")
+            realtime = []
+        ordered = sorted(realtime, key=lambda item: as_int(item.get("main_net_inflow")), reverse=True)
+        rankings = [_flow_ranking(item, index + 1) for index, item in enumerate(ordered)]
         return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=True)}}
 
-    rankings = await _concept_history_rankings(d, limit)
+    rankings = await _concept_history_rankings(d)
     return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=False, source="cache")}}
 
 
@@ -893,9 +907,14 @@ async def get_concept_summary(
 
     # 今日只读取实时行情；其余范围只读取已经验证并入库的数据。
     if range == "today":
-        rt_data = await collector.fetch_concept_flow(page_size=50)
+        try:
+            rt_data = await collector.fetch_all_concept_flow()
+        except Exception as exc:
+            print(f"Error fetching complete concept flow: {type(exc).__name__}")
+            rt_data = []
         if rt_data:
-            result = [_flow_ranking(item, index + 1) for index, item in enumerate(rt_data[:50])]
+            ordered = sorted(rt_data, key=lambda item: as_int(item.get("main_net_inflow")), reverse=True)
+            result = [_flow_ranking(item, index + 1) for index, item in enumerate(ordered)]
             total = sum(r["main_net_inflow"] for r in result)
             return {
                 "code": 0,
@@ -906,6 +925,8 @@ async def get_concept_summary(
                     "summary": {
                         "total_main_inflow": total,
                         "avg_change_pct": sum(r["change_pct"] for r in result) / len(result) if result else 0,
+                        "inflow_board_count": sum(r["main_net_inflow"] > 0 for r in result),
+                        "outflow_board_count": sum(r["main_net_inflow"] < 0 for r in result),
                     },
                     "has_data": True,
                     **_market_metadata(available=True, data_date=today.isoformat(), is_realtime=True),
@@ -965,7 +986,7 @@ async def get_concept_summary(
         "data": {
             "range": range,
             "period": {"start": start.isoformat(), "end": end.isoformat()},
-            "rankings": rankings[:50],
+            "rankings": rankings,
             "summary": {
                 "total_main_inflow": total_inflow,
                 "board_count": len(rankings),
