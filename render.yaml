@@ -3,14 +3,54 @@ services:
     name: ai-buffett-backend
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    region: oregon
+    branch: main
+    autoDeploy: true
+    buildCommand: cd backend && pip install -r requirements.txt
     startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
-        value: sqlite+aiosqlite:///./stockflow.db
+        fromDatabase:
+          name: ai-buffett-cache-db
+          property: connectionString
+      - key: DATA_PROXY_BASE_URL
+        value: https://ai-buffett-data-proxy.onrender.com
+      - key: DATA_PROXY_TOKEN
+        sync: false
+      - key: DATA_PROXY_TIMEOUT
+        value: "30"
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: ADMIN_USERNAME
         value: admin
       - key: ADMIN_PASSWORD
         sync: false
+
+  - type: web
+    name: ai-buffett-data-proxy
+    runtime: docker
+    plan: free
+    region: singapore
+    branch: main
+    autoDeploy: true
+    dockerfilePath: ./tools/china_stock_proxy/Dockerfile
+    dockerContext: ./tools/china_stock_proxy
+    healthCheckPath: /health
+    envVars:
+      - key: DATA_PROXY_TOKEN
+        sync: false
+      - key: DATA_PROXY_TIMEOUT
+        value: "20"
+      - key: DATA_PROXY_MAX_ATTEMPTS
+        value: "3"
+      - key: DATA_PROXY_RETRY_DELAY
+        value: "0.35"
+
+databases:
+  - name: ai-buffett-cache-db
+    databaseName: ai_buffett
+    user: ai_buffett
+    plan: free
+    postgresMajorVersion: "16"
+    ipAllowList: []

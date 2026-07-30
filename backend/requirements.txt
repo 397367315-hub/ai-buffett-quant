@@ -4,6 +4,7 @@ httpx
 sqlalchemy
 greenlet
 aiosqlite
+asyncpg
 redis
 apscheduler
 python-dotenv

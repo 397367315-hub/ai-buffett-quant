@@ -1,11 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { apiFetch, formatYi } from '@/lib/api';
+import { apiFetch, formatYi, formatYiShort } from '@/lib/api';
 
 export default function StockPage() {
   const [stockCode, setStockCode] = useState('');
   const [flowData, setFlowData] = useState<any[]>([]);
+  const [priceHistory, setPriceHistory] = useState<any[]>([]);
+  const [hasSearched, setHasSearched] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -14,8 +16,24 @@ export default function StockPage() {
     setLoading(true);
     setError('');
     try {
-      const res = await apiFetch<any>(`/flow/stock/${stockCode}`);
-      setFlowData(res.data.flow_data || []);
+      const [flowResult, historyResult] = await Promise.allSettled([
+        apiFetch<any>(`/flow/stock/${stockCode}`),
+        apiFetch<any>(`/data/stock/${stockCode}/history?days=365`),
+      ]);
+      if (flowResult.status === 'fulfilled') {
+        setFlowData(flowResult.value.data.flow_data || []);
+      } else {
+        setFlowData([]);
+      }
+      if (historyResult.status === 'fulfilled') {
+        setPriceHistory(historyResult.value.data.history || []);
+      } else {
+        setPriceHistory([]);
+      }
+      setHasSearched(true);
+      if (flowResult.status === 'rejected' && historyResult.status === 'rejected') {
+        setError('查询失败，请检查股票代码');
+      }
     } catch (err) {
       setError('查询失败，请检查股票代码');
     } finally {
@@ -51,6 +69,7 @@ export default function StockPage() {
 
       {flowData.length > 0 && (
         <div className="bg-card border border-border rounded-lg overflow-hidden">
+          <div className="px-4 pt-4 text-sm font-medium text-text">近期资金流向</div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -80,6 +99,49 @@ export default function StockPage() {
             </table>
           </div>
         </div>
+      )}
+
+      {priceHistory.length > 0 && (
+        <div className="bg-card border border-border rounded-lg overflow-hidden mt-6">
+          <div className="px-4 pt-4">
+            <div className="text-sm font-medium text-text">近一年已缓存日线</div>
+            <div className="text-xs text-text-secondary mt-1">显示最近 30 个交易日</div>
+          </div>
+          <div className="overflow-x-auto mt-3">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-text-secondary border-b border-border">
+                  <th className="text-left px-4 py-3 font-medium">日期</th>
+                  <th className="text-right px-4 py-3 font-medium">开盘</th>
+                  <th className="text-right px-4 py-3 font-medium">收盘</th>
+                  <th className="text-right px-4 py-3 font-medium">最高</th>
+                  <th className="text-right px-4 py-3 font-medium">最低</th>
+                  <th className="text-right px-4 py-3 font-medium">涨跌幅</th>
+                  <th className="text-right px-4 py-3 font-medium">成交额</th>
+                </tr>
+              </thead>
+              <tbody>
+                {priceHistory.slice(-30).reverse().map((row) => (
+                  <tr key={row.date} className="border-b border-border/50 hover:bg-[#21262D]">
+                    <td className="px-4 py-3 font-medium">{row.date}</td>
+                    <td className="px-4 py-3 text-right font-mono">{Number(row.open).toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono">{Number(row.close).toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-text-secondary">{Number(row.high).toFixed(2)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-text-secondary">{Number(row.low).toFixed(2)}</td>
+                    <td className={`px-4 py-3 text-right font-mono ${Number(row.change_pct) >= 0 ? 'text-up' : 'text-down'}`}>
+                      {Number(row.change_pct) > 0 ? '+' : ''}{Number(row.change_pct).toFixed(2)}%
+                    </td>
+                    <td className="px-4 py-3 text-right font-mono text-text-secondary">{formatYiShort(row.amount || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {hasSearched && !loading && priceHistory.length === 0 && !error && (
+        <div className="mt-6 text-center text-text-secondary text-sm">该股票的近一年日线尚未完成回补。</div>
       )}
     </div>
   );

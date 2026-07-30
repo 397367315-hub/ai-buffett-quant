@@ -1,64 +1,59 @@
-import json
+"""幂等导入教学内容和已核验的板块目录。"""
+
 import asyncio
+import json
 from datetime import date
-from sqlalchemy import text
+from pathlib import Path
+
+from sqlalchemy import delete, select
+
 from database import async_session, init_db
-from models import KnowledgeTerm, LearningCase, ConceptBoard
+from models import ConceptBoard, KnowledgeTerm, LearningCase
 
 
-def load_seed_data():
-    data = {
-        "terms": [],
-        "cases": [],
-        "boards": [],
-    }
+BASE_DIR = Path(__file__).resolve().parent
+LEGACY_BOARD_CODES = ("BK1187", "BK1188", "BK1189", "BK1190", "BK1191")
 
+
+def _load_json(filename: str) -> list[dict]:
     try:
-        with open("seed_terms.json", "r", encoding="utf-8") as f:
-            data["terms"] = json.load(f)
+        return json.loads((BASE_DIR / filename).read_text(encoding="utf-8"))
     except FileNotFoundError:
-        print("seed_terms.json not found")
-
-    try:
-        with open("seed_cases.json", "r", encoding="utf-8") as f:
-            data["cases"] = json.load(f)
-    except FileNotFoundError:
-        print("seed_cases.json not found")
-
-    try:
-        with open("seed_boards.json", "r", encoding="utf-8") as f:
-            data["boards"] = json.load(f)
-    except FileNotFoundError:
-        print("seed_boards.json not found")
-
-    return data
+        print(f"{filename} not found")
+        return []
 
 
-async def seed():
+async def _upsert_by(session, model, key: str, payload: dict) -> None:
+    existing = (await session.execute(select(model).where(getattr(model, key) == payload[key]))).scalar_one_or_none()
+    if existing is None:
+        session.add(model(**payload))
+        return
+    for field, value in payload.items():
+        setattr(existing, field, value)
+
+
+async def seed() -> None:
     await init_db()
-
-    data = load_seed_data()
+    terms = _load_json("seed_terms.json")
+    cases = _load_json("seed_cases.json")
+    boards = _load_json("seed_boards.json")
 
     async with async_session() as session:
-        for model in [KnowledgeTerm, LearningCase, ConceptBoard]:
-            await session.execute(text(f"DELETE FROM {model.__tablename__}"))
+        # These were placeholder board identifiers; deleting only them preserves user data.
+        await session.execute(delete(ConceptBoard).where(ConceptBoard.code.in_(LEGACY_BOARD_CODES)))
+
+        for term in terms:
+            await _upsert_by(session, KnowledgeTerm, "term", term)
+        for case in cases:
+            payload = dict(case)
+            if isinstance(payload.get("event_date"), str):
+                payload["event_date"] = date.fromisoformat(payload["event_date"])
+            await _upsert_by(session, LearningCase, "title", payload)
+        for board in boards:
+            await _upsert_by(session, ConceptBoard, "code", board)
         await session.commit()
 
-        for t in data["terms"]:
-            session.add(KnowledgeTerm(**t))
-
-        for c in data["cases"]:
-            # Convert event_date string to date
-            if "event_date" in c and isinstance(c["event_date"], str):
-                c["event_date"] = date.fromisoformat(c["event_date"])
-            session.add(LearningCase(**c))
-
-        for b in data["boards"]:
-            session.add(ConceptBoard(**b))
-
-        await session.commit()
-
-    print(f'种子数据已导入: {len(data["terms"])}个术语, {len(data["cases"])}个案例, {len(data["boards"])}个板块')
+    print(f"种子数据已同步: {len(terms)}个术语, {len(cases)}个案例, {len(boards)}个板块")
 
 
 if __name__ == "__main__":

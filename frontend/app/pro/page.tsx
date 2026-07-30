@@ -9,6 +9,16 @@ import CalendarDatePicker from '@/components/CalendarDatePicker';
 
 type TimeRange = 'today' | 'yesterday' | 'week' | 'month' | '3month' | 'year' | 'date';
 
+interface BackfillRun {
+  id?: number;
+  run_id?: number;
+  status: string;
+  total_tasks?: number;
+  completed_tasks?: number;
+  records_written?: number;
+  already_running?: boolean;
+}
+
 const RANGE_LABELS: Record<TimeRange, string> = {
   today: '今日',
   yesterday: '昨日',
@@ -29,6 +39,7 @@ export default function ProDashboard() {
   const [summary, setSummary] = useState<any>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [backfillRun, setBackfillRun] = useState<BackfillRun | null>(null);
 
   const fetchByDate = useCallback(async (dateStr: string) => {
     setLoading(true);
@@ -102,6 +113,27 @@ export default function ProDashboard() {
     }
   }, [timeRange, selectedDate, fetchData, fetchByDate]);
 
+  useEffect(() => {
+    const runId = backfillRun?.id ?? backfillRun?.run_id;
+    if (!runId || !['queued', 'running'].includes(backfillRun?.status || '')) return;
+
+    const pollRun = async () => {
+      try {
+        const res = await apiFetch<any>(`/data/backfill/${runId}`);
+        const nextRun = res.data as BackfillRun;
+        setBackfillRun(nextRun);
+        if (nextRun.status === 'completed') {
+          await fetchData(timeRange);
+        }
+      } catch (err) {
+        console.error('Failed to poll backfill status:', err);
+      }
+    };
+    pollRun();
+    const timer = window.setInterval(pollRun, 10000);
+    return () => window.clearInterval(timer);
+  }, [backfillRun?.id, backfillRun?.run_id, backfillRun?.status, fetchData, timeRange]);
+
   const handleDateSelect = (dateStr: string) => {
     setSelectedDate(dateStr);
     setTimeRange('date' as TimeRange);
@@ -110,8 +142,8 @@ export default function ProDashboard() {
   const handleGenerateHistory = async () => {
     setGenerating(true);
     try {
-      await apiFetch<any>('/flow/concept/generate-history?days=30', { method: 'POST' });
-      await fetchData(timeRange);
+      const res = await apiFetch<any>('/data/backfill?days=365&include_stock_bars=true', { method: 'POST' });
+      setBackfillRun(res.data);
     } catch (err) {
       console.error('Failed to generate history:', err);
     } finally {
@@ -206,13 +238,19 @@ export default function ProDashboard() {
               历史汇总
             </span>
           )}
+          {backfillRun && (
+            <span className="text-xs text-text-secondary">
+              回补 {backfillRun.status === 'completed' ? '完成' : backfillRun.status === 'failed' ? '失败' : '进行中'}
+              {backfillRun.total_tasks ? ` ${backfillRun.completed_tasks || 0}/${backfillRun.total_tasks}` : ''}
+            </span>
+          )}
           <button
             onClick={handleGenerateHistory}
             disabled={generating}
             className="flex items-center gap-1 px-3 py-1.5 text-xs border border-border rounded-md text-text-secondary hover:border-accent hover:text-accent disabled:opacity-50 transition-colors"
           >
             <RefreshCw size={12} className={generating ? 'animate-spin' : ''} />
-            {generating ? '生成中...' : '生成历史数据'}
+            {generating ? '已提交...' : '回补近一年真实数据'}
           </button>
         </div>
       </div>
@@ -226,7 +264,7 @@ export default function ProDashboard() {
 
       {timeRange !== 'today' && timeRange !== 'date' && hasData === false && (
         <div className="bg-[#D2992222] border border-[#D2992255] rounded-lg p-4 mb-6 text-sm text-warn">
-          ⚠️ 该时间段暂无历史数据。点击右上角「生成历史数据」为过去30天生成模拟数据用于演示。
+          该时间段暂无已验证的历史数据。可提交近一年真实数据回补任务。
         </div>
       )}
 

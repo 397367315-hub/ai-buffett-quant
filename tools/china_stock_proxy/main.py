@@ -14,9 +14,11 @@ from pydantic import BaseModel, Field
 ALLOWED_HOSTS = {
     "data.eastmoney.com",
     "push2.eastmoney.com",
+    "push2ex.eastmoney.com",
     "push2delay.eastmoney.com",
     "push2his.eastmoney.com",
     "datacenter.eastmoney.com",
+    "datacenter-web.eastmoney.com",
 }
 
 PUSH2_HOST = "push2.eastmoney.com"

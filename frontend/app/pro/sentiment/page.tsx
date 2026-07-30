@@ -15,6 +15,7 @@ interface BreadthEntry {
 }
 
 interface SentimentData {
+  available?: boolean;
   score: number;
   label: string;
   details: string[];
@@ -73,12 +74,12 @@ export default function SentimentPage() {
     );
   }
 
-  if (!data) {
+  if (!data || !data.available) {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-text-secondary text-center">
           <Activity size={24} className="mx-auto mb-2 opacity-50" />
-          <span>暂无情绪数据</span>
+          <span>实时情绪数据暂不可用</span>
         </div>
       </div>
     );

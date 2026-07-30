@@ -55,9 +55,11 @@ DATA_PROXY_TIMEOUT=20
 
 - `data.eastmoney.com`
 - `push2.eastmoney.com`
+- `push2ex.eastmoney.com`
 - `push2delay.eastmoney.com`
 - `push2his.eastmoney.com`
 - `datacenter.eastmoney.com`
+- `datacenter-web.eastmoney.com`
 
 板块资金排行请求（`m:90`）会自动规范分类参数，并优先使用
 `push2delay`；当行情节点均不可用时，再转到东方财富网页端可用的

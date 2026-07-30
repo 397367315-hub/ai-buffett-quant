@@ -21,8 +21,9 @@ interface MarketOverview {
     sh_amount: number;
   };
   north_bound: {
-    latest_inflow: number;
-    trend: string;
+    latest_deal_amount: number | null;
+    latest_inflow: number | null;
+    net_inflow_available: boolean;
   };
   fund_flow: {
     top_inflow: { name: string; inflow: number }[];
@@ -58,19 +59,9 @@ function generatePlainSummary(data: MarketOverview): string[] {
     );
   }
 
-  const northFlow = data.north_bound.latest_inflow;
-  if (northFlow > 5_0000_0000) {
-    sentences.push(
-      `北向资金（外资）今天净买了 ${formatYi(northFlow)}，说明外资看好 A 股后市，积极进场。外资买入越多，市场信心越足。`
-    );
-  } else if (northFlow < -5_0000_0000) {
-    sentences.push(
-      `北向资金（外资）今天净卖了 ${formatYi(northFlow)}，说明外资今天比较谨慎。短期可能引起市场震荡，但不一定代表长期趋势。`
-    );
-  } else {
-    sentences.push(
-      `北向资金今天净流入 ${formatYi(northFlow)}，外资目前比较平静，没有大进大出的动作。`
-    );
+  const northDeal = data.north_bound.latest_deal_amount;
+  if (northDeal != null) {
+    sentences.push(`北向资金当天成交额为 ${formatYi(northDeal)}。交易所当前未公开北向汇总净买入，因此系统不对外资买卖方向作推断。`);
   }
 
   const hotNames = data.hot_sectors.map((s) => s.name).slice(0, 2);
@@ -207,7 +198,7 @@ export default function MarketOverviewPage() {
           </button>
           {cacheStats && (
             <span className="text-xs text-text-secondary">
-              缓存: {cacheStats.recent_dates?.length || 0}天 | 最新: {cacheStats.latest_date || '无'}
+              历史缓存: 板块 {cacheStats.concept_flow?.from || '无'} 至 {cacheStats.concept_flow?.to || '无'} | 日线 {cacheStats.stock_bars?.records || 0} 条
             </span>
           )}
         </div>
@@ -246,22 +237,15 @@ export default function MarketOverviewPage() {
             <div className="w-9 h-9 rounded-lg bg-[#EF535022] flex items-center justify-center">
               <DollarSign size={18} className="text-up" />
             </div>
-            <span className="text-sm text-text-secondary">北向资金今天买了多少</span>
+            <span className="text-sm text-text-secondary">北向资金当天成交额</span>
           </div>
-          <div className={`text-2xl font-mono font-bold ${getChangeColor(north_bound.latest_inflow)}`}>
-            {formatYi(north_bound.latest_inflow)}
+          <div className="text-2xl font-mono font-bold text-text">
+            {north_bound.latest_deal_amount == null ? '--' : formatYi(north_bound.latest_deal_amount)}
           </div>
           <div className="flex items-center gap-1 mt-2">
-            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-              north_bound.latest_inflow > 0
-                ? 'bg-[#EF535022] text-up'
-                : north_bound.latest_inflow < 0
-                  ? 'bg-[#26A69A22] text-down'
-                  : 'bg-[#21262D] text-text-secondary'
-            }`}>
-              {north_bound.latest_inflow > 0 ? '外资净买入' : north_bound.latest_inflow < 0 ? '外资净卖出' : '基本持平'}
+            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-[#21262D] text-text-secondary">
+              {north_bound.net_inflow_available ? '净买入已公开' : '净买入未公开'}
             </span>
-            <span className="text-xs text-text-secondary">{north_bound.trend}</span>
           </div>
         </div>
 

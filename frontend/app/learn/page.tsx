@@ -16,7 +16,7 @@ export default function LearnHome() {
           { href: '/learn/daily-report', icon: Newspaper, title: '今日资金解读', desc: 'AI自动生成的市场日报', color: 'text-[#58A6FF]' },
           { href: '/learn/terms', icon: BookOpen, title: '术语词典', desc: '20+核心术语，三栏式解释', color: 'text-[#D29922]' },
           { href: '/learn/cases', icon: Lightbulb, title: '案例教学', desc: '真实行情 + 分步讲解 + 自测', color: 'text-[#EF5350]' },
-          { href: '/learn/board/BK1187', icon: Layers, title: '板块百科', desc: '了解每个概念板块的来龙去脉', color: 'text-[#a371f7]' },
+          { href: '/learn/board/BK0917', icon: Layers, title: '板块百科', desc: '了解每个概念板块的来龙去脉', color: 'text-[#a371f7]' },
           { href: '/ai', icon: Zap, title: 'AI 学习助手', desc: '有问题？随时问小财老师', color: 'text-[#26A69A]' },
         ].map((item) => {
           const Icon = item.icon;
