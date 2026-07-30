@@ -158,12 +158,11 @@ async def _fetch_market_request(url: str, params: dict, headers: dict) -> dict:
     parsed = urlparse(url)
     candidates: list[tuple[str, dict]] = [(url, params)]
 
-    if parsed.hostname in {PUSH2_HOST, PUSH2_HISTORY_HOST}:
+    if parsed.hostname == PUSH2_HOST:
         # The delay node is reachable from overseas Render regions and keeps
-        # the same JSON contract as the regular and historical push2 nodes.
+        # the same JSON contract as the regular push2 node.
         candidates.insert(0, (_replace_host(url, PUSH2_DELAY_HOST), params))
 
-    if parsed.hostname == PUSH2_HOST:
         if parsed.path == SECTOR_FLOW_PATH:
             fallback_params = _sector_flow_fallback_params(params)
             if fallback_params:
@@ -178,6 +177,11 @@ async def _fetch_market_request(url: str, params: dict, headers: dict) -> dict:
                     (_replace_host(url, PUSH2_HOST), normalized_params),
                 )
                 candidates.append((SECTOR_FLOW_FALLBACK_URL, fallback_params))
+    elif parsed.hostname == PUSH2_HISTORY_HOST:
+        # Preserve full historical series when the history node is reachable.
+        # Overseas regions commonly reset this connection, so the delay node
+        # remains a source-backed, current-day fallback.
+        candidates.append((_replace_host(url, PUSH2_DELAY_HOST), params))
 
     last_error: Exception | None = None
     for candidate_url, candidate_params in candidates:

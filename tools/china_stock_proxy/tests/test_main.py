@@ -10,11 +10,13 @@ import main as proxy  # noqa: E402
 
 
 class ProxyRequestTests(unittest.IsolatedAsyncioTestCase):
-    async def test_historical_eastmoney_request_tries_delay_host_first(self):
+    async def test_historical_eastmoney_request_falls_back_to_delay_host(self):
         requested_urls = []
 
         async def fake_get(url, params, headers):
             requested_urls.append(url)
+            if urlparse(url).hostname == proxy.PUSH2_HISTORY_HOST:
+                raise proxy.httpx.ConnectError("history host unavailable")
             return {"data": {"klines": ["2026-07-30,1"]}}
 
         with patch.object(proxy, "_get_upstream_json", new=fake_get):
@@ -24,7 +26,10 @@ class ProxyRequestTests(unittest.IsolatedAsyncioTestCase):
                 {},
             )
 
-        self.assertEqual(urlparse(requested_urls[0]).hostname, proxy.PUSH2_DELAY_HOST)
+        self.assertEqual(
+            [urlparse(url).hostname for url in requested_urls],
+            [proxy.PUSH2_HISTORY_HOST, proxy.PUSH2_DELAY_HOST],
+        )
 
 
 if __name__ == "__main__":
