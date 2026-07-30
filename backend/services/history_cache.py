@@ -11,6 +11,12 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import DBAPIError
 
+try:
+    from asyncpg.exceptions import PostgresConnectionError
+except ImportError:  # Local SQLite-only test environments need no asyncpg.
+    class PostgresConnectionError(Exception):
+        pass
+
 from database import async_session, engine
 from models import (
     CacheBackfillRun,
@@ -45,7 +51,7 @@ class HistoryCacheService:
     _BACKFILL_REQUEST_TIMEOUT_SECONDS = 25
     _BACKFILL_FETCH_CONCURRENCY = 6
     _BACKFILL_BATCH_SIZE = 12
-    _DATABASE_OPERATION_ATTEMPTS = 3
+    _DATABASE_OPERATION_ATTEMPTS = 5
 
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
@@ -100,7 +106,7 @@ class HistoryCacheService:
         for attempt in range(self._DATABASE_OPERATION_ATTEMPTS):
             try:
                 return await operation()
-            except (DBAPIError, OSError):
+            except (DBAPIError, OSError, PostgresConnectionError):
                 if attempt + 1 >= self._DATABASE_OPERATION_ATTEMPTS:
                     raise
                 await engine.dispose()

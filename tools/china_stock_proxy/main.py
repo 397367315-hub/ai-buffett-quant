@@ -24,6 +24,7 @@ ALLOWED_HOSTS = {
 
 PUSH2_HOST = "push2.eastmoney.com"
 PUSH2_DELAY_HOST = "push2delay.eastmoney.com"
+PUSH2_HISTORY_HOST = "push2his.eastmoney.com"
 SECTOR_FLOW_PATH = "/api/qt/clist/get"
 SECTOR_FLOW_FALLBACK_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
 UPSTREAM_HEALTH_URL = "https://push2.eastmoney.com/api/qt/clist/get"
@@ -157,11 +158,12 @@ async def _fetch_market_request(url: str, params: dict, headers: dict) -> dict:
     parsed = urlparse(url)
     candidates: list[tuple[str, dict]] = [(url, params)]
 
-    if parsed.hostname == PUSH2_HOST:
+    if parsed.hostname in {PUSH2_HOST, PUSH2_HISTORY_HOST}:
         # The delay node is reachable from overseas Render regions and keeps
-        # the same JSON contract as the regular push2 node.
+        # the same JSON contract as the regular and historical push2 nodes.
         candidates.insert(0, (_replace_host(url, PUSH2_DELAY_HOST), params))
 
+    if parsed.hostname == PUSH2_HOST:
         if parsed.path == SECTOR_FLOW_PATH:
             fallback_params = _sector_flow_fallback_params(params)
             if fallback_params:

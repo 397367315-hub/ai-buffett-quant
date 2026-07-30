@@ -101,6 +101,29 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 2)
         dispose.assert_awaited_once()
 
+    async def test_backfill_database_operation_retries_database_recovery(self):
+        service = HistoryCacheService()
+        attempts = 0
+
+        class DatabaseRecoveryError(Exception):
+            pass
+
+        async def recovering_operation():
+            nonlocal attempts
+            attempts += 1
+            if attempts < 4:
+                raise DatabaseRecoveryError()
+            return "written"
+
+        with patch("services.history_cache.PostgresConnectionError", DatabaseRecoveryError):
+            with patch.object(type(engine), "dispose", new_callable=AsyncMock) as dispose:
+                with patch("services.history_cache.asyncio.sleep", new_callable=AsyncMock):
+                    result = await service._with_database_retry(recovering_operation)
+
+        self.assertEqual(result, "written")
+        self.assertEqual(attempts, 4)
+        self.assertEqual(dispose.await_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()
