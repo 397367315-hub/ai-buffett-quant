@@ -71,6 +71,21 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sh_change"], -23.78)
         self.assertEqual(result["sh_change_pct"], -0.62)
 
+    async def test_board_flow_normalizes_eastmoney_sort_direction(self):
+        collector = EastMoneyDataCollector()
+        calls = []
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            calls.append(params["po"])
+            return {"data": {"diff": []}}
+
+        collector.fetch_json = fake_fetch_json
+        await collector.fetch_concept_flow(sort_order=0)
+        await collector.fetch_concept_flow(sort_order=1)
+
+        self.assertEqual(calls, ["1", "0"])
+
     async def test_tencent_history_preserves_known_fields_and_nulls_unknown_ones(self):
         collector = EastMoneyDataCollector()
 

@@ -204,7 +204,12 @@ class EastMoneyDataCollector:
         page_size: int,
     ) -> list[dict]:
         params = {
-            "pn": str(page), "pz": str(page_size), "po": str(sort_order), "np": "1",
+            # Public callers use 0 for descending and 1 for ascending. The
+            # EastMoney endpoint uses the inverse ``po`` convention.
+            "pn": str(page),
+            "pz": str(page_size),
+            "po": "1" if sort_order == 0 else "0",
+            "np": "1",
             "fid": sort_field, "fs": board_filter,
             "fields": ",".join(self.FLOW_FIELD_MAP), "fltt": "2", "ut": EASTMONEY_UT,
         }
