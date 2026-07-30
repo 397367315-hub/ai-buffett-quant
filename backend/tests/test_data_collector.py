@@ -26,11 +26,11 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
     async def test_stock_universe_fetches_every_page_and_new_prefixes(self):
         collector = EastMoneyDataCollector()
         rows = [
-            {"f12": f"60{index:04d}", "f13": 1, "f14": f"测试{index}"}
+            {"f2": 10.0, "f12": f"60{index:04d}", "f13": 1, "f14": f"测试{index}"}
             for index in range(199)
         ] + [
-            {"f12": "302132", "f13": 0, "f14": "中航成飞"},
-            {"f12": "920065", "f13": 0, "f14": "千岸科技"},
+            {"f2": 10.0, "f12": "302132", "f13": 0, "f14": "中航成飞"},
+            {"f2": 10.0, "f12": "920065", "f13": 0, "f14": "千岸科技"},
         ]
         calls = []
 
@@ -51,6 +51,27 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("302132", {item["code"] for item in universe})
         self.assertIn("920065", {item["code"] for item in universe})
         self.assertEqual(normalize_stock_code("920065"), "920065")
+
+    async def test_stock_universe_excludes_delisted_zero_price_symbols(self):
+        collector = EastMoneyDataCollector()
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, params, headers
+            return {
+                "data": {
+                    "total": 3,
+                    "diff": [
+                        {"f2": 1361.76, "f12": "600519", "f13": 1, "f14": "贵州茅台"},
+                        {"f2": 0, "f12": "600001", "f13": 1, "f14": "邯郸钢铁"},
+                        {"f2": "-", "f12": "000003", "f13": 0, "f14": "PT金田A"},
+                    ],
+                }
+            }
+
+        collector.fetch_json = fake_fetch_json
+        universe = await collector.fetch_stock_universe()
+
+        self.assertEqual(universe, [{"code": "600519", "name": "贵州茅台", "market": 1}])
 
     def test_stock_code_exchange_qualifiers_must_match_the_code(self):
         self.assertEqual(normalize_stock_code("SH600519"), "600519")

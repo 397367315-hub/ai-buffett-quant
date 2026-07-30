@@ -570,7 +570,7 @@ class EastMoneyDataCollector:
             params = {
                 "pn": str(page), "pz": str(page_size), "po": "0", "np": "1", "fid": "f3",
                 "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
-                "fields": "f12,f13,f14", "fltt": "2", "ut": EASTMONEY_UT,
+                "fields": "f2,f12,f13,f14", "fltt": "2", "ut": EASTMONEY_UT,
             }
             data = await self.fetch_json(self.BASE_URL, params)
             payload = data.get("data") or {}
@@ -592,17 +592,23 @@ class EastMoneyDataCollector:
 
         records = []
         seen_codes: set[str] = set()
+        if total and len(rows) < total:
+            raise RuntimeError(f"股票清单不完整: expected={total}, received={len(rows)}")
         for item in rows:
             try:
                 code = normalize_stock_code(item.get("f12"))
             except ValueError:
                 continue
+            # EastMoney's broad A-share filters retain delisted symbols such
+            # as PT金田A and 邯郸钢铁. A zero/missing current price identifies
+            # them without excluding suspended securities with a last close.
+            price = as_optional_float(item.get("f2"))
+            if price is None or price <= 0:
+                continue
             if code in seen_codes:
                 continue
             seen_codes.add(code)
             records.append({"code": code, "name": item.get("f14", ""), "market": item.get("f13")})
-        if total and len(records) < total:
-            raise RuntimeError(f"股票清单不完整: expected={total}, received={len(records)}")
         return records
 
     async def fetch_north_bound_daily(self, days: int = 365) -> list[dict]:
