@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 
+import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -282,11 +283,11 @@ class HistoryCacheService:
                 completed_tasks=len(board_jobs) + len(stock_universe) + 1,
                 error="; ".join(warnings) or None,
             )
-        except (DBAPIError, OSError, PostgresConnectionError) as exc:
-            # Preserve the persisted queued/running state after an exhausted
-            # transient database retry. The scheduler will resume this work
-            # once Postgres DNS/connectivity returns.
-            print(f"Backfill run {run_id} paused after database error: {type(exc).__name__}")
+        except (DBAPIError, OSError, PostgresConnectionError, httpx.RequestError, asyncio.TimeoutError) as exc:
+            # Preserve the persisted queued/running state after a transient
+            # database or upstream-network failure. The scheduler will resume
+            # this work once connectivity returns.
+            print(f"Backfill run {run_id} paused after transient error: {type(exc).__name__}")
         except Exception as exc:
             try:
                 await self._set_run(

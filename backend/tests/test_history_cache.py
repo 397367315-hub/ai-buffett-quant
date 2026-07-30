@@ -3,6 +3,7 @@ import socket
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from sqlalchemy.exc import OperationalError
 
 from services.history_cache import HistoryCacheService, collector, engine
@@ -128,6 +129,21 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
             await service._run_backfill(3, 365, True, None)
 
         self.assertEqual(set_run.await_count, 1)
+
+    async def test_network_backfill_failure_is_left_for_scheduler_recovery(self):
+        service = HistoryCacheService()
+        service._set_run = AsyncMock()
+
+        with patch.object(
+            collector,
+            "fetch_all_concept_flow",
+            new_callable=AsyncMock,
+            side_effect=httpx.ReadTimeout("upstream timed out"),
+        ):
+            with patch.object(collector, "fetch_all_industry_flow", new_callable=AsyncMock, return_value=[]):
+                await service._run_backfill(3, 365, True, None)
+
+        self.assertEqual(service._set_run.await_count, 1)
 
     async def test_industry_backfill_does_not_write_concept_only_columns(self):
         service = HistoryCacheService()
