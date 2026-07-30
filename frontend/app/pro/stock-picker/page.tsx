@@ -344,18 +344,18 @@ export default function StockPickerPage() {
                 </div>
                 <div className="border border-border bg-card rounded-lg overflow-hidden">
                   <div className="overflow-x-auto">
-                    <table className="w-full text-sm min-w-[760px]">
+                    <table className="w-full table-fixed sm:table-auto text-sm">
                       <thead>
                         <tr className="border-b border-border bg-[#0D1117] text-text-secondary text-xs">
-                          <th className="text-left px-4 py-3 font-medium">排名 / 标的</th>
-                          <th className="text-right px-3 py-3 font-medium">现价</th>
-                          <th className="text-right px-3 py-3 font-medium">涨跌幅</th>
-                          <th className="text-right px-3 py-3 font-medium">综合分</th>
-                          <th className="text-right px-3 py-3 font-medium">技术</th>
-                          <th className="text-right px-3 py-3 font-medium">资金</th>
-                          <th className="text-right px-3 py-3 font-medium">风险</th>
-                          <th className="text-left px-3 py-3 font-medium">裁决</th>
-                          <th className="w-12 px-2 py-3"><span className="sr-only">查看</span></th>
+                          <th className="w-[40%] sm:w-auto text-left px-2 sm:px-4 py-3 font-medium">排名 / 标的</th>
+                          <th className="w-[17%] sm:w-auto text-right px-1 sm:px-3 py-3 font-medium whitespace-nowrap">现价</th>
+                          <th className="w-[17%] sm:w-auto text-right px-1 sm:px-3 py-3 font-medium whitespace-nowrap">涨跌幅</th>
+                          <th className="w-[16%] sm:w-auto text-right px-1 sm:px-3 py-3 font-medium whitespace-nowrap">综合分</th>
+                          <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">技术</th>
+                          <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">资金</th>
+                          <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">风险</th>
+                          <th className="hidden sm:table-cell text-left px-3 py-3 font-medium">裁决</th>
+                          <th className="w-[10%] sm:w-12 px-1 sm:px-2 py-3"><span className="sr-only">查看</span></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -363,23 +363,23 @@ export default function StockPickerPage() {
                           const active = selected?.code === stock.code;
                           return (
                             <tr key={stock.code} className={`border-b border-border/50 transition-colors ${active ? 'bg-[#1F6FEB12]' : 'hover:bg-[#21262D]'}`}>
-                              <td className="px-4 py-3">
-                                <div className="flex items-center gap-2">
-                                  <span className="w-5 text-xs font-mono text-text-secondary">{stock.rank}</span>
-                                  <div>
+                              <td className="px-2 sm:px-4 py-3">
+                                <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+                                  <span className="w-4 sm:w-5 shrink-0 text-xs font-mono text-text-secondary">{stock.rank}</span>
+                                  <div className="min-w-0">
                                     <div className="font-medium text-text">{stock.name}</div>
-                                    <div className="text-xs text-text-secondary">{stock.code} · {stock.selection_sources.map(sourceLabel).join(' / ')}</div>
+                                    <div className="text-xs text-text-secondary leading-4 break-words">{stock.code} · {stock.selection_sources.map(sourceLabel).join(' / ')}</div>
                                   </div>
                                 </div>
                               </td>
-                              <td className="px-3 py-3 text-right font-mono text-text">{stock.price.toFixed(2)}</td>
-                              <td className={`px-3 py-3 text-right font-mono font-medium ${getChangeColor(stock.change_pct)}`}>{stock.change_pct >= 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%</td>
-                              <td className={`px-3 py-3 text-right font-mono font-bold ${scoreClass(stock.score)}`}>{stock.score.toFixed(1)}</td>
-                              <td className="px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.technical.score.toFixed(0)}</td>
-                              <td className="px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.capital.score.toFixed(0)}</td>
-                              <td className="px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.risk.score.toFixed(0)}</td>
-                              <td className="px-3 py-3"><span className={`inline-flex border rounded px-2 py-1 text-xs whitespace-nowrap ${verdictClass(stock.verdict)}`}>{stock.verdict}</span></td>
-                              <td className="px-2 py-3 text-right">
+                              <td className="px-1 sm:px-3 py-3 text-right font-mono text-xs sm:text-sm text-text whitespace-nowrap">{stock.price.toFixed(2)}</td>
+                              <td className={`px-1 sm:px-3 py-3 text-right font-mono text-xs sm:text-sm font-medium whitespace-nowrap ${getChangeColor(stock.change_pct)}`}>{stock.change_pct >= 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%</td>
+                              <td className={`px-1 sm:px-3 py-3 text-right font-mono text-xs sm:text-sm font-bold whitespace-nowrap ${scoreClass(stock.score)}`}>{stock.score.toFixed(1)}</td>
+                              <td className="hidden sm:table-cell px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.technical.score.toFixed(0)}</td>
+                              <td className="hidden sm:table-cell px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.capital.score.toFixed(0)}</td>
+                              <td className="hidden sm:table-cell px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.risk.score.toFixed(0)}</td>
+                              <td className="hidden sm:table-cell px-3 py-3"><span className={`inline-flex border rounded px-2 py-1 text-xs whitespace-nowrap ${verdictClass(stock.verdict)}`}>{stock.verdict}</span></td>
+                              <td className="px-1 sm:px-2 py-3 text-right">
                                 <button type="button" onClick={() => setSelectedCode(stock.code)} aria-label={`查看${stock.name}的研究轨迹`} title="查看研究轨迹" className="p-1 text-text-secondary hover:text-accent transition-colors">
                                   <ChevronRight size={18} />
                                 </button>
