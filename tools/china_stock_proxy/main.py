@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -13,16 +14,49 @@ from pydantic import BaseModel, Field
 ALLOWED_HOSTS = {
     "data.eastmoney.com",
     "push2.eastmoney.com",
+    "push2delay.eastmoney.com",
+    "push2his.eastmoney.com",
     "datacenter.eastmoney.com",
 }
 
+PUSH2_HOST = "push2.eastmoney.com"
+PUSH2_DELAY_HOST = "push2delay.eastmoney.com"
 SECTOR_FLOW_PATH = "/api/qt/clist/get"
 SECTOR_FLOW_FALLBACK_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
-UPSTREAM_HEALTH_URL = SECTOR_FLOW_FALLBACK_URL
+UPSTREAM_HEALTH_URL = "https://push2.eastmoney.com/api/qt/clist/get"
 UPSTREAM_HEALTH_PARAMS = {
-    "key": "f62",
-    "code": "m:90+t3",
+    "pn": "1",
+    "pz": "1",
+    "po": "0",
+    "np": "1",
+    "fid": "f62",
+    "fs": "m:90+t3",
+    "fields": "f12,f14,f62",
+    "fltt": "2",
+    "ut": "b2884a393a59ad6402e4dd90d24e112f",
 }
+
+
+def _positive_float(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _positive_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+UPSTREAM_TIMEOUT = _positive_float("DATA_PROXY_TIMEOUT", 20.0)
+UPSTREAM_MAX_ATTEMPTS = _positive_int("DATA_PROXY_MAX_ATTEMPTS", 3)
+UPSTREAM_RETRY_DELAY = _positive_float("DATA_PROXY_RETRY_DELAY", 0.35)
+RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +68,10 @@ class FetchRequest(BaseModel):
 
 
 app = FastAPI(title="China Stock Data Proxy", version="1.0.0")
+
+
+class UpstreamPayloadError(RuntimeError):
+    """Raised when an upstream returns an application-level error response."""
 
 
 def _require_token(token: str | None):
@@ -60,35 +98,107 @@ def _validate_url(url: str):
 
 
 async def _get_upstream_json(url: str, params: dict, headers: dict) -> dict:
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.get(url, params=params, headers=headers)
-        resp.raise_for_status()
-        return resp.json()
+    last_error: Exception | None = None
+    async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
+        for attempt in range(UPSTREAM_MAX_ATTEMPTS):
+            try:
+                resp = await client.get(url, params=params, headers=headers)
+                resp.raise_for_status()
+                return resp.json()
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
+                last_error = exc
+                status_code = (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else None
+                )
+                if (
+                    attempt + 1 >= UPSTREAM_MAX_ATTEMPTS
+                    or status_code is not None
+                    and status_code not in RETRYABLE_STATUS_CODES
+                ):
+                    raise
+                await asyncio.sleep(UPSTREAM_RETRY_DELAY * (attempt + 1))
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Upstream request did not run")
+
+
+def _payload_has_error(data: dict) -> bool:
+    return isinstance(data, dict) and "rc" in data and str(data.get("rc")) not in {"0"}
+
+
+def _replace_host(url: str, host: str) -> str:
+    parsed = urlparse(url)
+    return parsed._replace(netloc=host).geturl()
 
 
 def _sector_flow_fallback_params(params: dict) -> dict | None:
     """Translate push2 sector filters to the public data-center endpoint."""
     fs = str(params.get("fs", "")).replace(" ", "+")
-    if not re.fullmatch(r"m:90(?:\+| )(?:t|s):?\d+", fs):
+    match = re.fullmatch(r"m:90(?:\+| )(t|s):?(\d+)", fs)
+    if not match:
         return None
 
+    board_type, board_id = match.groups()
     key = str(params.get("fid0") or params.get("fid") or "f62")
     if not re.fullmatch(r"f\d+", key):
         key = "f62"
-    return {"key": key, "code": fs}
+    return {"key": key, "code": f"m:90+{board_type}:{board_id}"}
 
 
 async def _fetch_market_request(url: str, params: dict, headers: dict) -> dict:
     parsed = urlparse(url)
-    if parsed.hostname == "push2.eastmoney.com" and parsed.path == SECTOR_FLOW_PATH:
-        fallback_params = _sector_flow_fallback_params(params)
-        if fallback_params:
-            return await _get_upstream_json(
-                SECTOR_FLOW_FALLBACK_URL,
-                fallback_params,
-                headers,
+    candidates: list[tuple[str, dict]] = [(url, params)]
+
+    if parsed.hostname == PUSH2_HOST:
+        # The delay node is reachable from overseas Render regions and keeps
+        # the same JSON contract as the regular push2 node.
+        candidates.insert(0, (_replace_host(url, PUSH2_DELAY_HOST), params))
+
+        if parsed.path == SECTOR_FLOW_PATH:
+            fallback_params = _sector_flow_fallback_params(params)
+            if fallback_params:
+                normalized_params = dict(params)
+                normalized_params["fs"] = fallback_params["code"]
+                candidates[0] = (
+                    _replace_host(url, PUSH2_DELAY_HOST),
+                    normalized_params,
+                )
+                candidates.insert(
+                    1,
+                    (_replace_host(url, PUSH2_HOST), normalized_params),
+                )
+                candidates.append((SECTOR_FLOW_FALLBACK_URL, fallback_params))
+
+    last_error: Exception | None = None
+    for candidate_url, candidate_params in candidates:
+        try:
+            data = await _get_upstream_json(candidate_url, candidate_params, headers)
+            if _payload_has_error(data):
+                raise UpstreamPayloadError(
+                    f"Upstream returned rc={data.get('rc')}"
+                )
+            return data
+        except (
+            httpx.HTTPStatusError,
+            httpx.RequestError,
+            ValueError,
+            UpstreamPayloadError,
+        ) as exc:
+            last_error = exc
+            candidate = urlparse(candidate_url)
+            logger.warning(
+                "EastMoney candidate failed: host=%s path=%s error=%s",
+                candidate.hostname,
+                candidate.path,
+                type(exc).__name__,
             )
-    return await _get_upstream_json(url, params, headers)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No upstream candidates configured")
 
 
 @app.get("/health")
@@ -100,7 +210,7 @@ async def health():
 async def upstream_health():
     started_at = time.monotonic()
     try:
-        data = await _get_upstream_json(
+        data = await _fetch_market_request(
             UPSTREAM_HEALTH_URL,
             UPSTREAM_HEALTH_PARAMS,
             {
@@ -114,7 +224,7 @@ async def upstream_health():
             raise RuntimeError("Upstream returned no records")
         return {
             "status": "ok",
-            "upstream": "eastmoney-data-api",
+            "upstream": "eastmoney-failover",
             "records": len(records),
             "latency_ms": round((time.monotonic() - started_at) * 1000),
         }

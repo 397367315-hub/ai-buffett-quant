@@ -45,14 +45,21 @@ DATA_PROXY_TIMEOUT=20
 配置后，后端所有东方财富实时数据请求会先走该代理；代理不可用时会回退直连。
 主后端的 `GET /health/data-source` 会进一步确认完整代理链路可用。
 
+代理默认最多尝试 3 次，并会在 `push2.eastmoney.com` 不可用时切换到
+`push2delay.eastmoney.com`；可通过 `DATA_PROXY_MAX_ATTEMPTS` 和
+`DATA_PROXY_RETRY_DELAY` 调整重试策略。
+
 ## 安全
 
 代理只允许访问：
 
 - `data.eastmoney.com`
 - `push2.eastmoney.com`
+- `push2delay.eastmoney.com`
+- `push2his.eastmoney.com`
 - `datacenter.eastmoney.com`
 
-板块资金排行请求（`m:90`）会自动转到东方财富网页端可用的
-`/dataapi/bkzj/getbkzj` 接口，避免 `push2` 在海外节点返回 502。
+板块资金排行请求（`m:90`）会自动规范分类参数，并优先使用
+`push2delay`；当行情节点均不可用时，再转到东方财富网页端可用的
+`/dataapi/bkzj/getbkzj` 接口，避免海外节点返回 502。
 如果后续新增数据源，需要先在 `main.py` 的 `ALLOWED_HOSTS` 中显式加入域名。
