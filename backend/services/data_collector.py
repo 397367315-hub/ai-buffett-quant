@@ -113,6 +113,11 @@ class EastMoneyDataCollector:
         "Accept": HEADERS["Accept"],
     }
 
+    @staticmethod
+    def _request_timeout() -> float:
+        """Keep a stale deployment setting from holding an API request open."""
+        return min(max(float(settings.data_proxy_timeout), 1.0), 20.0)
+
     FLOW_FIELD_MAP = {
         "f2": "close_price",
         "f3": "change_pct",
@@ -148,7 +153,7 @@ class EastMoneyDataCollector:
         return await self._fetch_direct(url, params, request_headers)
 
     async def _fetch_direct(self, url: str, params: dict, headers: dict) -> dict:
-        async with httpx.AsyncClient(timeout=settings.data_proxy_timeout) as client:
+        async with httpx.AsyncClient(timeout=self._request_timeout()) as client:
             response = await client.get(url, params=params, headers=headers)
             response.raise_for_status()
             return response.json()
@@ -168,7 +173,7 @@ class EastMoneyDataCollector:
             },
         }
         proxy_url = f"{settings.data_proxy_base_url.rstrip('/')}/fetch"
-        async with httpx.AsyncClient(timeout=settings.data_proxy_timeout) as client:
+        async with httpx.AsyncClient(timeout=self._request_timeout()) as client:
             response = await client.post(proxy_url, json=payload, headers=proxy_headers)
             response.raise_for_status()
             return response.json()

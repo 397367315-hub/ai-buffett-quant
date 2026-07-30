@@ -6,6 +6,12 @@ from services.data_collector import EastMoneyDataCollector, normalize_stock_code
 
 
 class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_data_source_timeout_is_capped_for_stale_deploy_settings(self):
+        collector = EastMoneyDataCollector()
+
+        with patch("services.data_collector.settings.data_proxy_timeout", 90.0):
+            self.assertEqual(collector._request_timeout(), 20.0)
+
     async def test_configured_proxy_does_not_fall_back_to_overseas_request(self):
         collector = EastMoneyDataCollector()
         collector._fetch_via_proxy = AsyncMock(side_effect=RuntimeError("proxy unavailable"))
