@@ -20,7 +20,7 @@ from models import (
     NorthboundDealDaily,
     StockDailyBar,
 )
-from services.data_collector import SCI_TECH_PREFIXES, collector, normalize_stock_code, shanghai_now
+from services.data_collector import collector, normalize_stock_code, shanghai_now
 
 
 def _parse_date(value: str) -> date:
@@ -423,10 +423,10 @@ class HistoryCacheService:
                 return set((await session.execute(statement)).scalars().all())
 
         codes = await self._with_database_retry(load_codes)
-        # Earlier cache versions multiplied Tencent's 688/689 volumes by 100.
-        # Re-fetch those symbols during this run so the corrected parser
-        # overwrites every affected record without a destructive migration.
-        return {code for code in codes if not code.startswith(SCI_TECH_PREFIXES)}
+        # The corrected Tencent parser has rewritten the previously affected
+        # STAR Market rows. Treat those cached symbols like every other code
+        # so a process restart resumes only genuinely missing histories.
+        return codes
 
     async def cache_current_concept_flow(self) -> dict:
         rows = await collector.fetch_all_concept_flow()
@@ -491,14 +491,18 @@ class HistoryCacheService:
 
     async def get_stock_history(self, stock_code: str, days: int = 365) -> list[dict]:
         code = normalize_stock_code(stock_code)
-        async with async_session() as session:
-            statement = (
-                select(StockDailyBar)
-                .where(StockDailyBar.stock_code == code)
-                .order_by(StockDailyBar.trade_date.desc())
-                .limit(days)
-            )
-            rows = list(reversed((await session.execute(statement)).scalars().all()))
+
+        async def load_history():
+            async with async_session() as session:
+                statement = (
+                    select(StockDailyBar)
+                    .where(StockDailyBar.stock_code == code)
+                    .order_by(StockDailyBar.trade_date.desc())
+                    .limit(days)
+                )
+                return list(reversed((await session.execute(statement)).scalars().all()))
+
+        rows = await self._with_database_retry(load_history)
         return [
             {
                 "date": row.trade_date.isoformat(), "code": row.stock_code, "name": row.stock_name,
@@ -510,22 +514,34 @@ class HistoryCacheService:
         ]
 
     async def get_cache_stats(self) -> dict:
-        async with async_session() as session:
-            concept_count, concept_min, concept_max = (await session.execute(
-                select(func.count(), func.min(ConceptFundFlowDaily.trade_date), func.max(ConceptFundFlowDaily.trade_date))
-            )).one()
-            stock_count, stock_min, stock_max = (await session.execute(
-                select(func.count(), func.min(StockDailyBar.trade_date), func.max(StockDailyBar.trade_date))
-            )).one()
-            stock_symbols = (await session.execute(
-                select(func.count(func.distinct(StockDailyBar.stock_code)))
-            )).scalar_one()
-            north_count, north_min, north_max = (await session.execute(
-                select(func.count(), func.min(NorthboundDealDaily.trade_date), func.max(NorthboundDealDaily.trade_date))
-            )).one()
-            latest_run = (await session.execute(
-                select(CacheBackfillRun).order_by(CacheBackfillRun.id.desc()).limit(1)
-            )).scalar_one_or_none()
+        async def load_stats():
+            async with async_session() as session:
+                concept_count, concept_min, concept_max = (await session.execute(
+                    select(func.count(), func.min(ConceptFundFlowDaily.trade_date), func.max(ConceptFundFlowDaily.trade_date))
+                )).one()
+                stock_count, stock_min, stock_max = (await session.execute(
+                    select(func.count(), func.min(StockDailyBar.trade_date), func.max(StockDailyBar.trade_date))
+                )).one()
+                stock_symbols = (await session.execute(
+                    select(func.count(func.distinct(StockDailyBar.stock_code)))
+                )).scalar_one()
+                north_count, north_min, north_max = (await session.execute(
+                    select(func.count(), func.min(NorthboundDealDaily.trade_date), func.max(NorthboundDealDaily.trade_date))
+                )).one()
+                latest_run = (await session.execute(
+                    select(CacheBackfillRun).order_by(CacheBackfillRun.id.desc()).limit(1)
+                )).scalar_one_or_none()
+            return (
+                concept_count, concept_min, concept_max,
+                stock_count, stock_min, stock_max, stock_symbols,
+                north_count, north_min, north_max, latest_run,
+            )
+
+        (
+            concept_count, concept_min, concept_max,
+            stock_count, stock_min, stock_max, stock_symbols,
+            north_count, north_min, north_max, latest_run,
+        ) = await self._with_database_retry(load_stats)
         return {
             "concept_flow": {"records": concept_count, "from": concept_min.isoformat() if concept_min else None, "to": concept_max.isoformat() if concept_max else None},
             "stock_bars": {
@@ -544,8 +560,11 @@ class HistoryCacheService:
         }
 
     async def get_run(self, run_id: int) -> dict | None:
-        async with async_session() as session:
-            run = await session.get(CacheBackfillRun, run_id)
+        async def load_run():
+            async with async_session() as session:
+                return await session.get(CacheBackfillRun, run_id)
+
+        run = await self._with_database_retry(load_run)
         if run is None:
             return None
         return {
