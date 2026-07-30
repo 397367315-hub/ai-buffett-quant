@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
 
     data_refresh_interval: int = 60
+    data_proxy_base_url: str = ""
+    data_proxy_token: str = ""
+    data_proxy_timeout: float = 20.0
 
     # 登录账号配置
     admin_username: str = "admin"

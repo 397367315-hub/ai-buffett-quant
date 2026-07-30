@@ -103,7 +103,6 @@ class AITradingEngine:
     async def _fetch_stock_price(self, stock_code: str) -> Optional[dict]:
         """获取单只股票的当前价格 - 使用已验证可用的 clist API"""
         try:
-            import httpx
             # 使用 clist 接口按股票代码查询
             url = "https://push2.eastmoney.com/api/qt/clist/get"
             params = {
@@ -113,9 +112,7 @@ class AITradingEngine:
                 "fields": "f2,f3,f4,f5,f8,f9,f10,f12,f14,f20,f23,f43,f44,f45,f47,f48,f50,f57,f58,f170",
                 "ut": "b2884a393a59ad6402e4dd90d24e112f",
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params, headers=collector.HEADERS)
-                data = resp.json()
+            data = await collector.fetch_json(url, params)
 
             if data.get("data") and data["data"].get("diff"):
                 d = data["data"]["diff"][0]

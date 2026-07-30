@@ -4,6 +4,8 @@ node_modules/
 __pycache__/
 *.pyc
 .env
+.DS_Store
+AI巴菲特量化分析系统-完整交接文档.md
 
 # Local Netlify folder
 .netlify

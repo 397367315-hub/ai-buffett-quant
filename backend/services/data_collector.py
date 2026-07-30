@@ -1,5 +1,7 @@
+import time
+
 import httpx
-from typing import Optional
+from config import settings
 
 
 class EastMoneyDataCollector:
@@ -29,6 +31,75 @@ class EastMoneyDataCollector:
         "f136": "stock_count",
     }
 
+    async def fetch_json(self, url: str, params: dict, headers: dict | None = None) -> dict:
+        """Fetch market JSON, preferring a domestic proxy when configured."""
+        request_headers = headers or self.HEADERS
+        if settings.data_proxy_base_url:
+            try:
+                return await self._fetch_via_proxy(url, params, request_headers)
+            except Exception as e:
+                print(f"[Data Proxy] Failed, falling back to direct request: {e}")
+
+        return await self._fetch_direct(url, params, request_headers)
+
+    async def _fetch_direct(self, url: str, params: dict, headers: dict) -> dict:
+        async with httpx.AsyncClient(timeout=settings.data_proxy_timeout) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def _fetch_via_proxy(self, url: str, params: dict, headers: dict) -> dict:
+        proxy_headers = {}
+        if settings.data_proxy_token:
+            proxy_headers["X-Data-Proxy-Token"] = settings.data_proxy_token
+
+        proxy_url = f"{settings.data_proxy_base_url.rstrip('/')}/fetch"
+        payload = {
+            "url": url,
+            "params": params,
+            "headers": {
+                "User-Agent": headers.get("User-Agent", self.HEADERS["User-Agent"]),
+                "Referer": headers.get("Referer", self.HEADERS["Referer"]),
+                "Accept": headers.get("Accept", "application/json,text/plain,*/*"),
+            },
+        }
+        async with httpx.AsyncClient(timeout=settings.data_proxy_timeout) as client:
+            resp = await client.post(proxy_url, json=payload, headers=proxy_headers)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def check_data_source(self) -> dict:
+        """Verify that the configured market-data path returns a real record."""
+        params = {
+            "pn": "1",
+            "pz": "1",
+            "po": "0",
+            "np": "1",
+            "fid": "f62",
+            "fs": "m:90+t3",
+            "fields": "f12,f14,f62",
+            "fltt": "2",
+            "ut": "b2884a393a59ad6402e4dd90d24e112f",
+        }
+        source = "proxy" if settings.data_proxy_base_url else "direct"
+        started_at = time.monotonic()
+
+        if source == "proxy":
+            data = await self._fetch_via_proxy(self.BASE_URL, params, self.HEADERS)
+        else:
+            data = await self._fetch_direct(self.BASE_URL, params, self.HEADERS)
+
+        records = (data.get("data") or {}).get("diff") or []
+        if not records:
+            raise RuntimeError("Market data source returned no records")
+
+        return {
+            "status": "ok",
+            "source": source,
+            "records": len(records),
+            "latency_ms": round((time.monotonic() - started_at) * 1000),
+        }
+
     async def fetch_concept_flow(
         self,
         sort_field: str = "f62",
@@ -48,9 +119,7 @@ class EastMoneyDataCollector:
             "ut": "b2884a393a59ad6402e4dd90d24e112f",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(self.BASE_URL, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(self.BASE_URL, params)
             if not data.get("data") or not data["data"].get("diff"):
                 return []
             results = []
@@ -86,9 +155,7 @@ class EastMoneyDataCollector:
             "ut": "b2884a393a59ad6402e4dd90d24e112f",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(self.BASE_URL, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(self.BASE_URL, params)
             if not data.get("data") or not data["data"].get("diff"):
                 return []
             results = []
@@ -117,9 +184,7 @@ class EastMoneyDataCollector:
                     "fields1": "f1,f2,f3,f7",
                     "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
                 }
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.get(url, params=params, headers=self.HEADERS)
-                    data = resp.json()
+                data = await self.fetch_json(url, params)
                 if data.get("data") and data["data"].get("klines"):
                     latest = data["data"]["klines"][-1]
                     parts = latest.split(",")
@@ -144,9 +209,7 @@ class EastMoneyDataCollector:
                 "klt": "1",
                 "lmt": "10",
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(url, params)
             return data
         except Exception as e:
             print(f"Error fetching north fund flow: {e}")
@@ -164,9 +227,7 @@ class EastMoneyDataCollector:
                 "fields1": "f1,f2,f3,f7",
                 "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(url, params)
             if not data.get("data") or not data["data"].get("klines"):
                 return []
             results = []
@@ -200,9 +261,7 @@ class EastMoneyDataCollector:
             "ut": "b2884a393a59ad6402e4dd90d24e112f",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(self.BASE_URL, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(self.BASE_URL, params)
             if not data.get("data") or not data["data"].get("diff"):
                 return []
             results = []
@@ -242,9 +301,7 @@ class EastMoneyDataCollector:
             "ut": "b2884a393a59ad6402e4dd90d24e112f",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(self.BASE_URL, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(self.BASE_URL, params)
             if not data.get("data") or not data["data"].get("diff"):
                 return []
             results = []
@@ -285,9 +342,7 @@ class EastMoneyDataCollector:
             "ut": "b2884a393a59ad6402e4dd90d24e112f",
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(self.BASE_URL, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(self.BASE_URL, params)
 
             if not data.get("data"):
                 return {"total": 0, "stocks": []}
@@ -330,9 +385,7 @@ class EastMoneyDataCollector:
                 "klt": "101",
                 "lmt": str(days),
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(url, params)
 
             if not data.get("data") or not data["data"].get("klines"):
                 return []
@@ -368,9 +421,7 @@ class EastMoneyDataCollector:
                     "fields": "f104,f105,f106",
                     "ut": "b2884a393a59ad6402e4dd90d24e112f",
                 }
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.get(self.BASE_URL, params=params, headers=self.HEADERS)
-                    data = resp.json()
+                data = await self.fetch_json(self.BASE_URL, params)
                 if data.get("data") and data["data"].get("diff"):
                     item = data["data"]["diff"][0]
                     up_count = int(float(item.get("f104", 0) or 0))
@@ -397,9 +448,7 @@ class EastMoneyDataCollector:
                 "fields": "f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f60,f116,f117,f162,f167,f168,f169,f170,f171",
                 "ut": "b2884a393a59ad6402e4dd90d24e112f",
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(url, params)
 
             if data.get("data"):
                 d = data["data"]
@@ -426,9 +475,7 @@ class EastMoneyDataCollector:
                 "fields": "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f14,f15,f16,f17,f18,f20,f21,f23,f62,f184,f66,f72,f78",
                 "ut": "b2884a393a59ad6402e4dd90d24e112f",
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(self.BASE_URL, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(self.BASE_URL, params)
 
             if not data.get("data") or not data["data"].get("diff"):
                 return []
@@ -471,9 +518,7 @@ class EastMoneyDataCollector:
                 "source": "WEB",
                 "client": "WEB",
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params, headers={**self.HEADERS, "Accept": "application/json"})
-                data = resp.json()
+            data = await self.fetch_json(url, params, headers={**self.HEADERS, "Accept": "application/json"})
 
             if data.get("success") and data.get("result") and data["result"].get("data"):
                 results = []
@@ -537,9 +582,7 @@ class EastMoneyDataCollector:
                 "filters": "",
                 "ut": "b2884a393a59ad6402e4dd90d24e112f",
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(self.BASE_URL, params=params, headers=self.HEADERS)
-                data = resp.json()
+            data = await self.fetch_json(self.BASE_URL, params)
 
             if not data.get("data") or not data["data"].get("diff"):
                 return {"total": 0, "stocks": []}

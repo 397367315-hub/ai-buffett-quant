@@ -248,7 +248,6 @@ class Benchmark:
     async def get_benchmark_data(days: int = 30) -> list[dict]:
         """获取上证指数作为基准"""
         from services.data_collector import collector
-        import httpx
 
         try:
             url = "https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get"
@@ -259,9 +258,7 @@ class Benchmark:
                 "fields1": "f1,f2,f3,f7",
                 "fields2": "f51,f52",
             }
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url, params=params, headers=collector.HEADERS)
-                data = resp.json()
+            data = await collector.fetch_json(url, params)
 
             if not data.get("data") or not data["data"].get("klines"):
                 return Benchmark._get_simulated_benchmark(days)

@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from api.routes import router
 from database import init_db
 from config import settings
+from services.data_collector import collector
 import sim_models
 
 
@@ -51,6 +52,22 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/health/data-source")
+async def data_source_health():
+    try:
+        return await collector.check_data_source()
+    except Exception as exc:
+        source = "proxy" if settings.data_proxy_base_url else "direct"
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "source": source,
+                "error": type(exc).__name__,
+            },
+        )
 
 
 @app.options("/{full_path:path}")
