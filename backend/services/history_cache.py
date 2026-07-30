@@ -19,7 +19,7 @@ from models import (
     NorthboundDealDaily,
     StockDailyBar,
 )
-from services.data_collector import collector, normalize_stock_code, shanghai_now
+from services.data_collector import SCI_TECH_PREFIXES, collector, normalize_stock_code, shanghai_now
 
 
 def _parse_date(value: str) -> date:
@@ -377,7 +377,11 @@ class HistoryCacheService:
         cutoff = shanghai_now().date() - timedelta(days=max(days, 1))
         async with async_session() as session:
             statement = select(StockDailyBar.stock_code).where(StockDailyBar.trade_date >= cutoff).distinct()
-            return set((await session.execute(statement)).scalars().all())
+            codes = set((await session.execute(statement)).scalars().all())
+        # Earlier cache versions multiplied Tencent's 688/689 volumes by 100.
+        # Re-fetch those symbols during this run so the corrected parser
+        # overwrites every affected record without a destructive migration.
+        return {code for code in codes if not code.startswith(SCI_TECH_PREFIXES)}
 
     async def cache_current_concept_flow(self) -> dict:
         rows = await collector.fetch_all_concept_flow()

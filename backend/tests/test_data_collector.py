@@ -120,6 +120,30 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(first["turnover"])
         self.assertAlmostEqual(first["change_pct"], 10.0)
 
+    async def test_tencent_star_market_volume_is_already_in_shares(self):
+        collector = EastMoneyDataCollector()
+
+        async def fake_fetch_json(url, params, headers=None):
+            self.assertEqual(url, collector.TENCENT_KLINE_URL)
+            self.assertEqual(params["param"], "sh688432,day,,,385,qfq")
+            return {
+                "data": {
+                    "sh688432": {
+                        "qfqday": [
+                            ["2025-07-30", "10", "10", "10.5", "9.5", "68996467"],
+                            ["2026-07-30", "11", "11", "11.5", "10.5", "74872970"],
+                        ],
+                    }
+                },
+            }
+
+        collector.fetch_json = fake_fetch_json
+        with patch("services.data_collector.shanghai_now", return_value=datetime(2026, 7, 30)):
+            result = await collector.fetch_stock_price_history("688432", 365)
+
+        self.assertEqual(result["history"][0]["volume"], 68_996_467)
+        self.assertEqual(result["history"][1]["volume"], 74_872_970)
+
     async def test_shanghai_index_history_uses_tencent_closes(self):
         collector = EastMoneyDataCollector()
 

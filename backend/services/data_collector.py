@@ -21,6 +21,7 @@ EASTMONEY_UT = "b2884a393a59ad6402e4dd90d24e112f"
 SHANGHAI_PREFIXES = ("600", "601", "603", "605", "688", "689", "900")
 SHENZHEN_PREFIXES = ("000", "001", "002", "003", "200", "300", "301", "302")
 BEIJING_PREFIXES = ("4", "8", "92")
+SCI_TECH_PREFIXES = ("688", "689")
 STOCK_CODE_RE = re.compile(r"^(?:(SH|SZ|BJ)[.:-]?)?(\d{6})(?:\.(SH|SZ|BJ))?$")
 BOARD_CODE_RE = re.compile(r"^BK\d{4}$")
 
@@ -515,9 +516,7 @@ class EastMoneyDataCollector:
             history.append({
                 "trade_date": trade_date.isoformat(), "open": open_price, "close": close_price,
                 "high": high_price, "low": low_price,
-                # Tencent reports daily volume in lots; the database contract
-                # uses shares, matching the realtime EastMoney fields.
-                "volume": None if volume_lots is None else int(volume_lots * 100),
+                "volume": self._tencent_volume_in_shares(code, volume_lots),
                 "amount": None, "amplitude": amplitude, "change_pct": change_pct,
                 "change_amount": change_amount, "turnover": None,
             })
@@ -660,6 +659,17 @@ class EastMoneyDataCollector:
         if code.startswith(BEIJING_PREFIXES):
             return f"bj{code}"
         return f"sz{code}"
+
+    @staticmethod
+    def _tencent_volume_in_shares(code: str, volume: float | None) -> int | None:
+        """Normalize Tencent's mixed volume units to shares.
+
+        Main-board, ChiNext, and Beijing listings use lots. Tencent already
+        returns STAR Market volumes in shares.
+        """
+        if volume is None:
+            return None
+        return int(volume if code.startswith(SCI_TECH_PREFIXES) else volume * 100)
 
     async def fetch_market_breadth(self) -> dict:
         """Return only verified market breadth data.
