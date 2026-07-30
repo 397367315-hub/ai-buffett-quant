@@ -57,9 +57,20 @@ async def root():
     return {"name": settings.app_name, "version": settings.app_version, "status": "running"}
 
 
+@app.head("/")
+async def root_head():
+    """Keep legacy Render probes healthy while the configured path migrates."""
+    return Response(status_code=200)
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.head("/health")
+async def health_head():
+    return Response(status_code=200)
 
 
 @app.get("/health/data-source")
