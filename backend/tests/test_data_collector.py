@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from services.data_collector import EastMoneyDataCollector, normalize_stock_code
+from services.data_collector import EastMoneyDataCollector, normalize_stock_code, stock_secid
 
 
 class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
@@ -34,6 +34,42 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("302132", {item["code"] for item in universe})
         self.assertIn("920065", {item["code"] for item in universe})
         self.assertEqual(normalize_stock_code("920065"), "920065")
+
+    def test_stock_code_exchange_qualifiers_must_match_the_code(self):
+        self.assertEqual(normalize_stock_code("SH600519"), "600519")
+        self.assertEqual(normalize_stock_code("000001.SZ"), "000001")
+        self.assertEqual(normalize_stock_code("BJ.920065"), "920065")
+        self.assertEqual(stock_secid("SH600519"), "1.600519")
+
+        with self.assertRaises(ValueError):
+            normalize_stock_code("600519.SZ")
+        with self.assertRaises(ValueError):
+            normalize_stock_code("SH000001")
+        with self.assertRaises(ValueError):
+            normalize_stock_code("SH600519.SZ")
+
+    async def test_market_turnover_uses_change_amount_and_change_percent(self):
+        collector = EastMoneyDataCollector()
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            self.assertEqual(params["fields"], "f43,f47,f48,f57,f58,f169,f170")
+            return {
+                "data": {
+                    "f43": 380469,
+                    "f47": 592298923,
+                    "f48": 1106477266461.8,
+                    "f169": -2378,
+                    "f170": -62,
+                }
+            }
+
+        collector.fetch_json = fake_fetch_json
+        result = await collector.fetch_market_turnover()
+
+        self.assertEqual(result["sh_index"], 3804.69)
+        self.assertEqual(result["sh_change"], -23.78)
+        self.assertEqual(result["sh_change_pct"], -0.62)
 
     async def test_tencent_history_preserves_known_fields_and_nulls_unknown_ones(self):
         collector = EastMoneyDataCollector()
@@ -68,6 +104,34 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(first["amount"])
         self.assertIsNone(first["turnover"])
         self.assertAlmostEqual(first["change_pct"], 10.0)
+
+    async def test_shanghai_index_history_uses_tencent_closes(self):
+        collector = EastMoneyDataCollector()
+
+        async def fake_fetch_json(url, params, headers=None):
+            self.assertEqual(url, collector.TENCENT_KLINE_URL)
+            self.assertEqual(params["param"], "sh000001,day,,,385,qfq")
+            self.assertEqual(headers, collector.TENCENT_HEADERS)
+            return {
+                "data": {
+                    "sh000001": {
+                        "day": [
+                            ["2025-07-29", "3800", "3801"],
+                            ["2025-07-30", "3801", "3810"],
+                            ["2026-07-30", "3810", "3804.69"],
+                        ]
+                    }
+                }
+            }
+
+        collector.fetch_json = fake_fetch_json
+        with patch("services.data_collector.shanghai_now", return_value=datetime(2026, 7, 30)):
+            result = await collector.fetch_shanghai_index_history(365)
+
+        self.assertEqual(result, [
+            {"date": "2025-07-30", "close": 3810.0},
+            {"date": "2026-07-30", "close": 3804.69},
+        ])
 
 
 if __name__ == "__main__":

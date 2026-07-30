@@ -21,7 +21,7 @@ EASTMONEY_UT = "b2884a393a59ad6402e4dd90d24e112f"
 SHANGHAI_PREFIXES = ("600", "601", "603", "605", "688", "689", "900")
 SHENZHEN_PREFIXES = ("000", "001", "002", "003", "200", "300", "301", "302")
 BEIJING_PREFIXES = ("4", "8", "92")
-STOCK_CODE_RE = re.compile(r"^(?:SH|SZ|BJ)?[.:-]?(\d{6})(?:\.(?:SH|SZ|BJ))?$")
+STOCK_CODE_RE = re.compile(r"^(?:(SH|SZ|BJ)[.:-]?)?(\d{6})(?:\.(SH|SZ|BJ))?$")
 BOARD_CODE_RE = re.compile(r"^BK\d{4}$")
 
 
@@ -61,10 +61,23 @@ def normalize_stock_code(value: object) -> str:
     if not match:
         raise ValueError("股票代码必须是有效的六位数字代码")
 
-    code = match.group(1)
-    if code.startswith(SHANGHAI_PREFIXES + SHENZHEN_PREFIXES + BEIJING_PREFIXES):
-        return code
-    raise ValueError(f"不支持的股票代码前缀: {code}")
+    prefix_exchange, code, suffix_exchange = match.groups()
+    if prefix_exchange and suffix_exchange and prefix_exchange != suffix_exchange:
+        raise ValueError("股票代码的交易所前缀和后缀不一致")
+
+    if code.startswith(SHANGHAI_PREFIXES):
+        expected_exchange = "SH"
+    elif code.startswith(SHENZHEN_PREFIXES):
+        expected_exchange = "SZ"
+    elif code.startswith(BEIJING_PREFIXES):
+        expected_exchange = "BJ"
+    else:
+        raise ValueError(f"不支持的股票代码前缀: {code}")
+
+    declared_exchange = prefix_exchange or suffix_exchange
+    if declared_exchange and declared_exchange != expected_exchange:
+        raise ValueError(f"股票代码与交易所不匹配: {code} 应为 {expected_exchange}")
+    return code
 
 
 def stock_secid(value: object) -> str:
@@ -407,7 +420,8 @@ class EastMoneyDataCollector:
                 "pb": item.get("f23") if item.get("f23") not in (None, "-") else "",
                 "roe": item.get("f37") if item.get("f37") not in (None, "-") else "",
                 "market_cap": as_int(item.get("f20")),
-                "total_market_cap": as_int(item.get("f21")),
+                "total_market_cap": as_int(item.get("f20")),
+                "float_market_cap": as_int(item.get("f21")),
                 "volume_ratio": as_float(item.get("f10")),
                 "main_net_inflow": as_int(item.get("f62")),
                 "main_net_inflow_pct": as_float(item.get("f184")),
@@ -512,6 +526,31 @@ class EastMoneyDataCollector:
             "source": "tencent",
             "history": self._history_in_window(history, days),
         }
+
+    async def fetch_shanghai_index_history(self, days: int = 365) -> list[dict]:
+        """Fetch verified Shanghai Composite daily closes from Tencent."""
+        symbol = "sh000001"
+        params = {
+            "param": f"{symbol},day,,,{min(max(days + 20, 30), 800)},qfq",
+        }
+        data = await self.fetch_json(self.TENCENT_KLINE_URL, params, self.TENCENT_HEADERS)
+        payload = ((data.get("data") or {}).get(symbol) or {})
+        series = payload.get("qfqday") or payload.get("day") or []
+        history = []
+        for values in series:
+            if not isinstance(values, list) or len(values) < 3:
+                continue
+            try:
+                trade_date = date.fromisoformat(str(values[0] or "")[:10])
+            except ValueError:
+                continue
+            close_price = as_optional_float(values[2])
+            if close_price is not None:
+                history.append({"trade_date": trade_date.isoformat(), "close": close_price})
+        return [
+            {"date": item["trade_date"], "close": item["close"]}
+            for item in self._history_in_window(history, days)
+        ]
 
     async def fetch_stock_universe(self) -> list[dict]:
         page_size = self.MAX_LIST_PAGE_SIZE
@@ -618,28 +657,20 @@ class EastMoneyDataCollector:
         return f"sz{code}"
 
     async def fetch_market_breadth(self) -> dict:
-        result: dict[str, dict] = {}
-        for market_filter, name in (("m:1+t:2", "沪市"), ("m:0+t:6,m:0+t:80", "深市"), ("m:0+t:80", "创业板")):
-            params = {
-                "pn": "1", "pz": "1", "po": "0", "np": "1", "fltt": "2", "invt": "2", "fs": market_filter,
-                "fields": "f104,f105", "ut": EASTMONEY_UT,
-            }
-            try:
-                data = await self.fetch_json(self.BASE_URL, params)
-                row = ((data.get("data") or {}).get("diff") or [None])[0]
-                if not row:
-                    continue
-                up_count, down_count = as_int(row.get("f104")), as_int(row.get("f105"))
-                total = up_count + down_count
-                result[name] = {"up": up_count, "down": down_count, "total": total, "ratio": round(up_count / total * 100, 1) if total else 0}
-            except Exception as exc:
-                print(f"Error fetching market breadth for {name}: {type(exc).__name__}")
-        return result
+        """Return only verified market breadth data.
+
+        EastMoney's public stock-list endpoint exposes ``f104``/``f105`` for
+        boards, but returns zeroes for individual stock rows. Treating those
+        zeroes as the market advance/decline count created a false breadth
+        signal, so this remains explicitly unavailable until a source with an
+        all-market aggregate is configured.
+        """
+        return {}
 
     async def fetch_market_turnover(self) -> dict:
         url = "https://push2.eastmoney.com/api/qt/stock/get"
         params = {
-            "secid": "1.000001", "fields": "f43,f47,f48,f57,f58,f170,f171", "ut": EASTMONEY_UT,
+            "secid": "1.000001", "fields": "f43,f47,f48,f57,f58,f169,f170", "ut": EASTMONEY_UT,
         }
         try:
             data = await self.fetch_json(url, params)
@@ -651,8 +682,8 @@ class EastMoneyDataCollector:
             return {}
         return {
             "sh_index": round(as_float(row.get("f43")) / 100, 2),
-            "sh_change": round(as_float(row.get("f170")) / 100, 2),
-            "sh_change_pct": round(as_float(row.get("f171")) / 100, 2),
+            "sh_change": round(as_float(row.get("f169")) / 100, 2),
+            "sh_change_pct": round(as_float(row.get("f170")) / 100, 2),
             "sh_volume": as_int(row.get("f47")),
             "sh_amount": as_int(row.get("f48")),
             "data_date": shanghai_now().date().isoformat(),

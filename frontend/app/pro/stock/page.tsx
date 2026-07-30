@@ -129,9 +129,9 @@ export default function StockPage() {
                     <td className="px-4 py-3 text-right font-mono text-text-secondary">{Number(row.high).toFixed(2)}</td>
                     <td className="px-4 py-3 text-right font-mono text-text-secondary">{Number(row.low).toFixed(2)}</td>
                     <td className={`px-4 py-3 text-right font-mono ${Number(row.change_pct) >= 0 ? 'text-up' : 'text-down'}`}>
-                      {Number(row.change_pct) > 0 ? '+' : ''}{Number(row.change_pct).toFixed(2)}%
+                      {row.change_pct == null ? '--' : <>{Number(row.change_pct) > 0 ? '+' : ''}{Number(row.change_pct).toFixed(2)}%</>}
                     </td>
-                    <td className="px-4 py-3 text-right font-mono text-text-secondary">{formatYiShort(row.amount || 0)}</td>
+                    <td className="px-4 py-3 text-right font-mono text-text-secondary">{row.amount == null ? '--' : formatYiShort(row.amount)}</td>
                   </tr>
                 ))}
               </tbody>

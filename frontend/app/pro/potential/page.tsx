@@ -8,7 +8,7 @@ interface BoardInfo {
   code: string;
   name: string;
   category: string;
-  stock_count: number;
+  stock_count: number | null;
 }
 
 interface StockItem {
@@ -146,7 +146,7 @@ export default function PotentialStocksPage() {
                 onClick={() => { setSelectedBoard(b); setSearchTerm(''); }}
               >
                 {b.name}
-                <span className="ml-1 opacity-60">{b.stock_count}只</span>
+                <span className="ml-1 opacity-60">{b.stock_count == null ? '实时目录' : `${b.stock_count}只`}</span>
               </button>
             ))}
           </div>

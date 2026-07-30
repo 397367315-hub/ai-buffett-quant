@@ -246,43 +246,11 @@ class Benchmark:
 
     @staticmethod
     async def get_benchmark_data(days: int = 30) -> list[dict]:
-        """获取上证指数作为基准"""
+        """Fetch the Shanghai Composite benchmark without synthetic fallback."""
         from services.data_collector import collector
 
         try:
-            url = "https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get"
-            params = {
-                "lmt": str(days + 5),
-                "klt": "101",
-                "secid": "1.000001",
-                "fields1": "f1,f2,f3,f7",
-                "fields2": "f51,f52",
-            }
-            data = await collector.fetch_json(url, params)
-
-            if not data.get("data") or not data["data"].get("klines"):
-                return Benchmark._get_simulated_benchmark(days)
-
-            result = []
-            for line in data["data"]["klines"]:
-                parts = line.split(",")
-                if len(parts) >= 2:
-                    result.append({"date": parts[0], "close": float(parts[1]) if parts[1] != "-" else 0})
-            return result
-        except:
-            return Benchmark._get_simulated_benchmark(days)
-
-    @staticmethod
-    def _get_simulated_benchmark(days: int) -> list[dict]:
-        """模拟上证指数基准线"""
-        import random
-        today = date.today()
-        price = 3200
-        result = []
-        for i in range(days, -1, -1):
-            d = today - timedelta(days=i)
-            if d.weekday() >= 5:
-                continue
-            price += random.uniform(-30, 35)
-            result.append({"date": d.isoformat(), "close": round(price, 2)})
-        return result
+            return await collector.fetch_shanghai_index_history(days)
+        except Exception as exc:
+            print(f"Error fetching Shanghai Composite benchmark: {type(exc).__name__}")
+            return []

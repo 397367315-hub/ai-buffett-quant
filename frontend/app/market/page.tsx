@@ -30,8 +30,8 @@ interface MarketOverview {
     top_outflow: { name: string; outflow: number }[];
   };
   limit_board: {
-    limit_up: number;
-    limit_down: number;
+    limit_up: number | null;
+    limit_down: number | null;
   };
   hot_sectors: HotSector[];
 }
@@ -47,11 +47,11 @@ function generatePlainSummary(data: MarketOverview): string[] {
 
   if (shChange > 0.5) {
     sentences.push(
-      `上证指数今天上涨 ${shChange.toFixed(2)}%，显示市场整体处于偏强状态，大部分股票价格在上涨。通俗理解就是「今天多数公司都在涨价」。`
+      `上证指数今天上涨 ${shChange.toFixed(2)}%，大盘整体偏强。`
     );
   } else if (shChange < -0.5) {
     sentences.push(
-      `上证指数今天下跌 ${shChange.toFixed(2).replace('-', '−')}%，市场整体偏弱，多数股票价格在回落。通俗理解就是「今天多数公司都在降价」。`
+      `上证指数今天下跌 ${shChange.toFixed(2).replace('-', '−')}%，大盘整体偏弱。`
     );
   } else {
     sentences.push(
@@ -67,7 +67,7 @@ function generatePlainSummary(data: MarketOverview): string[] {
   const hotNames = data.hot_sectors.map((s) => s.name).slice(0, 2);
   if (hotNames.length > 0) {
     sentences.push(
-      `今天资金最活跃的板块是「${hotNames.join('」和「')}」，这些热门板块吸引了最多主力资金，值得持续关注，但要留意追高风险。`
+      `主力资金排名靠前的板块是「${hotNames.join('」和「')}」，可结合资金净流入和涨跌幅继续观察。`
     );
   }
 
@@ -259,13 +259,13 @@ export default function MarketOverviewPage() {
           </div>
           <div className="space-y-2">
             <div>
-              <div className="text-xs text-up mb-1 font-medium">🟢 资金流入</div>
+              <div className="text-xs text-text-secondary mb-1 font-medium">主力资金净额较高</div>
               <div className="space-y-1">
                 {fund_flow.top_inflow.length > 0 ? (
                   fund_flow.top_inflow.slice(0, 3).map((item) => (
                     <div key={item.name} className="flex items-center justify-between text-xs">
                       <span className="text-text truncate flex-1 mr-2">{item.name}</span>
-                      <span className="font-mono text-up shrink-0">{formatYi(item.inflow)}</span>
+                      <span className={`font-mono shrink-0 ${getChangeColor(item.inflow)}`}>{formatYi(item.inflow)}</span>
                     </div>
                   ))
                 ) : (
@@ -274,13 +274,13 @@ export default function MarketOverviewPage() {
               </div>
             </div>
             <div>
-              <div className="text-xs text-down mb-1 font-medium">🔴 资金流出</div>
+              <div className="text-xs text-text-secondary mb-1 font-medium">主力资金净额较低</div>
               <div className="space-y-1">
                 {fund_flow.top_outflow.length > 0 ? (
                   fund_flow.top_outflow.slice(0, 3).map((item) => (
                     <div key={item.name} className="flex items-center justify-between text-xs">
                       <span className="text-text truncate flex-1 mr-2">{item.name}</span>
-                      <span className="font-mono text-down shrink-0">{formatYi(item.outflow)}</span>
+                      <span className={`font-mono shrink-0 ${getChangeColor(item.outflow)}`}>{formatYi(item.outflow)}</span>
                     </div>
                   ))
                 ) : (
@@ -303,7 +303,7 @@ export default function MarketOverviewPage() {
             <div>
               <div className="text-xs text-up mb-1">涨停</div>
               <div className="text-2xl font-mono font-bold text-up">
-                {limit_board.limit_up.toLocaleString()}
+                {limit_board.limit_up == null ? '--' : limit_board.limit_up.toLocaleString()}
               </div>
               <div className="text-xs text-text-secondary mt-0.5">只</div>
             </div>
@@ -311,7 +311,7 @@ export default function MarketOverviewPage() {
             <div>
               <div className="text-xs text-down mb-1">跌停</div>
               <div className="text-2xl font-mono font-bold text-down">
-                {limit_board.limit_down.toLocaleString()}
+                {limit_board.limit_down == null ? '--' : limit_board.limit_down.toLocaleString()}
               </div>
               <div className="text-xs text-text-secondary mt-0.5">只</div>
             </div>

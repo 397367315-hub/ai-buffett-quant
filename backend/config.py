@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     data_proxy_base_url: str = ""
     data_proxy_token: str = ""
     data_proxy_timeout: float = 20.0
+    market_aggregate_timeout: float = 12.0
 
     # 登录账号配置
     admin_username: str = "admin"

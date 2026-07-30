@@ -1,11 +1,12 @@
 import json
 import random
+import asyncio
 from datetime import date, datetime, timedelta
 from typing import Optional
 from sqlalchemy import select, func, and_, desc
 from database import async_session
 from sim_models import SimAccount, SimPosition, SimTradeRecord, SimDailySummary
-from services.data_collector import collector
+from services.data_collector import EASTMONEY_UT, as_float, collector, normalize_stock_code, stock_secid
 from services.ai_service import ai_service
 from services.quant_scorer import enhanced_scorer, DynamicWeights
 from services.risk_analysis import StrategyProfile
@@ -82,14 +83,6 @@ class AITradingEngine:
             positions = result.scalars().all()
 
             for pos in positions:
-                stock_data = await collector.fetch_stock_fund_flow(pos.stock_code)
-                if stock_data and len(stock_data) > 0:
-                    latest = stock_data[-1]
-                    flow_amount = latest.get("main_net_inflow", 0)
-                else:
-                    flow_amount = 0
-
-                # Get current price from market data
                 price_data = await self._fetch_stock_price(pos.stock_code)
                 if price_data:
                     pos.current_price = price_data["price"]
@@ -101,45 +94,40 @@ class AITradingEngine:
             await session.commit()
 
     async def _fetch_stock_price(self, stock_code: str) -> Optional[dict]:
-        """获取单只股票的当前价格 - 使用已验证可用的 clist API"""
+        """Fetch a validated stock quote from EastMoney's stock endpoint."""
         try:
-            # 使用 clist 接口按股票代码查询
-            url = "https://push2.eastmoney.com/api/qt/clist/get"
+            code = normalize_stock_code(stock_code)
+            url = "https://push2.eastmoney.com/api/qt/stock/get"
             params = {
-                "pn": "1", "pz": "1", "po": "0", "np": "1",
-                "fltt": "2", "invt": "2", "fid": "f3",
-                "fs": f"b:{stock_code}",
-                "fields": "f2,f3,f4,f5,f8,f9,f10,f12,f14,f20,f23,f43,f44,f45,f47,f48,f50,f57,f58,f170",
-                "ut": "b2884a393a59ad6402e4dd90d24e112f",
+                "secid": stock_secid(code),
+                "fields": "f43,f44,f45,f47,f48,f57,f58,f169,f170",
+                "ut": EASTMONEY_UT,
             }
             data = await collector.fetch_json(url, params)
-
-            if data.get("data") and data["data"].get("diff"):
-                d = data["data"]["diff"][0]
-                return {
-                    "price": d.get("f2", 0) or d.get("f43", 0),
-                    "change_pct": d.get("f3", 0) or d.get("f170", 0),
-                    "high": d.get("f15", 0) or d.get("f44", 0),
-                    "low": d.get("f16", 0) or d.get("f45", 0),
-                    "volume": d.get("f5", 0) or d.get("f47", 0),
-                    "amount": d.get("f6", 0) or d.get("f48", 0),
-                }
+            row = data.get("data") or {}
+            price = as_float(row.get("f43")) / 100
+            if price <= 0:
+                return None
+            return {
+                "price": price,
+                "change_pct": as_float(row.get("f170")) / 100,
+                "high": as_float(row.get("f44")) / 100,
+                "low": as_float(row.get("f45")) / 100,
+                "volume": int(as_float(row.get("f47"))),
+                "amount": int(as_float(row.get("f48"))),
+            }
         except Exception as e:
             print(f"Error fetching price for {stock_code}: {e}")
         return None
 
     async def get_market_data_for_ai(self) -> dict:
-        """收集市场数据供AI分析，无实时数据时使用模拟数据"""
-        concepts = await collector.fetch_concept_flow(page_size=30)
-        technical = await collector.fetch_technical_screener({
-            "min_change": 2, "max_pe": 100, "min_turnover": 3,
-        })
-        limit_ups = await collector.fetch_limit_up_stocks()
-        market_info = await collector.fetch_market_turnover()
-
-        # 如果实时数据为空，使用模拟数据
-        if not concepts or not technical.get("stocks"):
-            return self._get_simulated_market_data()
+        """Collect only source-backed market data for AI decisions."""
+        concepts, technical, limit_ups, market_info = await asyncio.gather(
+            collector.fetch_concept_flow(page_size=30),
+            collector.fetch_technical_screener({"min_change": 2, "max_pe": 100, "min_turnover": 3}),
+            collector.fetch_limit_up_stocks(),
+            collector.fetch_market_turnover(),
+        )
 
         # 构建简洁的市场数据摘要
         top_concepts = []
@@ -184,6 +172,7 @@ class AITradingEngine:
                 })
 
         return {
+            "available": bool(concepts and technical.get("stocks") and market_info),
             "market_index": market_info,
             "hot_concepts": top_concepts,
             "candidate_stocks": candidate_stocks,
@@ -194,6 +183,13 @@ class AITradingEngine:
     async def get_ai_trading_decision(self) -> dict:
         """AI分析市场数据，输出交易决策"""
         market_data = await self.get_market_data_for_ai()
+        if not market_data.get("available"):
+            return {
+                "available": False,
+                "market_analysis": "实时市场数据暂不可用，本次不生成交易建议。",
+                "trades": [],
+                "risk_warning": "行情源未确认可用，系统不会以模拟价格执行交易。",
+            }
 
         prompt = f"""以下是今日A股市场数据，请根据交易策略选出5只最适合交易的股票。
 
@@ -224,43 +220,7 @@ class AITradingEngine:
         except Exception as e:
             print(f"AI trading decision failed: {e}")
 
-        return {"market_analysis": "AI分析失败，使用默认策略", "trades": [], "risk_warning": ""}
-
-    def _get_simulated_market_data(self) -> dict:
-        """非交易时段使用模拟数据，价格贴近真实市场。交易时段API正常后会自动使用实时数据"""
-
-        simulated_stocks = [
-            {"code": "600519", "name": "贵州茅台", "price": 1440.00, "change_pct": 0.8, "turnover": 0.5, "pe": 25.0, "volume_ratio": 1.0, "main_inflow_yi": 2, "roe": 32.5},
-            {"code": "000858", "name": "五粮液", "price": 125.00, "change_pct": 1.5, "turnover": 2.8, "pe": 15.5, "volume_ratio": 1.3, "main_inflow_yi": 3, "roe": 25.1},
-            {"code": "300750", "name": "宁德时代", "price": 190.00, "change_pct": -0.3, "turnover": 1.8, "pe": 20.0, "volume_ratio": 0.9, "main_inflow_yi": -1, "roe": 18.9},
-            {"code": "002594", "name": "比亚迪", "price": 250.00, "change_pct": 2.5, "turnover": 3.5, "pe": 30.0, "volume_ratio": 1.8, "main_inflow_yi": 5, "roe": 15.2},
-            {"code": "300308", "name": "中际旭创", "price": 110.00, "change_pct": 4.5, "turnover": 6.0, "pe": 38.0, "volume_ratio": 2.5, "main_inflow_yi": 8, "roe": 12.8},
-            {"code": "002371", "name": "北方华创", "price": 320.00, "change_pct": 3.0, "turnover": 4.5, "pe": 45.0, "volume_ratio": 2.0, "main_inflow_yi": 6, "roe": 22.3},
-            {"code": "688981", "name": "中芯国际", "price": 45.00, "change_pct": -1.0, "turnover": 1.2, "pe": 75.0, "volume_ratio": 0.8, "main_inflow_yi": -3, "roe": 2.1},
-            {"code": "603501", "name": "韦尔股份", "price": 95.00, "change_pct": 5.0, "turnover": 7.0, "pe": 35.0, "volume_ratio": 3.0, "main_inflow_yi": 10, "roe": 8.5},
-            {"code": "601012", "name": "隆基绿能", "price": 15.50, "change_pct": 1.2, "turnover": 2.5, "pe": 10.5, "volume_ratio": 1.2, "main_inflow_yi": 1, "roe": 20.3},
-            {"code": "002230", "name": "科大讯飞", "price": 40.50, "change_pct": 6.0, "turnover": 8.0, "pe": 55.0, "volume_ratio": 3.5, "main_inflow_yi": 12, "roe": 5.6},
-            {"code": "600030", "name": "中信证券", "price": 19.00, "change_pct": -0.5, "turnover": 1.0, "pe": 14.0, "volume_ratio": 0.7, "main_inflow_yi": -1, "roe": 8.2},
-            {"code": "688256", "name": "寒武纪", "price": 220.00, "change_pct": 7.0, "turnover": 12.0, "pe": -1, "volume_ratio": 4.5, "main_inflow_yi": 15, "roe": 0},
-            {"code": "300760", "name": "迈瑞医疗", "price": 260.00, "change_pct": 1.5, "turnover": 2.0, "pe": 28.0, "volume_ratio": 1.1, "main_inflow_yi": 3, "roe": 35.8},
-            {"code": "000001", "name": "平安银行", "price": 10.50, "change_pct": 0.3, "turnover": 0.8, "pe": 5.0, "volume_ratio": 0.9, "main_inflow_yi": 0.5, "roe": 12.1},
-            {"code": "600809", "name": "山西汾酒", "price": 200.00, "change_pct": 2.5, "turnover": 3.0, "pe": 22.0, "volume_ratio": 1.5, "main_inflow_yi": 4, "roe": 38.2},
-        ]
-
-        return {
-            "market_index": {"sh_index": 3250.50, "sh_change_pct": 0.85},
-            "hot_concepts": [
-                {"name": "人工智能", "change_pct": 3.2, "main_inflow_yi": 45, "leading_stock": "科大讯飞"},
-                {"name": "半导体", "change_pct": 2.8, "main_inflow_yi": 32, "leading_stock": "北方华创"},
-                {"name": "白酒", "change_pct": 1.5, "main_inflow_yi": 18, "leading_stock": "五粮液"},
-                {"name": "新能源", "change_pct": 0.8, "main_inflow_yi": 12, "leading_stock": "比亚迪"},
-                {"name": "券商", "change_pct": -0.3, "main_inflow_yi": -8, "leading_stock": "中信证券"},
-            ],
-            "candidate_stocks": simulated_stocks,
-            "current_positions": [],
-            "limit_up_count": 45,
-            "simulated": True,
-        }
+        return {"available": False, "market_analysis": "AI分析失败，本次不执行交易。", "trades": [], "risk_warning": ""}
 
     async def execute_daily_trading(self, dry_run: bool = False) -> dict:
         """执行每日自动交易"""
@@ -276,6 +236,15 @@ class AITradingEngine:
 
         # AI决策
         decision = await self.get_ai_trading_decision()
+        if not decision.get("available", True):
+            return {
+                "status": "unavailable",
+                "date": today.isoformat(),
+                "market_analysis": decision.get("market_analysis", ""),
+                "risk_warning": decision.get("risk_warning", ""),
+                "trades": [],
+                "total_buy_amount": 0,
+            }
         trades_executed = []
         total_buy_amount = 0
 

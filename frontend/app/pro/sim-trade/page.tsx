@@ -113,8 +113,8 @@ export default function SimTradePage() {
       </div>
 
       {execResult && (
-        <div className="bg-[#26A69A22] border border-[#26A69A44] rounded-lg p-3 mb-4 text-sm text-up">
-          ✅ 三策略交易执行完成
+        <div className={`${execResult.status === 'unavailable' ? 'bg-[#D2992222] border-[#D2992244] text-warn' : 'bg-[#26A69A22] border-[#26A69A44] text-up'} border rounded-lg p-3 mb-4 text-sm`}>
+          {execResult.status === 'unavailable' ? '实时数据暂不可用，本次未执行交易' : '三策略交易执行完成'}
         </div>
       )}
 

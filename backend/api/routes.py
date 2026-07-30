@@ -44,6 +44,17 @@ def _market_metadata(*, available: bool, data_date: str | None, is_realtime: boo
     }
 
 
+async def _fetch_market_component(name: str, awaitable, fallback):
+    """Keep one blocked overseas upstream from delaying an aggregate page."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout=settings.market_aggregate_timeout)
+    except asyncio.TimeoutError:
+        print(f"Market component timed out: {name}")
+    except Exception as exc:
+        print(f"Market component failed: {name}: {type(exc).__name__}")
+    return fallback
+
+
 def _flow_ranking(item: dict, rank: int) -> dict:
     return {
         "rank": rank,
@@ -232,7 +243,7 @@ async def get_limit_up():
     for d in data:
         sector = d.get("sector", "其他") or "其他"
         stats["by_sector"][sector] = stats["by_sector"].get(sector, 0) + 1
-    return {"code": 0, "data": {"stocks": data, "stats": stats, **_market_metadata(available=bool(data), data_date=pool["trade_date"], is_realtime=True)}}
+    return {"code": 0, "data": {"stocks": data, "stats": stats, **_market_metadata(available=pool["trade_date"] is not None, data_date=pool["trade_date"], is_realtime=True)}}
 
 
 @router.get("/flow/limit-down")
@@ -247,7 +258,7 @@ async def get_limit_down():
     for d in data:
         sector = d.get("sector", "其他") or "其他"
         stats["by_sector"][sector] = stats["by_sector"].get(sector, 0) + 1
-    return {"code": 0, "data": {"stocks": data, "stats": stats, **_market_metadata(available=bool(data), data_date=pool["trade_date"], is_realtime=True)}}
+    return {"code": 0, "data": {"stocks": data, "stats": stats, **_market_metadata(available=pool["trade_date"] is not None, data_date=pool["trade_date"], is_realtime=True)}}
 
 
 # ── 美联储利率分析接口 ──
@@ -395,20 +406,48 @@ async def get_board_stocks(
 
 @router.get("/board/list")
 async def get_board_list():
-    """获取所有可查询的概念板块列表"""
+    """获取所有可查询的概念板块列表。"""
     async with async_session() as session:
-        stmt = select(ConceptBoard).order_by(ConceptBoard.code)
-        result = await session.execute(stmt)
-        rows = result.scalars().all()
+        legacy_rows = (await session.execute(
+            select(ConceptBoard).order_by(ConceptBoard.code)
+        )).scalars().all()
+        cached_rows = (await session.execute(
+            select(MarketBoard).where(MarketBoard.board_type == "concept").order_by(MarketBoard.code)
+        )).scalars().all()
 
-    live_counts = await asyncio.gather(
-        *(collector.fetch_board_stocks(row.code, page_size=1) for row in rows),
-        return_exceptions=True,
-    )
-    boards = []
-    for row, live in zip(rows, live_counts):
-        total = live.get("total") if isinstance(live, dict) else None
-        boards.append({"code": row.code, "name": row.name, "category": row.category, "stock_count": total})
+    legacy_by_code = {row.code: row for row in legacy_rows}
+    try:
+        live_rows = await _fetch_market_component(
+            "board-directory", collector.fetch_all_concept_flow(), []
+        )
+    except Exception:
+        live_rows = []
+
+    if live_rows:
+        boards = [
+            {
+                "code": row["code"],
+                "name": row["name"],
+                "category": (legacy_by_code.get(row["code"]).category if row["code"] in legacy_by_code else "实时概念"),
+                # A separate component request per board is both slow and can
+                # overload the market source. Keep an unknown count explicit.
+                "stock_count": None,
+            }
+            for row in live_rows
+            if row.get("code") and row.get("name")
+        ]
+    else:
+        cached_by_code = {row.code: row for row in cached_rows}
+        codes = sorted(set(cached_by_code) | set(legacy_by_code))
+        boards = [
+            {
+                "code": code,
+                "name": cached_by_code[code].name if code in cached_by_code else legacy_by_code[code].name,
+                "category": legacy_by_code[code].category if code in legacy_by_code else "实时概念",
+                "stock_count": None,
+            }
+            for code in codes
+        ]
     return {"code": 0, "data": boards}
 
 
@@ -527,11 +566,11 @@ async def get_north_daily(days: int = Query(10, ge=1, le=60)):
 async def get_market_sentiment():
     """市场情绪综合仪表盘"""
     breadth, turnover, concept, limit_up, limit_down = await asyncio.gather(
-        collector.fetch_market_breadth(),
-        collector.fetch_market_turnover(),
-        collector.fetch_concept_flow(page_size=20),
-        collector.fetch_limit_up_pool(),
-        collector.fetch_limit_down_pool(),
+        _fetch_market_component("breadth", collector.fetch_market_breadth(), {}),
+        _fetch_market_component("turnover", collector.fetch_market_turnover(), {}),
+        _fetch_market_component("concept-flow", collector.fetch_concept_flow(page_size=20), []),
+        _fetch_market_component("limit-up", collector.fetch_limit_up_pool(), {"stocks": [], "total": 0, "trade_date": None}),
+        _fetch_market_component("limit-down", collector.fetch_limit_down_pool(), {"stocks": [], "total": 0, "trade_date": None}),
     )
     available = bool(breadth or turnover or concept)
     score = 50
@@ -572,6 +611,9 @@ async def get_market_sentiment():
         "极度乐观" if score >= 75 else "偏乐观" if score >= 60 else "中性" if score >= 45 else "偏悲观" if score >= 30 else "极度悲观"
     )
 
+    main_flow_trend = None if not concept else (
+        "流入" if total_inflow > 0 else "流出" if total_inflow < 0 else "平衡"
+    )
     return {
         "code": 0,
         "data": {
@@ -581,7 +623,7 @@ async def get_market_sentiment():
             "breadth": breadth,
             "turnover": turnover,
             "limit_counts": {"up": up_count, "down": down_count},
-            "main_flow_trend": "流入" if total_inflow > 0 else "流出" if total_inflow < 0 else "平衡",
+            "main_flow_trend": main_flow_trend,
             "main_flow_amount": total_inflow,
             **_market_metadata(available=available, data_date=shanghai_now().date().isoformat() if available else None, is_realtime=True),
         },
@@ -643,16 +685,35 @@ async def get_technical_screener(
 @router.get("/market/overview")
 async def get_market_overview():
     """今日速览：聚合所有看板的核心数据（小白友好首页）"""
-    north, concept, limit_up, limit_down, breadth, turnover, rotation = await asyncio.gather(
-        collector.fetch_north_bound_daily(days=5), collector.fetch_concept_flow(page_size=20),
-        collector.fetch_limit_up_pool(), collector.fetch_limit_down_pool(), collector.fetch_market_breadth(),
-        collector.fetch_market_turnover(), collector.fetch_sector_rotation(),
+    north, concept_inflow, concept_outflow, limit_up, limit_down, breadth, turnover = await asyncio.gather(
+        _fetch_market_component("northbound", collector.fetch_north_bound_daily(days=5), []),
+        _fetch_market_component("concept-inflow", collector.fetch_concept_flow(page_size=20), []),
+        _fetch_market_component("concept-outflow", collector.fetch_concept_flow(sort_order=1, page_size=20), []),
+        _fetch_market_component("limit-up", collector.fetch_limit_up_pool(), {"stocks": [], "total": 0, "trade_date": None}),
+        _fetch_market_component("limit-down", collector.fetch_limit_down_pool(), {"stocks": [], "total": 0, "trade_date": None}),
+        _fetch_market_component("breadth", collector.fetch_market_breadth(), {}),
+        _fetch_market_component("turnover", collector.fetch_market_turnover(), {}),
     )
-    top_inflow = sorted(concept, key=lambda row: as_int(row.get("main_net_inflow")), reverse=True)[:3]
-    top_outflow = sorted(concept, key=lambda row: as_int(row.get("main_net_inflow")))[:3]
+    top_inflow = sorted(concept_inflow, key=lambda row: as_int(row.get("main_net_inflow")), reverse=True)[:3]
+    top_outflow = sorted(concept_outflow, key=lambda row: as_int(row.get("main_net_inflow")))[:3]
     latest_north = north[-1] if north else {}
-    hot_sectors = rotation.get("hot_inflow", [])[:3]
-    available = bool(turnover or concept or breadth)
+    hot_sectors = [
+        {
+            "code": row.get("code", ""),
+            "name": row.get("name", ""),
+            "change_pct": as_float(row.get("change_pct")),
+            "main_net_inflow": as_int(row.get("main_net_inflow")),
+            "super_large_inflow": as_int(row.get("super_large_net_inflow")),
+            "large_inflow": as_int(row.get("large_net_inflow")),
+            "up_count": as_int(row.get("up_count")),
+            "down_count": as_int(row.get("down_count")),
+        }
+        for row in top_inflow
+    ]
+    limit_up_available = limit_up.get("trade_date") is not None
+    limit_down_available = limit_down.get("trade_date") is not None
+    available = bool(turnover or concept_inflow or concept_outflow or breadth or limit_up_available or limit_down_available)
+    data_date = turnover.get("data_date") or latest_north.get("date")
 
     return {
         "code": 0,
@@ -669,12 +730,21 @@ async def get_market_overview():
                 "top_outflow": [{"name": row["name"], "outflow": as_int(row.get("main_net_inflow"))} for row in top_outflow],
             },
             "limit_board": {
-                "limit_up": limit_up["total"],
-                "limit_down": limit_down["total"],
+                "limit_up": limit_up["total"] if limit_up_available else None,
+                "limit_down": limit_down["total"] if limit_down_available else None,
             },
             "market_breadth": breadth,
             "hot_sectors": hot_sectors,
-            **_market_metadata(available=available, data_date=shanghai_now().date().isoformat() if available else None, is_realtime=True),
+            "source_status": {
+                "northbound": bool(north),
+                "concept_inflow": bool(concept_inflow),
+                "concept_outflow": bool(concept_outflow),
+                "limit_up": limit_up_available,
+                "limit_down": limit_down_available,
+                "market_breadth": bool(breadth),
+                "market_turnover": bool(turnover),
+            },
+            **_market_metadata(available=available, data_date=data_date if available else None, is_realtime=True),
         },
     }
 
@@ -1357,11 +1427,6 @@ async def get_quant_score_board():
     tech_data = await collector.fetch_technical_screener({"min_change": 1, "max_pe": 200, "min_turnover": 1})
     stocks = tech_data.get("stocks", [])
 
-    if not stocks:
-        from services.trading_engine import trading_engine
-        sim_data = trading_engine._get_simulated_market_data()
-        stocks = sim_data.get("candidate_stocks", [])
-
     concepts = await collector.fetch_concept_flow(page_size=30)
     sector_map = {}
     for c in (concepts or []):
@@ -1394,7 +1459,7 @@ async def get_quant_score_board():
             "turnover": s.get("turnover", ""),
             "pe": s.get("pe", ""),
             "volume_ratio": s.get("volume_ratio", ""),
-            "main_inflow_yi": s.get("main_inflow_yi", 0),
+            "main_inflow_yi": round(as_int(s.get("main_net_inflow")) / 1e8, 2),
             "quant_score": score["composite_score"],
             "grade": score["grade"],
             "grade_label": score["grade_label"],
@@ -1426,6 +1491,7 @@ async def get_quant_score_board():
     return {
         "code": 0,
         "data": {
+            "available": bool(stocks),
             "stocks": scored,
             "regime": regime_info,
             "weights": {k: f"{v*100:.0f}%" for k, v in weights.items()},
