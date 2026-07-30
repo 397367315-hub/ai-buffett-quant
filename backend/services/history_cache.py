@@ -100,7 +100,7 @@ class HistoryCacheService:
         for attempt in range(self._DATABASE_OPERATION_ATTEMPTS):
             try:
                 return await operation()
-            except DBAPIError:
+            except (DBAPIError, OSError):
                 if attempt + 1 >= self._DATABASE_OPERATION_ATTEMPTS:
                     raise
                 await engine.dispose()

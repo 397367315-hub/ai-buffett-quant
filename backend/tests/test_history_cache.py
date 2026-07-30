@@ -1,4 +1,5 @@
 import asyncio
+import socket
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -71,6 +72,25 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
             attempts += 1
             if attempts == 1:
                 raise OperationalError("SELECT 1", {}, ConnectionRefusedError())
+            return "written"
+
+        with patch.object(type(engine), "dispose", new_callable=AsyncMock) as dispose:
+            with patch("services.history_cache.asyncio.sleep", new_callable=AsyncMock):
+                result = await service._with_database_retry(flaky_operation)
+
+        self.assertEqual(result, "written")
+        self.assertEqual(attempts, 2)
+        dispose.assert_awaited_once()
+
+    async def test_backfill_database_operation_retries_a_dns_failure(self):
+        service = HistoryCacheService()
+        attempts = 0
+
+        async def flaky_operation():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise socket.gaierror(-2, "Name or service not known")
             return "written"
 
         with patch.object(type(engine), "dispose", new_callable=AsyncMock) as dispose:
