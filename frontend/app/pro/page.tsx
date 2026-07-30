@@ -63,7 +63,10 @@ export default function ProDashboard() {
       }));
       setConceptData(mapped);
       setHasData(rankings.length > 0);
-      setSummary({ total_main_inflow: mapped.reduce((s: number, i: any) => s + i.main_net_inflow, 0) });
+      setSummary({
+        total_main_inflow: mapped.reduce((s: number, i: any) => s + i.main_net_inflow, 0),
+        rankings_are_complete: res.data.rankings_are_complete !== false,
+      });
     } catch (err) {
       console.error('Failed to fetch by date:', err);
     } finally {
@@ -161,6 +164,7 @@ export default function ProDashboard() {
   const top5 = sorted.slice(0, 5);
   const bottom5 = sorted.slice(-5).reverse();
   const hasOutflow = bottom5.some(item => item.main_net_inflow < 0);
+  const totalLabel = summary?.rankings_are_complete === false ? '展示板块净额' : '资金净额';
 
   if (loading) {
     return (
@@ -279,7 +283,7 @@ export default function ProDashboard() {
       {/* 大盘概览卡片 */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <div className="bg-card border border-border rounded-lg p-4">
-          <div className="text-xs text-text-secondary mb-1">资金净额</div>
+          <div className="text-xs text-text-secondary mb-1">{totalLabel}</div>
           <div className={`text-xl font-mono font-bold ${getChangeColor(totalInflow)}`}>
             {formatYi(totalInflow)}
           </div>

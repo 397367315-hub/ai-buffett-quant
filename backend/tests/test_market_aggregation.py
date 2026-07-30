@@ -41,20 +41,28 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["data"]["fund_flow"]["top_outflow"][0]["name"], "低净额")
         self.assertEqual(response["data"]["limit_board"], {"limit_up": 0, "limit_down": 2})
 
-    async def test_concept_summary_uses_the_full_directory_for_true_outflows(self):
-        rows = [
+    async def test_concept_summary_combines_true_inflow_and_outflow_rankings(self):
+        inflow_rows = [
             {"code": "BK0001", "name": "净流入", "main_net_inflow": 30},
-            {"code": "BK0002", "name": "净流出", "main_net_inflow": -40},
             {"code": "BK0003", "name": "小流入", "main_net_inflow": 10},
         ]
+        outflow_rows = [{"code": "BK0002", "name": "净流出", "main_net_inflow": -40}]
+        requested_orders = []
 
-        with patch.object(routes.collector, "fetch_all_concept_flow", new=AsyncMock(return_value=rows)):
+        async def fetch_concept_flow(*, sort_order=0, **kwargs):
+            del kwargs
+            requested_orders.append(sort_order)
+            return inflow_rows if sort_order == 0 else outflow_rows
+
+        with patch.object(routes.collector, "fetch_concept_flow", new=fetch_concept_flow):
             response = await routes.get_concept_summary(range="today", board_code=None)
 
         rankings = response["data"]["rankings"]
         self.assertEqual([row["name"] for row in rankings], ["净流入", "小流入", "净流出"])
         self.assertEqual(response["data"]["summary"]["total_main_inflow"], 0)
         self.assertEqual(response["data"]["summary"]["outflow_board_count"], 1)
+        self.assertFalse(response["data"]["summary"]["rankings_are_complete"])
+        self.assertEqual(set(requested_orders), {0, 1})
 
 
 if __name__ == "__main__":

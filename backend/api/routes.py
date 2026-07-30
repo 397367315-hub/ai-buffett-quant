@@ -75,6 +75,21 @@ def _flow_ranking(item: dict, rank: int) -> dict:
     }
 
 
+async def _realtime_concept_extremes(limit: int = 50) -> list[dict]:
+    """Fetch verified high and low fund-flow rankings without a full directory scan."""
+    inflows, outflows = await asyncio.gather(
+        collector.fetch_concept_flow(sort_order=0, page_size=limit),
+        collector.fetch_concept_flow(sort_order=1, page_size=limit),
+    )
+    by_code = {
+        str(item.get("code")): item
+        for item in [*inflows, *outflows]
+        if item.get("code")
+    }
+    ordered = sorted(by_code.values(), key=lambda item: as_int(item.get("main_net_inflow")), reverse=True)
+    return [_flow_ranking(item, index + 1) for index, item in enumerate(ordered)]
+
+
 async def _concept_history_rankings(
     target_date: date,
     limit: int | None = None,
@@ -869,17 +884,11 @@ async def get_concept_by_date(
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
     if d == shanghai_now().date():
-        try:
-            realtime = await collector.fetch_all_concept_flow()
-        except Exception as exc:
-            print(f"Error fetching complete concept flow: {type(exc).__name__}")
-            realtime = []
-        ordered = sorted(realtime, key=lambda item: as_int(item.get("main_net_inflow")), reverse=True)
-        rankings = [_flow_ranking(item, index + 1) for index, item in enumerate(ordered)]
-        return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=True)}}
+        rankings = await _realtime_concept_extremes()
+        return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, "rankings_are_complete": False, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=True)}}
 
     rankings = await _concept_history_rankings(d)
-    return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=False, source="cache")}}
+    return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, "rankings_are_complete": True, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=False, source="cache")}}
 
 
 @router.get("/flow/concept/summary")
@@ -907,14 +916,8 @@ async def get_concept_summary(
 
     # 今日只读取实时行情；其余范围只读取已经验证并入库的数据。
     if range == "today":
-        try:
-            rt_data = await collector.fetch_all_concept_flow()
-        except Exception as exc:
-            print(f"Error fetching complete concept flow: {type(exc).__name__}")
-            rt_data = []
-        if rt_data:
-            ordered = sorted(rt_data, key=lambda item: as_int(item.get("main_net_inflow")), reverse=True)
-            result = [_flow_ranking(item, index + 1) for index, item in enumerate(ordered)]
+        result = await _realtime_concept_extremes()
+        if result:
             total = sum(r["main_net_inflow"] for r in result)
             return {
                 "code": 0,
@@ -927,6 +930,8 @@ async def get_concept_summary(
                         "avg_change_pct": sum(r["change_pct"] for r in result) / len(result) if result else 0,
                         "inflow_board_count": sum(r["main_net_inflow"] > 0 for r in result),
                         "outflow_board_count": sum(r["main_net_inflow"] < 0 for r in result),
+                        "shown_board_count": len(result),
+                        "rankings_are_complete": False,
                     },
                     "has_data": True,
                     **_market_metadata(available=True, data_date=today.isoformat(), is_realtime=True),
@@ -990,6 +995,7 @@ async def get_concept_summary(
             "summary": {
                 "total_main_inflow": total_inflow,
                 "board_count": len(rankings),
+                "rankings_are_complete": True,
             },
             "has_data": len(rows) > 0,
             **_market_metadata(available=bool(rows), data_date=end.isoformat() if rows else None, is_realtime=False, source="cache"),
