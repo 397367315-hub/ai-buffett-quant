@@ -922,14 +922,14 @@ async def get_concept_by_date(
             "leading_stock": row.leading_stock,
         })
 
-    # 补全板块名称
-    async with async_session() as session:
-        codes = [r["code"] for r in rankings]
-        cb_stmt = select(ConceptBoard).where(ConceptBoard.code.in_(codes))
-        cb_result = await session.execute(cb_stmt)
-        name_map = {cb.code: cb.name for cb in cb_result.scalars().all()}
-    for r in rankings:
-        r["name"] = name_map.get(r["code"], r["code"])
+        # 补全板块名称
+        async with async_session() as session:
+            codes = [r["code"] for r in rankings]
+            cb_stmt = select(ConceptBoard).where(ConceptBoard.code.in_(codes))
+            cb_result = await session.execute(cb_stmt)
+            name_map = {cb.code: cb.name for cb in cb_result.scalars().all()}
+        for r in rankings:
+            r["name"] = name_map.get(r["code"]) or r.get("name", "") or r["code"]
 
     return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, "source": "database"}}
 
@@ -1325,7 +1325,44 @@ async def sync_local_data(request: dict):
 @router.post("/data/push")
 async def push_local_data(request: dict):
     """接收本地脚本推送的数据（同sync-local，别名）"""
-    return await sync_local_data(request)
+    stocks = request.get("stocks", [])
+    if not stocks:
+        return {"code": 400, "message": "无数据"}
+
+    today = date.today()
+    count = 0
+    async with async_session() as session:
+        for item in stocks:
+            code = item.get("code", "")
+            name = item.get("name", "")
+            try:
+                # 确保ConceptBoard有对应记录（名称查找用）
+                existing = await session.execute(
+                    select(ConceptBoard).where(ConceptBoard.code == code)
+                )
+                if not existing.scalar_one_or_none() and name:
+                    session.add(ConceptBoard(code=code, name=name, category="行业板块"))
+                    await session.flush()
+
+                record = ConceptFundFlowDaily(
+                    board_code=code,
+                    trade_date=today,
+                    close_price=float(item.get("close_price", 0) or 0),
+                    change_pct=float(item.get("change_pct", 0) or 0),
+                    main_net_inflow=int(float(item.get("main_net_inflow", 0) or 0)),
+                    super_large_net_inflow=0, large_net_inflow=0,
+                    medium_net_inflow=0, small_net_inflow=0,
+                    up_count=int(float(item.get("up_count", 0) or 0)),
+                    down_count=0,
+                    leading_stock=item.get("leading_stock", ""),
+                )
+                session.add(record)
+                count += 1
+            except Exception as e:
+                print(f"Error saving {name}: {e}")
+        await session.commit()
+
+    return {"code": 0, "data": {"status": "success", "count": count, "date": today.isoformat()}}
 
 
 # ── AI模拟炒股接口 ──
