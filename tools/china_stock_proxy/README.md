@@ -49,7 +49,10 @@ DATA_PROXY_TIMEOUT=20
 
 代理只允许访问：
 
+- `data.eastmoney.com`
 - `push2.eastmoney.com`
 - `datacenter.eastmoney.com`
 
+板块资金排行请求（`m:90`）会自动转到东方财富网页端可用的
+`/dataapi/bkzj/getbkzj` 接口，避免 `push2` 在海外节点返回 502。
 如果后续新增数据源，需要先在 `main.py` 的 `ALLOWED_HOSTS` 中显式加入域名。

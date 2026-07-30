@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import secrets
 import time
 from urllib.parse import urlparse
@@ -10,21 +11,17 @@ from pydantic import BaseModel, Field
 
 
 ALLOWED_HOSTS = {
+    "data.eastmoney.com",
     "push2.eastmoney.com",
     "datacenter.eastmoney.com",
 }
 
-UPSTREAM_HEALTH_URL = "https://push2.eastmoney.com/api/qt/clist/get"
+SECTOR_FLOW_PATH = "/api/qt/clist/get"
+SECTOR_FLOW_FALLBACK_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
+UPSTREAM_HEALTH_URL = SECTOR_FLOW_FALLBACK_URL
 UPSTREAM_HEALTH_PARAMS = {
-    "pn": "1",
-    "pz": "1",
-    "po": "0",
-    "np": "1",
-    "fid": "f62",
-    "fs": "m:90+t3",
-    "fields": "f12,f14,f62",
-    "fltt": "2",
-    "ut": "b2884a393a59ad6402e4dd90d24e112f",
+    "key": "f62",
+    "code": "m:90+t3",
 }
 
 logger = logging.getLogger(__name__)
@@ -69,6 +66,31 @@ async def _get_upstream_json(url: str, params: dict, headers: dict) -> dict:
         return resp.json()
 
 
+def _sector_flow_fallback_params(params: dict) -> dict | None:
+    """Translate push2 sector filters to the public data-center endpoint."""
+    fs = str(params.get("fs", "")).replace(" ", "+")
+    if not re.fullmatch(r"m:90(?:\+| )(?:t|s):?\d+", fs):
+        return None
+
+    key = str(params.get("fid0") or params.get("fid") or "f62")
+    if not re.fullmatch(r"f\d+", key):
+        key = "f62"
+    return {"key": key, "code": fs}
+
+
+async def _fetch_market_request(url: str, params: dict, headers: dict) -> dict:
+    parsed = urlparse(url)
+    if parsed.hostname == "push2.eastmoney.com" and parsed.path == SECTOR_FLOW_PATH:
+        fallback_params = _sector_flow_fallback_params(params)
+        if fallback_params:
+            return await _get_upstream_json(
+                SECTOR_FLOW_FALLBACK_URL,
+                fallback_params,
+                headers,
+            )
+    return await _get_upstream_json(url, params, headers)
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -92,7 +114,7 @@ async def upstream_health():
             raise RuntimeError("Upstream returned no records")
         return {
             "status": "ok",
-            "upstream": "eastmoney",
+            "upstream": "eastmoney-data-api",
             "records": len(records),
             "latency_ms": round((time.monotonic() - started_at) * 1000),
         }
@@ -119,7 +141,7 @@ async def fetch_market_data(
     }
 
     try:
-        return await _get_upstream_json(request.url, request.params, safe_headers)
+        return await _fetch_market_request(request.url, request.params, safe_headers)
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"Upstream HTTP error: {e.response.status_code}") from e
     except Exception as e:
