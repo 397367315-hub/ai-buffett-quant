@@ -202,9 +202,9 @@ export default function StockPickerPage() {
           <div className="text-right text-xs text-text-secondary leading-5">
             <div className="flex items-center justify-end gap-1.5">
               <span className={`inline-block h-2 w-2 rounded-full ${result.is_realtime ? 'bg-down' : 'bg-warn'}`} />
-              {result.is_realtime ? '盘中实时行情' : '最近交易快照'}
+              {result.is_realtime ? '盘中实时行情' : `最近交易快照 · 数据日期 ${result.data_date}`}
             </div>
-            <div>{result.source} · {formatTime(result.updated_at)}</div>
+            <div>{result.source} · 本次运行 {formatTime(result.updated_at)}</div>
           </div>
         )}
       </div>
@@ -289,9 +289,9 @@ export default function StockPickerPage() {
                 <div className="text-xs text-text-secondary mt-1">置信度 {(result.market_regime.confidence * 100).toFixed(0)}%</div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
-                <div className="text-xs text-text-secondary">实时候选</div>
+                <div className="text-xs text-text-secondary">行情候选</div>
                 <div className="mt-1 text-lg font-mono font-bold text-text">{result.candidate_summary.live_candidates}</div>
-                <div className="text-xs text-text-secondary mt-1">有效实时行情</div>
+                <div className="text-xs text-text-secondary mt-1">{result.is_realtime ? '有效实时行情' : '最近有效快照'}</div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">完成研究</div>
