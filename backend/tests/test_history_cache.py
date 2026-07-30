@@ -101,6 +101,25 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 2)
         dispose.assert_awaited_once()
 
+    async def test_backfill_database_operation_survives_an_extended_dns_outage(self):
+        service = HistoryCacheService()
+        attempts = 0
+
+        async def flaky_operation():
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 5:
+                raise socket.gaierror(-2, "Name or service not known")
+            return "written"
+
+        with patch.object(type(engine), "dispose", new_callable=AsyncMock) as dispose:
+            with patch("services.history_cache.asyncio.sleep", new_callable=AsyncMock):
+                result = await service._with_database_retry(flaky_operation)
+
+        self.assertEqual(result, "written")
+        self.assertEqual(attempts, 6)
+        self.assertEqual(dispose.await_count, 5)
+
     async def test_backfill_database_operation_retries_database_recovery(self):
         service = HistoryCacheService()
         attempts = 0

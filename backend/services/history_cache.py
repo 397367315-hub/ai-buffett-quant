@@ -51,7 +51,9 @@ class HistoryCacheService:
     _BACKFILL_REQUEST_TIMEOUT_SECONDS = 25
     _BACKFILL_FETCH_CONCURRENCY = 6
     _BACKFILL_BATCH_SIZE = 12
-    _DATABASE_OPERATION_ATTEMPTS = 5
+    # Render's free managed Postgres can take longer than the old ten-second
+    # retry window to recover a transient DNS resolution failure.
+    _DATABASE_OPERATION_ATTEMPTS = 8
 
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
