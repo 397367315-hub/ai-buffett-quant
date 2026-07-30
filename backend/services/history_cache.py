@@ -315,15 +315,20 @@ class HistoryCacheService:
         semaphore = asyncio.Semaphore(self._BACKFILL_FETCH_CONCURRENCY)
 
         async def fetch_one(board_type: str, board: dict):
-            async with semaphore:
+            last_error = ""
+            for attempt in range(3):
                 try:
-                    history = await self._request_with_deadline(
-                        collector.fetch_board_flow_history(board["code"], days)
-                    )
+                    async with semaphore:
+                        history = await self._request_with_deadline(
+                            collector.fetch_board_flow_history(board["code"], days)
+                        )
                     return board_type, history, None
                 except Exception as exc:
-                    print(f"Backfill board {board.get('code')} failed: {type(exc).__name__}")
-                    return board_type, None, type(exc).__name__
+                    last_error = type(exc).__name__
+                    if attempt < 2:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+            print(f"Backfill board {board.get('code')} failed: {last_error}")
+            return board_type, None, last_error
 
         written = 0
         completed = completed_offset

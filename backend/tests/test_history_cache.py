@@ -184,6 +184,51 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("leading_stock", row)
         self.assertEqual(row["board_code"], "BK0475")
 
+    async def test_board_backfill_retries_transient_network_failure(self):
+        service = HistoryCacheService()
+        attempts = 0
+
+        async def capture_upsert(model, rows, keys):
+            del model, keys
+            return len(rows)
+
+        async def flaky_fetch(board_code, days):
+            nonlocal attempts
+            del board_code, days
+            attempts += 1
+            if attempts == 1:
+                raise httpx.ReadTimeout("upstream timed out")
+            return {
+                "code": "BK0475",
+                "history": [{
+                    "trade_date": "2026-07-30",
+                    "close_price": 100.0,
+                    "change_pct": 1.0,
+                    "main_net_inflow": 1,
+                    "main_net_inflow_pct": 1.0,
+                    "super_large_net_inflow": 1,
+                    "large_net_inflow": 1,
+                    "medium_net_inflow": 1,
+                    "small_net_inflow": 1,
+                }],
+            }
+
+        service._upsert = capture_upsert
+        service._set_run = AsyncMock()
+        with patch.object(collector, "fetch_board_flow_history", side_effect=flaky_fetch):
+            with patch("services.history_cache.asyncio.sleep", new_callable=AsyncMock):
+                written, failures = await service._backfill_boards(
+                    run_id=4,
+                    board_jobs=[("industry", {"code": "BK0475"})],
+                    days=365,
+                    completed_offset=0,
+                    initial_records_written=0,
+                )
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(written, 1)
+        self.assertEqual(failures, 0)
+
     async def test_backfill_database_operation_retries_database_recovery(self):
         service = HistoryCacheService()
         attempts = 0
