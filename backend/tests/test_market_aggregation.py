@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 from api import routes
@@ -63,6 +64,18 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["data"]["summary"]["outflow_board_count"], 1)
         self.assertFalse(response["data"]["summary"]["rankings_are_complete"])
         self.assertEqual(set(requested_orders), {0, 1})
+
+    async def test_stock_flow_marks_today_source_data_as_realtime(self):
+        flow_data = [{"date": "2026-07-30", "main_net_inflow": 1}]
+
+        with (
+            patch.object(routes.collector, "fetch_stock_fund_flow", new=AsyncMock(return_value=flow_data)),
+            patch.object(routes, "shanghai_now", return_value=datetime(2026, 7, 30, 10, 0)),
+        ):
+            response = await routes.get_stock_flow("600519.SH")
+
+        self.assertTrue(response["data"]["is_realtime"])
+        self.assertEqual(response["data"]["stock_code"], "600519")
 
 
 if __name__ == "__main__":

@@ -132,6 +132,7 @@ class EastMoneyDataCollector:
         "f75": "large_net_inflow_pct",
         "f78": "medium_net_inflow",
         "f81": "medium_net_inflow_pct",
+        "f84": "small_net_inflow",
         "f104": "up_count",
         "f105": "down_count",
         "f128": "leading_stock",

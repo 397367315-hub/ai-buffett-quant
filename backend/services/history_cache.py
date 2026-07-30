@@ -27,7 +27,7 @@ from models import (
     NorthboundDealDaily,
     StockDailyBar,
 )
-from services.data_collector import collector, normalize_stock_code, shanghai_now
+from services.data_collector import as_int, collector, normalize_stock_code, shanghai_now
 
 
 def _parse_date(value: str) -> date:
@@ -55,6 +55,7 @@ class HistoryCacheService:
     # Render's free managed Postgres can take longer than the old ten-second
     # retry window to recover a transient DNS resolution failure.
     _DATABASE_OPERATION_ATTEMPTS = 8
+    _BOARD_HISTORY_PROBE_CODE = "BK1034"
 
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
@@ -237,7 +238,11 @@ class HistoryCacheService:
             )
             await self._set_run(run_id, total_tasks=len(board_jobs) + len(stock_universe) + 1)
 
-            records_written = 0
+            # The directory response is the reliable source for a complete
+            # current board snapshot. Store it before attempting the
+            # separately hosted historical endpoint, which is often blocked
+            # from overseas regions.
+            records_written = await self._cache_current_board_snapshots(board_jobs)
             stock_failures: list[str] = []
             if include_stock_bars:
                 stock_written, stock_failures = await self._backfill_stock_bars(
@@ -258,7 +263,7 @@ class HistoryCacheService:
                 records_written=records_written,
             )
 
-            board_written, board_failures = await self._backfill_boards(
+            board_written, board_failures, board_history_issue = await self._backfill_boards(
                 run_id,
                 board_jobs,
                 days,
@@ -270,7 +275,11 @@ class HistoryCacheService:
             warnings = []
             if stock_failures:
                 warnings.append(f"个股日线未完成 {len(stock_failures)} 只: {','.join(stock_failures[:10])}")
-            if board_failures:
+            if board_history_issue == "snapshot_only":
+                warnings.append("板块资金流上游仅返回当日快照，未将其标记为一年历史")
+            elif board_history_issue == "request_failed":
+                warnings.append("板块资金流历史上游请求失败，已保留当日完整快照")
+            elif board_failures:
                 warnings.append(f"板块资金流历史未完成 {board_failures} 个")
             if not north_written:
                 warnings.append("北向历史未返回记录")
@@ -311,7 +320,7 @@ class HistoryCacheService:
         days: int,
         completed_offset: int,
         initial_records_written: int,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, str | None]:
         semaphore = asyncio.Semaphore(self._BACKFILL_FETCH_CONCURRENCY)
 
         async def fetch_one(board_type: str, board: dict):
@@ -330,12 +339,53 @@ class HistoryCacheService:
             print(f"Backfill board {board.get('code')} failed: {last_error}")
             return board_type, None, last_error
 
+        if not board_jobs:
+            return 0, 0, None
+
+        # A stable industry board detects the overseas EastMoney behaviour:
+        # push2his resets the connection and push2delay returns only today's
+        # snapshot. One probe avoids issuing the same unusable request for
+        # every board after a service restart.
+        probe_index = next(
+            (
+                index
+                for index, (_, board) in enumerate(board_jobs)
+                if board.get("code") == self._BOARD_HISTORY_PROBE_CODE
+            ),
+            0,
+        )
+        probe_type, probe_board = board_jobs[probe_index]
+        _, probe_payload, probe_error = await fetch_one(probe_type, probe_board)
+        if probe_error:
+            await self._set_run(
+                run_id,
+                completed_tasks=completed_offset + len(board_jobs),
+                records_written=initial_records_written,
+            )
+            return 0, len(board_jobs), "request_failed"
+        if not self._board_history_covers_window(probe_payload, days):
+            await self._set_run(
+                run_id,
+                completed_tasks=completed_offset + len(board_jobs),
+                records_written=initial_records_written,
+            )
+            return 0, 0, "snapshot_only"
+
+        prefetched = {(probe_type, str(probe_board.get("code"))): probe_payload}
+
+        async def fetch_pending(board_type: str, board: dict):
+            key = (board_type, str(board.get("code")))
+            payload = prefetched.pop(key, None)
+            if payload is not None:
+                return board_type, payload, None
+            return await fetch_one(board_type, board)
+
         written = 0
         completed = completed_offset
         failures = 0
         for source_batch in _chunks(board_jobs, self._BACKFILL_BATCH_SIZE):
             response_batch = await asyncio.gather(
-                *(fetch_one(board_type, board) for board_type, board in source_batch)
+                *(fetch_pending(board_type, board) for board_type, board in source_batch)
             )
             concept_rows: list[dict] = []
             industry_rows: list[dict] = []
@@ -370,7 +420,59 @@ class HistoryCacheService:
                 completed_tasks=completed,
                 records_written=initial_records_written + written,
             )
-        return written, failures
+        return written, failures, None
+
+    @staticmethod
+    def _board_history_covers_window(payload: dict | None, days: int) -> bool:
+        """Require a genuine historical range instead of a fallback snapshot."""
+        history = (payload or {}).get("history") or []
+        if not history:
+            return False
+        if days <= 1:
+            return True
+
+        dates = []
+        for row in history:
+            try:
+                dates.append(_parse_date(row["trade_date"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if len(dates) < 2:
+            return False
+        return min(dates) <= shanghai_now().date() - timedelta(days=days)
+
+    async def _cache_current_board_snapshots(self, board_jobs: list[tuple[str, dict]]) -> int:
+        """Persist the complete current directory without pretending it is history."""
+        today = shanghai_now().date()
+        concept_rows: list[dict] = []
+        industry_rows: list[dict] = []
+        for board_type, row in board_jobs:
+            code = str(row.get("code") or "")
+            if not code:
+                continue
+            record = {
+                "board_code": code,
+                "trade_date": today,
+                "close_price": row.get("close_price"),
+                "change_pct": row.get("change_pct"),
+                "main_net_inflow": row.get("main_net_inflow"),
+                "main_net_inflow_pct": row.get("main_net_inflow_pct"),
+                "super_large_net_inflow": row.get("super_large_net_inflow"),
+                "large_net_inflow": row.get("large_net_inflow"),
+                "medium_net_inflow": row.get("medium_net_inflow"),
+                "small_net_inflow": as_int(row.get("small_net_inflow")),
+                "up_count": row.get("up_count"),
+                "down_count": row.get("down_count"),
+            }
+            if board_type == "concept":
+                record["leading_stock"] = row.get("leading_stock") or None
+                concept_rows.append(record)
+            else:
+                industry_rows.append(record)
+
+        written = await self._upsert(ConceptFundFlowDaily, concept_rows, ["board_code", "trade_date"])
+        written += await self._upsert(IndustryFundFlowDaily, industry_rows, ["board_code", "trade_date"])
+        return written
 
     async def _backfill_northbound(self, days: int, source_rows: list[dict] | None = None) -> int:
         if source_rows is None:
@@ -491,7 +593,7 @@ class HistoryCacheService:
                 "close_price": row["close_price"], "change_pct": row["change_pct"],
                 "main_net_inflow": row["main_net_inflow"], "main_net_inflow_pct": row["main_net_inflow_pct"],
                 "super_large_net_inflow": row["super_large_net_inflow"], "large_net_inflow": row["large_net_inflow"],
-                "medium_net_inflow": row["medium_net_inflow"], "small_net_inflow": 0,
+                "medium_net_inflow": row["medium_net_inflow"], "small_net_inflow": as_int(row.get("small_net_inflow")),
                 "up_count": row["up_count"], "down_count": row["down_count"], "leading_stock": row["leading_stock"],
             }
             for row in rows
@@ -518,7 +620,7 @@ class HistoryCacheService:
                 "close_price": row["close_price"], "change_pct": row["change_pct"],
                 "main_net_inflow": row["main_net_inflow"], "main_net_inflow_pct": row["main_net_inflow_pct"],
                 "super_large_net_inflow": row["super_large_net_inflow"], "large_net_inflow": row["large_net_inflow"],
-                "medium_net_inflow": row["medium_net_inflow"], "small_net_inflow": 0,
+                "medium_net_inflow": row["medium_net_inflow"], "small_net_inflow": as_int(row.get("small_net_inflow")),
                 "up_count": row["up_count"], "down_count": row["down_count"],
             }
             for row in rows
@@ -557,12 +659,60 @@ class HistoryCacheService:
             for row in rows
         ]
 
+    async def _board_cache_stats(self, session, model, board_type: str) -> dict:
+        """Report coverage separately from the aggregate row count."""
+        record_count, first_date, last_date = (await session.execute(
+            select(func.count(), func.min(model.trade_date), func.max(model.trade_date))
+        )).one()
+        board_count = (await session.execute(
+            select(func.count(func.distinct(model.board_code)))
+        )).scalar_one()
+        date_count = (await session.execute(
+            select(func.count(func.distinct(model.trade_date)))
+        )).scalar_one()
+
+        today = shanghai_now().date()
+        today_snapshot_boards = (await session.execute(
+            select(func.count(func.distinct(model.board_code))).where(model.trade_date == today)
+        )).scalar_one()
+        directory_boards = (await session.execute(
+            select(func.count()).select_from(MarketBoard).where(MarketBoard.board_type == board_type)
+        )).scalar_one()
+
+        # At least 200 market sessions plus an earliest record one year back
+        # is a deliberately conservative definition of a complete yearly
+        # board history. Sparse rows must not be presented as full coverage.
+        year_cutoff = today - timedelta(days=365)
+        covered_boards = (
+            select(model.board_code)
+            .group_by(model.board_code)
+            .having(func.min(model.trade_date) <= year_cutoff)
+            .having(func.count(func.distinct(model.trade_date)) >= 200)
+            .subquery()
+        )
+        year_history_boards = (await session.execute(
+            select(func.count()).select_from(covered_boards)
+        )).scalar_one()
+
+        return {
+            "records": record_count,
+            "boards": board_count,
+            "dates": date_count,
+            "from": first_date.isoformat() if first_date else None,
+            "to": last_date.isoformat() if last_date else None,
+            "coverage": {
+                "today_snapshot_boards": today_snapshot_boards,
+                "directory_boards": directory_boards,
+                "year_history_boards": year_history_boards,
+                "year_history_complete": bool(directory_boards) and year_history_boards >= directory_boards,
+            },
+        }
+
     async def get_cache_stats(self) -> dict:
         async def load_stats():
             async with async_session() as session:
-                concept_count, concept_min, concept_max = (await session.execute(
-                    select(func.count(), func.min(ConceptFundFlowDaily.trade_date), func.max(ConceptFundFlowDaily.trade_date))
-                )).one()
+                concept_stats = await self._board_cache_stats(session, ConceptFundFlowDaily, "concept")
+                industry_stats = await self._board_cache_stats(session, IndustryFundFlowDaily, "industry")
                 stock_count, stock_min, stock_max = (await session.execute(
                     select(func.count(), func.min(StockDailyBar.trade_date), func.max(StockDailyBar.trade_date))
                 )).one()
@@ -576,18 +726,19 @@ class HistoryCacheService:
                     select(CacheBackfillRun).order_by(CacheBackfillRun.id.desc()).limit(1)
                 )).scalar_one_or_none()
             return (
-                concept_count, concept_min, concept_max,
+                concept_stats, industry_stats,
                 stock_count, stock_min, stock_max, stock_symbols,
                 north_count, north_min, north_max, latest_run,
             )
 
         (
-            concept_count, concept_min, concept_max,
+            concept_stats, industry_stats,
             stock_count, stock_min, stock_max, stock_symbols,
             north_count, north_min, north_max, latest_run,
         ) = await self._with_database_retry(load_stats)
         return {
-            "concept_flow": {"records": concept_count, "from": concept_min.isoformat() if concept_min else None, "to": concept_max.isoformat() if concept_max else None},
+            "concept_flow": concept_stats,
+            "industry_flow": industry_stats,
             "stock_bars": {
                 "records": stock_count,
                 "stocks": stock_symbols,

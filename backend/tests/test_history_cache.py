@@ -1,6 +1,7 @@
 import asyncio
 import socket
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -175,7 +176,7 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
             await service._backfill_boards(
                 run_id=4,
                 board_jobs=[("industry", {"code": "BK0475"})],
-                days=365,
+                days=1,
                 completed_offset=0,
                 initial_records_written=0,
             )
@@ -217,10 +218,10 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
         service._set_run = AsyncMock()
         with patch.object(collector, "fetch_board_flow_history", side_effect=flaky_fetch):
             with patch("services.history_cache.asyncio.sleep", new_callable=AsyncMock):
-                written, failures = await service._backfill_boards(
+                written, failures, issue = await service._backfill_boards(
                     run_id=4,
                     board_jobs=[("industry", {"code": "BK0475"})],
-                    days=365,
+                    days=1,
                     completed_offset=0,
                     initial_records_written=0,
                 )
@@ -228,6 +229,74 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts, 2)
         self.assertEqual(written, 1)
         self.assertEqual(failures, 0)
+        self.assertIsNone(issue)
+
+    async def test_board_backfill_does_not_treat_a_snapshot_as_year_history(self):
+        service = HistoryCacheService()
+        service._set_run = AsyncMock()
+        payload = {
+            "code": "BK0475",
+            "history": [{
+                "trade_date": "2026-07-30",
+                "close_price": 100.0,
+                "change_pct": 1.0,
+                "main_net_inflow": 1,
+                "main_net_inflow_pct": 1.0,
+                "super_large_net_inflow": 1,
+                "large_net_inflow": 1,
+                "medium_net_inflow": 1,
+                "small_net_inflow": 1,
+            }],
+        }
+
+        with patch.object(collector, "fetch_board_flow_history", new_callable=AsyncMock, return_value=payload):
+            with patch("services.history_cache.shanghai_now", return_value=datetime(2026, 7, 30)):
+                written, failures, issue = await service._backfill_boards(
+                    run_id=4,
+                    board_jobs=[("industry", {"code": "BK0475"})],
+                    days=365,
+                    completed_offset=2,
+                    initial_records_written=3,
+                )
+
+        self.assertEqual((written, failures, issue), (0, 0, "snapshot_only"))
+        service._set_run.assert_awaited_once_with(
+            4,
+            completed_tasks=3,
+            records_written=3,
+        )
+
+    async def test_current_board_snapshot_retains_small_order_flow(self):
+        service = HistoryCacheService()
+        captured: dict[str, list[dict]] = {}
+
+        async def capture_upsert(model, rows, keys):
+            del keys
+            captured[model.__tablename__] = rows
+            return len(rows)
+
+        service._upsert = capture_upsert
+        with patch("services.history_cache.shanghai_now", return_value=datetime(2026, 7, 30)):
+            written = await service._cache_current_board_snapshots([
+                ("concept", {
+                    "code": "BK0001", "close_price": 10.0, "change_pct": 1.0,
+                    "main_net_inflow": 100, "main_net_inflow_pct": 1.0,
+                    "super_large_net_inflow": 40, "large_net_inflow": 30,
+                    "medium_net_inflow": 20, "small_net_inflow": 10,
+                    "up_count": 8, "down_count": 2, "leading_stock": "测试股",
+                }),
+                ("industry", {
+                    "code": "BK0002", "close_price": 20.0, "change_pct": -1.0,
+                    "main_net_inflow": -100, "main_net_inflow_pct": -1.0,
+                    "super_large_net_inflow": -40, "large_net_inflow": -30,
+                    "medium_net_inflow": -20, "small_net_inflow": -10,
+                    "up_count": 2, "down_count": 8,
+                }),
+            ])
+
+        self.assertEqual(written, 2)
+        self.assertEqual(captured["concept_fund_flow_daily"][0]["small_net_inflow"], 10)
+        self.assertEqual(captured["industry_fund_flow_daily"][0]["small_net_inflow"], -10)
 
     async def test_backfill_database_operation_retries_database_recovery(self):
         service = HistoryCacheService()

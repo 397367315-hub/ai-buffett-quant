@@ -142,6 +142,29 @@ async def _concept_history_rankings(
         for index, row in enumerate(rows)
     ]
 
+
+async def _concept_snapshot_coverage(target_date: date) -> dict:
+    """Measure whether a cached date covers the current concept directory."""
+    async with async_session() as session:
+        cached_board_count = (await session.execute(
+            select(func.count(func.distinct(ConceptFundFlowDaily.board_code))).where(
+                ConceptFundFlowDaily.trade_date == target_date
+            )
+        )).scalar_one()
+        directory_board_count = (await session.execute(
+            select(func.count()).select_from(MarketBoard).where(MarketBoard.board_type == "concept")
+        )).scalar_one()
+
+    # Board taxonomies can change. A 95% threshold prevents a single retired
+    # board from hiding an otherwise complete daily snapshot while keeping
+    # sparse historical rows visibly incomplete.
+    required_board_count = max(1, (directory_board_count * 95 + 99) // 100)
+    return {
+        "cached_board_count": cached_board_count,
+        "directory_board_count": directory_board_count,
+        "is_complete": bool(directory_board_count) and cached_board_count >= required_board_count,
+    }
+
 # ── 认证接口 ──
 
 
@@ -174,6 +197,7 @@ async def get_concept_rank(
 
     if target != today:
         result = await _concept_history_rankings(target, limit, ascending=order == "asc")
+        coverage = await _concept_snapshot_coverage(target)
         return {
             "code": 0,
             "data": {
@@ -183,7 +207,9 @@ async def get_concept_rank(
                     "total_main_inflow": sum(row["main_net_inflow"] for row in result),
                     "inflow_board_count": sum(row["main_net_inflow"] > 0 for row in result),
                     "outflow_board_count": sum(row["main_net_inflow"] < 0 for row in result),
+                    "rankings_are_complete": coverage["is_complete"],
                 },
+                "coverage": coverage,
                 **_market_metadata(available=bool(result), data_date=target.isoformat(), is_realtime=False, source="cache"),
             },
             "message": "success",
@@ -243,7 +269,8 @@ async def get_stock_flow(stock_code: str):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     data = await collector.fetch_stock_fund_flow(code)
-    return {"code": 0, "data": {"stock_code": code, "flow_data": data, **_market_metadata(available=bool(data), data_date=data[-1]["date"] if data else None, is_realtime=False)}}
+    latest_date = data[-1]["date"] if data else None
+    return {"code": 0, "data": {"stock_code": code, "flow_data": data, **_market_metadata(available=bool(data), data_date=latest_date, is_realtime=latest_date == shanghai_now().date().isoformat())}}
 
 
 @router.get("/flow/north/today")
@@ -859,18 +886,44 @@ async def get_concept_range(
 
 @router.get("/flow/concept/dates")
 async def get_concept_available_dates():
-    """获取数据库中有数据的所有日期"""
+    """Return only dates with enough rows for a full concept ranking."""
     async with async_session() as session:
+        directory_board_count = (await session.execute(
+            select(func.count()).select_from(MarketBoard).where(MarketBoard.board_type == "concept")
+        )).scalar_one()
         stmt = (
-            select(ConceptFundFlowDaily.trade_date)
-            .distinct()
+            select(
+                ConceptFundFlowDaily.trade_date,
+                func.count(func.distinct(ConceptFundFlowDaily.board_code)),
+            )
+            .group_by(ConceptFundFlowDaily.trade_date)
             .order_by(ConceptFundFlowDaily.trade_date.desc())
             .limit(365)
         )
         result = await session.execute(stmt)
-        dates = [row[0].isoformat() for row in result.all()]
+        date_rows = result.all()
 
-    return {"code": 0, "data": {"dates": dates, "count": len(dates)}}
+    required_board_count = max(1, (directory_board_count * 95 + 99) // 100)
+    dates = [
+        trade_date.isoformat()
+        for trade_date, count in date_rows
+        if directory_board_count and count >= required_board_count
+    ]
+    incomplete_dates = [
+        trade_date.isoformat()
+        for trade_date, count in date_rows
+        if not directory_board_count or count < required_board_count
+    ]
+
+    return {
+        "code": 0,
+        "data": {
+            "dates": dates,
+            "count": len(dates),
+            "incomplete_dates": incomplete_dates,
+            "directory_board_count": directory_board_count,
+        },
+    }
 
 
 @router.get("/flow/concept/by-date/{target_date}")
@@ -888,7 +941,8 @@ async def get_concept_by_date(
         return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, "rankings_are_complete": False, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=True)}}
 
     rankings = await _concept_history_rankings(d)
-    return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, "rankings_are_complete": True, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=False, source="cache")}}
+    coverage = await _concept_snapshot_coverage(d)
+    return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, "rankings_are_complete": coverage["is_complete"], "coverage": coverage, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=False, source="cache")}}
 
 
 @router.get("/flow/concept/summary")
@@ -995,7 +1049,10 @@ async def get_concept_summary(
             "summary": {
                 "total_main_inflow": total_inflow,
                 "board_count": len(rankings),
-                "rankings_are_complete": True,
+                # The date-level query above exposes complete daily rankings.
+                # A multi-day aggregate remains conservative until every
+                # historical session is independently verified.
+                "rankings_are_complete": False,
             },
             "has_data": len(rows) > 0,
             **_market_metadata(available=bool(rows), data_date=end.isoformat() if rows else None, is_realtime=False, source="cache"),

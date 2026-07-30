@@ -197,8 +197,8 @@ export default function MarketOverviewPage() {
             {syncing ? '同步中...' : '刷新实时数据'}
           </button>
           {cacheStats && (
-            <span className="text-xs text-text-secondary">
-              历史缓存: 板块 {cacheStats.concept_flow?.from || '无'} 至 {cacheStats.concept_flow?.to || '无'} | 股票 {cacheStats.stock_bars?.stocks || 0} 只 / 日线 {cacheStats.stock_bars?.records || 0} 条
+            <span className="max-w-full text-xs text-text-secondary text-right">
+              缓存覆盖: 板块快照 概念 {cacheStats.concept_flow?.coverage?.today_snapshot_boards || 0}/{cacheStats.concept_flow?.coverage?.directory_boards || 0}、行业 {cacheStats.industry_flow?.coverage?.today_snapshot_boards || 0}/{cacheStats.industry_flow?.coverage?.directory_boards || 0} | 股票 {cacheStats.stock_bars?.stocks || 0} 只 / 日线 {cacheStats.stock_bars?.records || 0} 条
             </span>
           )}
         </div>
