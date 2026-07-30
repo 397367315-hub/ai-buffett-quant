@@ -135,14 +135,16 @@ class EastMoneyDataCollector:
     }
 
     async def fetch_json(self, url: str, params: dict, headers: dict | None = None) -> dict:
-        """Fetch market JSON, preferring the Singapore/China data proxy."""
+        """Fetch market JSON through the configured China data proxy.
+
+        A direct fallback from the overseas application instance adds a second
+        long timeout and is not a reliable way to reach mainland market APIs.
+        The proxy has its own upstream failover, so when it is configured it is
+        the single source of truth for external market requests.
+        """
         request_headers = headers or self.HEADERS
         if settings.data_proxy_base_url:
-            try:
-                return await self._fetch_via_proxy(url, params, request_headers)
-            except Exception as exc:
-                # The API result carries availability metadata; this log is only for operators.
-                print(f"[Data Proxy] failed, trying direct source: {type(exc).__name__}")
+            return await self._fetch_via_proxy(url, params, request_headers)
         return await self._fetch_direct(url, params, request_headers)
 
     async def _fetch_direct(self, url: str, params: dict, headers: dict) -> dict:

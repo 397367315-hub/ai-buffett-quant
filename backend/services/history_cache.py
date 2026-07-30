@@ -39,6 +39,11 @@ class HistoryCacheService:
     # batch sizes for the year-long market-wide backfill.
     _POSTGRES_BIND_BUDGET = 30_000
     _SQLITE_BIND_BUDGET = 900
+    # Backfills make thousands of independent upstream requests. Bound every
+    # request so a half-open proxy connection cannot freeze an entire run.
+    _BACKFILL_REQUEST_TIMEOUT_SECONDS = 25
+    _BACKFILL_FETCH_CONCURRENCY = 6
+    _BACKFILL_BATCH_SIZE = 12
 
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
@@ -80,6 +85,10 @@ class HistoryCacheService:
         async with async_session() as session:
             await session.execute(update(CacheBackfillRun).where(CacheBackfillRun.id == run_id).values(**values))
             await session.commit()
+
+    async def _request_with_deadline(self, awaitable):
+        """Apply the backfill-specific deadline around an upstream request."""
+        return await asyncio.wait_for(awaitable, timeout=self._BACKFILL_REQUEST_TIMEOUT_SECONDS)
 
     async def queue_backfill(
         self,
@@ -161,7 +170,7 @@ class HistoryCacheService:
                 collector.fetch_all_industry_flow(),
             )
             board_jobs = [("concept", row) for row in concept_boards] + [("industry", row) for row in industry_boards]
-            stock_universe = await collector.fetch_stock_universe() if include_stock_bars else []
+            stock_universe = await self._request_with_deadline(collector.fetch_stock_universe()) if include_stock_bars else []
             if max_stocks is not None:
                 stock_universe = stock_universe[:max_stocks]
             if include_stock_bars and not stock_universe:
@@ -246,22 +255,26 @@ class HistoryCacheService:
         completed_offset: int,
         initial_records_written: int,
     ) -> tuple[int, int]:
-        semaphore = asyncio.Semaphore(8)
+        semaphore = asyncio.Semaphore(self._BACKFILL_FETCH_CONCURRENCY)
 
         async def fetch_one(board_type: str, board: dict):
             async with semaphore:
                 try:
-                    history = await collector.fetch_board_flow_history(board["code"], days)
+                    history = await self._request_with_deadline(
+                        collector.fetch_board_flow_history(board["code"], days)
+                    )
                     return board_type, history, None
                 except Exception as exc:
                     print(f"Backfill board {board.get('code')} failed: {type(exc).__name__}")
                     return board_type, None, type(exc).__name__
 
-        responses = await asyncio.gather(*(fetch_one(board_type, board) for board_type, board in board_jobs))
         written = 0
         completed = completed_offset
         failures = 0
-        for response_batch in _chunks(list(responses), 30):
+        for source_batch in _chunks(board_jobs, self._BACKFILL_BATCH_SIZE):
+            response_batch = await asyncio.gather(
+                *(fetch_one(board_type, board) for board_type, board in source_batch)
+            )
             concept_rows: list[dict] = []
             industry_rows: list[dict] = []
             for board_type, payload, error in response_batch:
@@ -296,8 +309,14 @@ class HistoryCacheService:
         return written, failures
 
     async def _backfill_northbound(self, days: int, source_rows: list[dict] | None = None) -> int:
+        if source_rows is None:
+            try:
+                source_rows = await self._request_with_deadline(collector.fetch_north_bound_daily(days))
+            except Exception as exc:
+                print(f"Backfill northbound failed: {type(exc).__name__}")
+                return 0
         rows = []
-        for item in source_rows if source_rows is not None else await collector.fetch_north_bound_daily(days):
+        for item in source_rows:
             rows.append({
                 "trade_date": _parse_date(item["date"]),
                 "deal_amount": item["deal_amount"],
@@ -320,23 +339,25 @@ class HistoryCacheService:
     ) -> tuple[int, list[str]]:
         cached_codes = await self._cached_stock_codes(days)
         pending_stocks = [stock for stock in stock_universe if stock["code"] not in cached_codes]
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(self._BACKFILL_FETCH_CONCURRENCY)
 
         async def fetch_one(stock: dict):
-            async with semaphore:
-                last_error = ""
-                for attempt in range(3):
-                    try:
-                        data = await collector.fetch_stock_price_history(stock["code"], days)
-                        if data.get("history"):
-                            return stock, data, None
-                        raise RuntimeError("empty history")
-                    except Exception as exc:
-                        last_error = type(exc).__name__
-                        if attempt < 2:
-                            await asyncio.sleep(0.5 * (attempt + 1))
-                print(f"Backfill stock {stock.get('code')} failed: {last_error}")
-                return stock, None, last_error
+            last_error = ""
+            for attempt in range(3):
+                try:
+                    async with semaphore:
+                        data = await self._request_with_deadline(
+                            collector.fetch_stock_price_history(stock["code"], days)
+                        )
+                    if data.get("history"):
+                        return stock, data, None
+                    raise RuntimeError("empty history")
+                except Exception as exc:
+                    last_error = type(exc).__name__
+                    if attempt < 2:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+            print(f"Backfill stock {stock.get('code')} failed: {last_error}")
+            return stock, None, last_error
 
         written = 0
         failures: list[str] = []
@@ -346,7 +367,7 @@ class HistoryCacheService:
             completed_tasks=completed,
             records_written=initial_records_written,
         )
-        for source_batch in _chunks(pending_stocks, 40):
+        for source_batch in _chunks(pending_stocks, self._BACKFILL_BATCH_SIZE):
             results = await asyncio.gather(*(fetch_one(stock) for stock in source_batch))
             rows = []
             for stock, payload, error in results:

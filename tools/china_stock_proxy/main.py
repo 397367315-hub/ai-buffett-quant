@@ -56,8 +56,8 @@ def _positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-UPSTREAM_TIMEOUT = _positive_float("DATA_PROXY_TIMEOUT", 20.0)
-UPSTREAM_MAX_ATTEMPTS = _positive_int("DATA_PROXY_MAX_ATTEMPTS", 3)
+UPSTREAM_TIMEOUT = _positive_float("DATA_PROXY_TIMEOUT", 8.0)
+UPSTREAM_MAX_ATTEMPTS = _positive_int("DATA_PROXY_MAX_ATTEMPTS", 2)
 UPSTREAM_RETRY_DELAY = _positive_float("DATA_PROXY_RETRY_DELAY", 0.35)
 RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 

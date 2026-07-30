@@ -19,7 +19,7 @@ services:
       - key: DATA_PROXY_TOKEN
         sync: false
       - key: DATA_PROXY_TIMEOUT
-        value: "30"
+        value: "20"
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: ADMIN_USERNAME
@@ -41,9 +41,9 @@ services:
       - key: DATA_PROXY_TOKEN
         sync: false
       - key: DATA_PROXY_TIMEOUT
-        value: "20"
+        value: "8"
       - key: DATA_PROXY_MAX_ATTEMPTS
-        value: "3"
+        value: "2"
       - key: DATA_PROXY_RETRY_DELAY
         value: "0.35"
 

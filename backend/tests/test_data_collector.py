@@ -1,11 +1,22 @@
 import unittest
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from services.data_collector import EastMoneyDataCollector, normalize_stock_code, stock_secid
 
 
 class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_proxy_does_not_fall_back_to_overseas_request(self):
+        collector = EastMoneyDataCollector()
+        collector._fetch_via_proxy = AsyncMock(side_effect=RuntimeError("proxy unavailable"))
+        collector._fetch_direct = AsyncMock()
+
+        with patch("services.data_collector.settings.data_proxy_base_url", "https://proxy.example"):
+            with self.assertRaisesRegex(RuntimeError, "proxy unavailable"):
+                await collector.fetch_json("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get", {})
+
+        collector._fetch_direct.assert_not_awaited()
+
     async def test_stock_universe_fetches_every_page_and_new_prefixes(self):
         collector = EastMoneyDataCollector()
         rows = [

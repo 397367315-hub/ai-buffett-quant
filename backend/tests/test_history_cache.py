@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 from services.history_cache import HistoryCacheService
@@ -48,6 +49,15 @@ class HistoryCacheTests(unittest.TestCase):
         )
 
         self.assertEqual(batch_size, 900)
+
+
+class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_backfill_request_has_a_hard_deadline(self):
+        service = HistoryCacheService()
+        service._BACKFILL_REQUEST_TIMEOUT_SECONDS = 0.001
+
+        with self.assertRaises(asyncio.TimeoutError):
+            await service._request_with_deadline(asyncio.sleep(0.1))
 
 
 if __name__ == "__main__":
