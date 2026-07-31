@@ -466,7 +466,7 @@ function buildScene(width: number, height: number, data: ObserverFlowData): Scen
     .filter((link) => link.amount > 0)
     .sort((left, right) => right.amount - left.amount);
   const maxAmount = Math.max(1, ...links.map((link) => link.amount));
-  const maxRibbonWidth = width < 500 ? 3.8 : 5.5;
+  const maxRibbonWidth = width < 500 ? 2 : 2.8;
   const ribbons: FlowRibbon[] = [];
 
   links.forEach((link, index) => {
@@ -488,8 +488,8 @@ function buildScene(width: number, height: number, data: ObserverFlowData): Scen
       target,
       amount: link.amount,
       width: clamp(
-        0.45 + Math.sqrt(link.amount / maxAmount) * maxRibbonWidth,
-        0.7,
+        0.2 + Math.sqrt(link.amount / maxAmount) * maxRibbonWidth,
+        0.4,
         Math.min(source.height * 0.24, target.height * 0.24, maxRibbonWidth),
       ),
       startX: source.x + source.width,
@@ -547,10 +547,10 @@ function drawRibbon(ctx: CanvasRenderingContext2D, ribbon: FlowRibbon): void {
   ctx.fillStyle = gradient;
   ctx.globalAlpha = 0.16;
   ctx.shadowColor = ribbon.startColor;
-  ctx.shadowBlur = Math.min(7, 2 + ribbon.width);
+  ctx.shadowBlur = Math.min(4, 1 + ribbon.width * 0.7);
   ctx.fill();
   ctx.globalAlpha = 0.34;
-  ctx.lineWidth = 0.5;
+  ctx.lineWidth = 0.35;
   ctx.strokeStyle = gradient;
   ctx.stroke();
   ctx.restore();
@@ -573,10 +573,10 @@ function drawRibbonHighlight(ctx: CanvasRenderingContext2D, ribbon: FlowRibbon):
     ribbon.endY,
   );
   ctx.strokeStyle = '#FFFFFF';
-  ctx.lineWidth = Math.max(2, ribbon.width + 1.5);
+  ctx.lineWidth = Math.max(1.4, ribbon.width + 0.8);
   ctx.globalAlpha = 0.72;
   ctx.shadowColor = '#FFFFFF';
-  ctx.shadowBlur = 13;
+  ctx.shadowBlur = 7;
   ctx.stroke();
   ctx.restore();
 }
@@ -618,7 +618,7 @@ function cubicPoint(ribbon: FlowRibbon, progress: number): { x: number; y: numbe
 
 function drawRibbonParticles(ctx: CanvasRenderingContext2D, ribbon: FlowRibbon, tick: number): void {
   const seed = hashString(`${ribbon.source.key}-${ribbon.target.key}`);
-  const intensity = clamp(ribbon.width / 5.5, 0.12, 1);
+  const intensity = clamp(ribbon.width / 2.8, 0.12, 1);
   const particleCount = clamp(Math.round(1 + intensity * 4), 1, 5);
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
@@ -725,7 +725,7 @@ function drawTimeline(
   const activeX = lerp(left, right, clamp(progress, 0, 1));
   ctx.save();
   ctx.lineCap = 'round';
-  ctx.lineWidth = width < 500 ? 4 : 5;
+  ctx.lineWidth = width < 500 ? 1.8 : 2.2;
   const gradient = ctx.createLinearGradient(left, y, right, y);
   gradient.addColorStop(0, OUTFLOW_COLOR);
   gradient.addColorStop(0.48, GOLD);
