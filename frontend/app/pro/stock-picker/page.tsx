@@ -4,10 +4,14 @@ import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   BrainCircuit,
+  CheckCircle2,
   ChevronRight,
+  Clock3,
   CircleAlert,
   Database,
+  FlaskConical,
   Gauge,
+  LineChart,
   Play,
   RefreshCw,
   SearchCheck,
@@ -50,6 +54,13 @@ interface AgentReport {
     stop_loss_price: number | null;
     reference_target_price: number | null;
     max_research_position_pct: number;
+    data_quality?: string;
+    data_blindspot_discount_pct?: number;
+    final_research_position_pct?: number;
+    friction_cost?: {
+      total_round_trip_pct: number;
+      impact_cost_pct: number;
+    };
   };
   debate?: {
     bull_score: number;
@@ -58,6 +69,90 @@ interface AgentReport {
     bear_points: string[];
     decisive_factor: string;
   };
+}
+
+interface ResearchDataQuality {
+  grade: string;
+  score: number;
+  position_multiplier: number;
+  evidence: string[];
+  missing: string[];
+  assessment: string;
+}
+
+interface ResearchAudit {
+  overall_risk: string;
+  verdict: string;
+  blockers: string[];
+  warnings: string[];
+  credibility_score: number;
+  findings: Array<{
+    category: string;
+    risk_level: string;
+    evidence: string;
+    additional_experiment: string;
+    fix_suggestion: string;
+  }>;
+}
+
+interface ResearchReport {
+  data_contract?: {
+    slug: string;
+    version: string;
+    history_adjustment: string;
+    source: string;
+  };
+  hypothesis_card: {
+    observation: string;
+    mechanism: string;
+    signal_definition: { period: string; formula: string; edge_cases: string[] };
+    data_timing: {
+      data_date?: string | null;
+      data_source?: string;
+      data_source_time: string;
+      signal_available_time: string;
+      earliest_trade_time: string;
+      timeline_rule: string;
+    };
+    prediction_target: { holding_period: string; return_calc: string };
+    baselines: string[];
+    failure_criteria: string[];
+  };
+  data_quality: ResearchDataQuality;
+  time_audit: {
+    overall_assessment: string;
+    data_quality: string;
+    red_flags: string[];
+    warnings: string[];
+    fields: Array<{
+      field_name: string;
+      event_time: string;
+      data_available_time: string;
+      signal_calc_time: string;
+      earliest_trade_time: string;
+      timeline_valid: boolean;
+      leakage_risk: string;
+      notes: string;
+    }>;
+  };
+  execution_plan: {
+    friction_cost: {
+      commission_pct: number;
+      stamp_tax_pct: number;
+      slippage_pct: number;
+      impact_cost_pct: number;
+      total_round_trip_pct: number;
+    };
+    position_cap_pct: number;
+    planned_capital: number;
+    suggested_shares: number;
+    capacity?: string;
+    reference_gross_return_pct?: number;
+    reference_net_return_after_cost_pct: number;
+    cost_verdict: string;
+  };
+  strategy_audit: ResearchAudit;
+  experiment_log: { protocol: string; factor_changes: string; failure_recording: string };
 }
 
 interface SourceItem {
@@ -94,8 +189,10 @@ interface Recommendation {
     capital: AgentReport;
     risk: AgentReport;
     news: AgentReport;
+    audit: AgentReport;
     supervisor: AgentReport;
   };
+  research?: ResearchReport;
 }
 
 interface SelectionResult {
@@ -125,6 +222,12 @@ interface SelectionResult {
     label: string;
     matched_candidates: number;
     market_candidates: number;
+  };
+  data_contract?: {
+    slug: string;
+    version: string;
+    history_adjustment: string;
+    source: string;
   };
   macro_policy?: {
     available: boolean;
@@ -206,6 +309,28 @@ function sourceDate(value?: string | null): string {
   return value ? value.slice(0, 10) : '日期未披露';
 }
 
+function metricValue(value: number | string | null | undefined, digits = 2): string {
+  if (value == null || value === '') return '--';
+  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : String(value);
+}
+
+function qualityClass(value: string | undefined): string {
+  if (value === '充分' || value === '低') return 'text-down';
+  if (value === '一般' || value === '中') return 'text-warn';
+  return 'text-up';
+}
+
+function auditClass(value: string | undefined): string {
+  if (value === '低' || value === '通过' || value === '可信') return 'text-down';
+  if (value === '中' || value === '一般' || value === '证据不足' || value === '有问题需修复') return 'text-warn';
+  return 'text-up';
+}
+
+function moneyValue(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '--';
+  return `¥${value.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
+}
+
 export default function StockPickerPage() {
   const [mode, setMode] = useState<SelectionMode>('quick');
   const [riskProfile, setRiskProfile] = useState<RiskProfile>('balanced');
@@ -265,7 +390,11 @@ export default function StockPickerPage() {
     { key: 'capital', icon: Database },
     { key: 'risk', icon: ShieldCheck },
     { key: 'news', icon: BrainCircuit },
+    { key: 'audit', icon: SearchCheck },
   ];
+  const selectedTechnicalMetrics = selected?.agents.technical.metrics;
+  const selectedResearch = selected?.research;
+  const selectedContract = selectedResearch?.data_contract || result?.data_contract;
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 overflow-x-hidden">
@@ -405,7 +534,7 @@ export default function StockPickerPage() {
               <Sparkles size={16} className="text-warn" />
               <h2 className="text-base font-bold text-text">Agent 流水线</h2>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
               {result.agent_pipeline.map((agent) => (
                 <article key={agent.id} className="border border-border bg-card rounded-lg p-3 min-h-28">
                   <div className="flex items-start justify-between gap-2">
@@ -518,9 +647,9 @@ export default function StockPickerPage() {
                           </div>
                           {agent.sources && agent.sources.length > 0 && (
                             <div className="mt-3 pt-3 border-t border-border space-y-1.5">
-                              {agent.sources.slice(0, 2).map((source) => (
+                              {agent.sources.slice(0, 2).map((source, sourceIndex) => (
                                 <a
-                                  key={`${source.source}-${source.url}`}
+                                  key={`${source.source}-${source.url}-${source.scope || source.category || 'agent'}-${sourceIndex}`}
                                   href={source.url}
                                   target="_blank"
                                   rel="noreferrer"
@@ -536,6 +665,183 @@ export default function StockPickerPage() {
                     })}
                   </div>
 
+                  {selectedResearch && (
+                    <>
+                      <section className="mb-5 border border-border bg-card rounded-lg p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+                          <div>
+                            <h3 className="text-sm font-bold text-text flex items-center gap-2"><CheckCircle2 size={16} className="text-accent" />研究数据质量</h3>
+                            <p className="text-xs text-text-secondary mt-1">{selectedResearch.data_quality.assessment}</p>
+                          </div>
+                          <div className="text-right text-xs text-text-secondary leading-5">
+                            <div>{selectedContract?.slug || 'a-stock-data'} {selectedContract?.version ? `v${selectedContract.version}` : ''}</div>
+                            <div>日线口径：{selectedContract?.history_adjustment || '--'}</div>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4">
+                          <div className="border border-border rounded-md p-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-xs text-text-secondary">数据等级</span>
+                              <span className={`font-medium ${qualityClass(selectedResearch.data_quality.grade)}`}>{selectedResearch.data_quality.grade}</span>
+                            </div>
+                            <div className="mt-3 grid grid-cols-3 gap-2">
+                              <div><div className="text-xs text-text-secondary">完整度</div><div className="font-mono text-sm text-text mt-1">{metricValue(selectedResearch.data_quality.score, 0)}/100</div></div>
+                              <div><div className="text-xs text-text-secondary">仓位系数</div><div className="font-mono text-sm text-text mt-1">{metricValue(selectedResearch.data_quality.position_multiplier * 100, 0)}%</div></div>
+                              <div><div className="text-xs text-text-secondary">日线样本</div><div className="font-mono text-sm text-text mt-1">{metricValue(selectedTechnicalMetrics?.history_points, 0)}</div></div>
+                            </div>
+                            {selectedResearch.data_quality.evidence.length > 0 && (
+                              <div className="mt-3 pt-3 border-t border-border space-y-1">
+                                {selectedResearch.data_quality.evidence.map((item) => <p key={item} className="text-xs text-down leading-5">{item}</p>)}
+                              </div>
+                            )}
+                          </div>
+                          <div className="border border-border rounded-md p-3">
+                            <div className="text-xs text-text-secondary">本轮未补全字段</div>
+                            {selectedResearch.data_quality.missing.length > 0 ? (
+                              <div className="mt-2 space-y-1.5">
+                                {selectedResearch.data_quality.missing.map((item) => <p key={item} className="text-xs text-warn leading-5">{item}</p>)}
+                              </div>
+                            ) : (
+                              <p className="mt-2 text-xs text-down">当前研究所需字段已齐全，仍需进行样本外验证。</p>
+                            )}
+                            <div className="mt-3 pt-3 border-t border-border text-xs text-text-secondary leading-5 break-words">数据契约：{selectedContract?.source || '--'}</div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="mb-5 border border-border bg-card rounded-lg p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                          <div>
+                            <h3 className="text-sm font-bold text-text flex items-center gap-2"><LineChart size={16} className="text-accent" />技术指标快照</h3>
+                            <p className="text-xs text-text-secondary mt-1">按 {selectedContract?.slug || 'a-stock-data'} 指标口径计算，缺失日线字段不补零。</p>
+                          </div>
+                          <span className="text-xs text-text-secondary">支撑 {metricValue(selectedTechnicalMetrics?.support)} · 阻力 {metricValue(selectedTechnicalMetrics?.resistance)}</span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-x-4 gap-y-3 text-sm">
+                          <div><div className="text-xs text-text-secondary">MA5</div><div className="font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.ma5)}</div></div>
+                          <div><div className="text-xs text-text-secondary">MA10</div><div className="font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.ma10)}</div></div>
+                          <div><div className="text-xs text-text-secondary">MA20</div><div className="font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.ma20)}</div></div>
+                          <div><div className="text-xs text-text-secondary">MA60</div><div className="font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.ma60)}</div></div>
+                          <div><div className="text-xs text-text-secondary">实时量比</div><div className="font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.volume_ratio)}</div></div>
+                          <div><div className="text-xs text-text-secondary">日线量比</div><div className="font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.indicator_volume_ratio)}</div></div>
+                        </div>
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mt-4 pt-4 border-t border-border">
+                          <div className="border border-border rounded-md p-3">
+                            <div className="text-xs text-text-secondary mb-2">MACD</div>
+                            <div className="grid grid-cols-3 gap-2 text-xs"><div>DIF <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.macd_dif, 4)}</span></div><div>DEA <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.macd_dea, 4)}</span></div><div>柱体 <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.macd_hist, 4)}</span></div></div>
+                          </div>
+                          <div className="border border-border rounded-md p-3">
+                            <div className="text-xs text-text-secondary mb-2">RSI / KDJ</div>
+                            <div className="grid grid-cols-3 gap-2 text-xs"><div>RSI6 <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.rsi6)}</span></div><div>RSI14 <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.rsi14)}</span></div><div>RSI24 <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.rsi24)}</span></div></div>
+                            <div className="grid grid-cols-3 gap-2 text-xs mt-3 pt-3 border-t border-border"><div>K <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.kdj_k)}</span></div><div>D <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.kdj_d)}</span></div><div>J <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.kdj_j)}</span></div></div>
+                          </div>
+                          <div className="border border-border rounded-md p-3">
+                            <div className="text-xs text-text-secondary mb-2">BOLL</div>
+                            <div className="grid grid-cols-3 gap-2 text-xs"><div>上轨 <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.boll_upper)}</span></div><div>中轨 <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.boll_middle)}</span></div><div>下轨 <span className="block font-mono text-text mt-1">{metricValue(selectedTechnicalMetrics?.boll_lower)}</span></div></div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <section className="mb-5 border border-border bg-card rounded-lg p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                          <div>
+                            <h3 className="text-sm font-bold text-text flex items-center gap-2"><FlaskConical size={16} className="text-warn" />研究假设卡</h3>
+                            <p className="text-xs text-text-secondary mt-1">{selectedResearch.experiment_log.protocol} · {selectedResearch.experiment_log.factor_changes}</p>
+                          </div>
+                          <span className="text-xs text-text-secondary">{selectedResearch.hypothesis_card.prediction_target.holding_period}</span>
+                        </div>
+                        <p className="text-sm text-text leading-6">{selectedResearch.hypothesis_card.observation}</p>
+                        <p className="text-xs text-text-secondary leading-5 mt-2">{selectedResearch.hypothesis_card.mechanism}</p>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4 pt-4 border-t border-border">
+                          <div>
+                            <div className="text-xs text-text-secondary">信号定义</div>
+                            <div className="text-sm text-text mt-1">{selectedResearch.hypothesis_card.signal_definition.period}</div>
+                            <p className="text-xs text-text-secondary leading-5 mt-2">{selectedResearch.hypothesis_card.signal_definition.formula}</p>
+                            <div className="mt-3 space-y-1.5">{selectedResearch.hypothesis_card.signal_definition.edge_cases.map((item) => <p key={item} className="text-xs text-warn leading-5">{item}</p>)}</div>
+                          </div>
+                          <div>
+                            <div className="text-xs text-text-secondary">检验与反证</div>
+                            <p className="text-xs text-text-secondary leading-5 mt-1">{selectedResearch.hypothesis_card.prediction_target.return_calc}</p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                              <div><div className="text-xs text-accent">对照基线</div><div className="mt-1.5 space-y-1">{selectedResearch.hypothesis_card.baselines.map((item) => <p key={item} className="text-xs text-text-secondary leading-5">{item}</p>)}</div></div>
+                              <div><div className="text-xs text-warn">失败标准</div><div className="mt-1.5 space-y-1">{selectedResearch.hypothesis_card.failure_criteria.map((item) => <p key={item} className="text-xs text-text-secondary leading-5">{item}</p>)}</div></div>
+                            </div>
+                          </div>
+                        </div>
+                      </section>
+
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-5">
+                        <section className="border border-border bg-card rounded-lg p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                            <div>
+                              <h3 className="text-sm font-bold text-text flex items-center gap-2"><Clock3 size={16} className="text-accent" />数据时间审计</h3>
+                              <p className={`text-xs mt-1 ${auditClass(selectedResearch.time_audit.overall_assessment)}`}>{selectedResearch.time_audit.overall_assessment}</p>
+                            </div>
+                            <span className={`text-xs ${qualityClass(selectedResearch.time_audit.data_quality)}`}>时间质量：{selectedResearch.time_audit.data_quality}</span>
+                          </div>
+                          <div className="space-y-2">
+                            {selectedResearch.time_audit.fields.map((field) => (
+                              <div key={field.field_name} className="border-t border-border pt-2 first:border-t-0 first:pt-0">
+                                <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-text">{field.field_name}</span><span className={`text-xs ${auditClass(field.leakage_risk)}`}>{field.leakage_risk}风险</span></div>
+                                <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-1.5 text-xs text-text-secondary"><span>事件：{field.event_time}</span><span>可用：{field.data_available_time}</span><span>计算：{field.signal_calc_time}</span><span>最早交易：{field.earliest_trade_time}</span></div>
+                                <p className="text-xs text-text-secondary leading-5 mt-1">{field.notes}</p>
+                              </div>
+                            ))}
+                          </div>
+                          {(selectedResearch.time_audit.red_flags.length > 0 || selectedResearch.time_audit.warnings.length > 0) && (
+                            <div className="mt-3 pt-3 border-t border-border space-y-1.5">{[...selectedResearch.time_audit.red_flags, ...selectedResearch.time_audit.warnings].map((item) => <p key={item} className="text-xs text-warn leading-5">{item}</p>)}</div>
+                          )}
+                        </section>
+
+                        <section className="border border-border bg-card rounded-lg p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                            <div>
+                              <h3 className="text-sm font-bold text-text flex items-center gap-2"><ShieldCheck size={16} className="text-warn" />真实成本与执行计划</h3>
+                              <p className="text-xs text-text-secondary mt-1">T+1 开盘执行，参考资金为固定研究假设而非交易指令。</p>
+                            </div>
+                            <span className={`text-xs ${selectedResearch.execution_plan.reference_net_return_after_cost_pct > 0 ? 'text-down' : 'text-warn'}`}>{selectedResearch.execution_plan.cost_verdict}</span>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                            <div><div className="text-xs text-text-secondary">最终仓位上限</div><div className="font-mono text-text mt-1">{metricValue(selectedResearch.execution_plan.position_cap_pct)}%</div></div>
+                            <div><div className="text-xs text-text-secondary">计划资金</div><div className="font-mono text-text mt-1">{moneyValue(selectedResearch.execution_plan.planned_capital)}</div></div>
+                            <div><div className="text-xs text-text-secondary">建议手数</div><div className="font-mono text-text mt-1">{metricValue(selectedResearch.execution_plan.suggested_shares, 0)} 股</div></div>
+                            <div><div className="text-xs text-text-secondary">扣成本参考收益</div><div className={`font-mono mt-1 ${selectedResearch.execution_plan.reference_net_return_after_cost_pct > 0 ? 'text-down' : 'text-warn'}`}>{metricValue(selectedResearch.execution_plan.reference_net_return_after_cost_pct)}%</div></div>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-4 border-t border-border text-xs">
+                            <div>佣金 <span className="block font-mono text-text mt-1">{metricValue(selectedResearch.execution_plan.friction_cost.commission_pct, 3)}%</span></div>
+                            <div>印花税 <span className="block font-mono text-text mt-1">{metricValue(selectedResearch.execution_plan.friction_cost.stamp_tax_pct, 3)}%</span></div>
+                            <div>滑点 <span className="block font-mono text-text mt-1">{metricValue(selectedResearch.execution_plan.friction_cost.slippage_pct, 3)}%</span></div>
+                            <div>冲击成本 <span className="block font-mono text-text mt-1">{metricValue(selectedResearch.execution_plan.friction_cost.impact_cost_pct, 3)}%</span></div>
+                          </div>
+                          <div className="mt-3 pt-3 border-t border-border flex flex-wrap justify-between gap-2 text-xs text-text-secondary"><span>{selectedResearch.execution_plan.capacity || '--'}</span><span>双边总摩擦 {metricValue(selectedResearch.execution_plan.friction_cost.total_round_trip_pct, 3)}%</span></div>
+                        </section>
+                      </div>
+
+                      <section className="mb-5 border border-border bg-card rounded-lg p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                          <div>
+                            <h3 className="text-sm font-bold text-text flex items-center gap-2"><TrendingDown size={16} className="text-warn" />独立策略审计</h3>
+                            <p className="text-xs text-text-secondary mt-1">{selectedResearch.experiment_log.failure_recording}</p>
+                          </div>
+                          <div className="text-right"><div className={`text-sm font-medium ${auditClass(selectedResearch.strategy_audit.overall_risk)}`}>{selectedResearch.strategy_audit.overall_risk}风险 · {selectedResearch.strategy_audit.verdict}</div><div className="text-xs text-text-secondary mt-1">可信度 {metricValue(selectedResearch.strategy_audit.credibility_score, 0)}/100</div></div>
+                        </div>
+                        {selectedResearch.strategy_audit.blockers.length > 0 && (
+                          <div className="border border-[#EF535055] bg-[#EF535018] rounded-md p-3 mb-3 space-y-1">{selectedResearch.strategy_audit.blockers.map((item) => <p key={item} className="text-xs text-up leading-5">{item}</p>)}</div>
+                        )}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {selectedResearch.strategy_audit.findings.map((finding) => (
+                            <article key={finding.category} className="border border-border rounded-md p-3 min-w-0">
+                              <div className="flex items-start justify-between gap-3"><span className="text-sm text-text">{finding.category}</span><span className={`shrink-0 text-xs ${auditClass(finding.risk_level)}`}>{finding.risk_level}风险</span></div>
+                              <p className="text-xs text-text-secondary leading-5 mt-2">{finding.evidence}</p>
+                              <p className="text-xs text-accent leading-5 mt-2">验证：{finding.additional_experiment}</p>
+                              <p className="text-xs text-warn leading-5 mt-1">处理：{finding.fix_suggestion}</p>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    </>
+                  )}
+
                   {result.macro_policy && (
                     <section className="border border-border bg-card rounded-lg p-4 mb-5">
                       <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
@@ -547,9 +853,9 @@ export default function StockPickerPage() {
                       </div>
                       {macroSources.length > 0 ? (
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                          {macroSources.slice(0, 9).map((source) => (
+                          {macroSources.slice(0, 9).map((source, sourceIndex) => (
                             <a
-                              key={`${source.source}-${source.url}`}
+                              key={`${source.source}-${source.url}-${source.scope || source.category || 'macro'}-${sourceIndex}`}
                               href={source.url}
                               target="_blank"
                               rel="noreferrer"

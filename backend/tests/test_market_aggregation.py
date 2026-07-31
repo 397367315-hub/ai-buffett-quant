@@ -92,6 +92,9 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["name"] for row in data["outflows"]], ["房地产", "银行"])
         self.assertEqual(data["summary"]["shown_net_flow"], 70_000_000)
         self.assertEqual(data["board_label"], "行业板块")
+        self.assertEqual(data["flow_inference"]["method"], "net_flow_balance")
+        self.assertTrue(data["transfers"])
+        self.assertTrue(all(link["inferred"] for link in data["transfers"]))
 
     async def test_flow_observer_rejects_unknown_board_type(self):
         with self.assertRaises(HTTPException):

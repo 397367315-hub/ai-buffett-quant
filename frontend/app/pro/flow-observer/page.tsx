@@ -3,8 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
-  ArrowDownRight,
-  ArrowUpRight,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -15,13 +13,12 @@ import {
   SlidersHorizontal,
   Zap,
 } from 'lucide-react';
-import { apiFetch, getChangeColor } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 import FlowObserverCanvas, {
   FlowObserverBoardType,
   FlowObserverMode,
   ObserverDateEntry,
   ObserverFlowData,
-  ObserverRow,
 } from '@/components/FlowObserverCanvas';
 
 interface ObserverDatesResponse {
@@ -101,87 +98,6 @@ function StatCard({
   );
 }
 
-function FlowListPanel({
-  title,
-  items,
-  tone,
-  emptyText,
-}: {
-  title: string;
-  items: ObserverRow[];
-  tone: 'positive' | 'negative';
-  emptyText: string;
-}) {
-  const maxAbs = Math.max(1, ...items.map((item) => Math.abs(item.main_net_inflow || 0)));
-  const isPositive = tone === 'positive';
-  const accent = isPositive ? 'text-up' : 'text-down';
-  const ring = isPositive ? 'border-[#EF535044] bg-[#EF535018]' : 'border-[#26A69A44] bg-[#26A69A18]';
-  const marker = isPositive ? 'bg-up' : 'bg-down';
-
-  return (
-    <section className="rounded-xl border border-border bg-card p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h2 className={`flex items-center gap-2 text-sm font-bold ${accent}`}>
-            {isPositive ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}
-            {title}
-          </h2>
-        </div>
-        <span className="shrink-0 text-xs text-text-secondary">{items.length} 个板块</span>
-      </div>
-
-      <div className="space-y-2 max-h-[620px] overflow-y-auto pr-1">
-        {items.length > 0 ? (
-          items.map((item, index) => {
-            const barWidth = Math.max(8, Math.round((Math.abs(item.main_net_inflow || 0) / maxAbs) * 100));
-            return (
-              <article key={item.code} className={`rounded-lg border px-3 py-2 ${ring}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-mono text-white ${marker}`}>
-                        {index + 1}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium text-text" title={item.name}>
-                          {item.name}
-                        </div>
-                        <div className="truncate text-[11px] text-text-secondary">
-                          {item.code}
-                          {item.leading_stock ? ` · 领涨 ${item.leading_stock}` : ''}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className={`shrink-0 text-right font-mono text-sm font-semibold ${getChangeColor(item.main_net_inflow)}`}>
-                    {formatSignedAmount(item.main_net_inflow)}
-                  </div>
-                </div>
-
-                <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-text-secondary">
-                  <div>涨 {item.up_count} / 跌 {item.down_count}</div>
-                  <div className="text-right">{formatPercent(item.change_pct)}</div>
-                </div>
-
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#0D1117]">
-                  <div
-                    className={`h-full rounded-full ${marker}`}
-                    style={{ width: `${barWidth}%` }}
-                  />
-                </div>
-              </article>
-            );
-          })
-        ) : (
-          <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-text-secondary">
-            {emptyText}
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
 export default function FlowObserverPage() {
   const [mode, setMode] = useState<FlowObserverMode>('live');
   const [boardType, setBoardType] = useState<FlowObserverBoardType>('industry');
@@ -207,6 +123,7 @@ export default function FlowObserverPage() {
 
   const currentDateEntry = currentIndex >= 0 ? dates[currentIndex] : null;
   const progress = dates.length > 1 && currentIndex >= 0 ? (currentIndex / (dates.length - 1)) * 100 : 0;
+  const historyDateValues = useMemo(() => dates.map((item) => item.date), [dates]);
 
   useEffect(() => {
     selectedDateRef.current = selectedDate;
@@ -384,14 +301,14 @@ export default function FlowObserverPage() {
 
   const summaryCards = [
     {
-      label: '流入合计',
+      label: '展示流入',
       value: formatSignedAmount(observer?.summary.inflow_total),
-      hint: `${observer?.summary.inflow_count ?? 0} 个流入板块`,
+      hint: `TOP ${observer?.summary.requested_limit ?? limit} · ${observer?.summary.inflow_count ?? 0} 个板块`,
     },
     {
-      label: '流出合计',
+      label: '展示流出',
       value: formatSignedAmount(observer?.summary.outflow_total),
-      hint: `${observer?.summary.outflow_count ?? 0} 个流出板块`,
+      hint: `TOP ${observer?.summary.requested_limit ?? limit} · ${observer?.summary.outflow_count ?? 0} 个板块`,
     },
     {
       label: mode === 'live' ? '沪市成交额' : '历史覆盖',
@@ -606,46 +523,19 @@ export default function FlowObserverPage() {
         </div>
       )}
 
-      <section className="grid gap-4 xl:grid-cols-[minmax(0,0.84fr)_minmax(0,1.32fr)_minmax(0,0.84fr)]">
-        <FlowListPanel
-          title="左侧流出"
-          tone="negative"
-          items={[...(observer?.outflows || [])].slice(0, limit)}
-          emptyText={mode === 'history' && datesLoading ? '正在加载历史缓存' : '暂无流出板块'}
-        />
-
-        <div className="order-first rounded-xl border border-border bg-[#05070A] xl:order-none">
-          <div className="border-b border-border/70 px-4 py-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-sm font-semibold text-text">
-                  {observer?.board_label || (boardType === 'industry' ? '行业板块' : '概念板块')}
-                </div>
-                <div className="mt-0.5 text-xs text-text-secondary">
-                  {mode === 'live'
-                    ? sourceLabel
-                    : observer?.history_coverage
-                      ? `历史缓存 · ${observer.history_coverage.is_complete ? '完整' : '部分'}`
-                      : '历史缓存回放'}
-                </div>
-              </div>
-              <div className="text-right text-xs text-text-secondary">
-                <div>{statusLabel}</div>
-                <div>{formatTime(observer?.updated_at)}</div>
-              </div>
-            </div>
-          </div>
-          <div className="h-[520px] sm:h-[620px] lg:h-[720px]">
-            <FlowObserverCanvas data={observer} mode={mode} />
-          </div>
+      <section className="mx-auto min-w-0 max-w-[1120px] overflow-hidden rounded-xl border border-border bg-[#020303]">
+        <div className="h-[820px] min-w-0 sm:h-[780px] lg:h-[840px]">
+          <FlowObserverCanvas
+            data={observer}
+            mode={mode}
+            playbackProgress={mode === 'history' && dates.length > 1 && currentIndex >= 0 ? currentIndex / (dates.length - 1) : undefined}
+            historyDates={mode === 'history' ? historyDateValues : []}
+          />
         </div>
-
-        <FlowListPanel
-          title="右侧流入"
-          tone="positive"
-          items={[...(observer?.inflows || [])].slice(0, limit)}
-          emptyText={mode === 'history' && datesLoading ? '正在加载历史缓存' : '暂无流入板块'}
-        />
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 bg-[#060908] px-4 py-3 text-xs text-text-secondary">
+          <span>{observer?.flow_inference?.label || '板块迁移为净流量推断'}</span>
+          <span>真实净流量 · 推断迁移路径 · 不代表逐笔资金去向</span>
+        </div>
       </section>
 
       <section className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">

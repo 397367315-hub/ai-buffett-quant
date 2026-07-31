@@ -30,6 +30,7 @@ from models import (
 )
 from database import async_session
 from services.history_cache import history_cache
+from services.sector_flow_network import build_inferred_transfers
 
 router = APIRouter(prefix="/api/v1")
 
@@ -129,6 +130,7 @@ def _assemble_flow_observer(
     outflow_data = [_flow_ranking(row, index + 1) for index, row in enumerate(outflows)]
     inflow_total = sum(row["main_net_inflow"] for row in inflow_data)
     outflow_total = sum(row["main_net_inflow"] for row in outflow_data)
+    network = build_inferred_transfers(inflow_data, outflow_data)
     market = market or {}
     available = bool(inflow_data or outflow_data or market)
     result = {
@@ -136,6 +138,8 @@ def _assemble_flow_observer(
         "board_label": "行业板块" if board_type == "industry" else "概念板块",
         "inflows": inflow_data,
         "outflows": outflow_data,
+        "transfers": network["transfers"],
+        "flow_inference": network["inference"],
         "market": market,
         "summary": {
             "inflow_total": inflow_total,
@@ -1875,7 +1879,8 @@ async def execute_sim_trading(request: dict = None):
 
 # ── 量化评分接口 ──
 
-from services.quant_scorer import enhanced_scorer, DynamicWeights, MarketRegime, RiskParity, BacktestEngine
+from services.quant_scorer import enhanced_scorer, DynamicWeights, MarketRegime, RiskParity
+from services.quant_research import quant_research_engine
 
 
 @router.get("/quant/score-board")
@@ -1967,10 +1972,39 @@ async def get_quant_score_board():
     }
 
 
+@router.get("/quant/research-backtest")
+async def get_quant_research_backtest(
+    days: int = Query(365, ge=30, le=730),
+    top_n: int = Query(10, ge=1, le=50),
+    lookback_days: int = Query(20, ge=10, le=120),
+    holding_days: int = Query(5, ge=1, le=20),
+    capital: float = Query(400000, ge=10000, le=100000000),
+):
+    """Run the auditable point-in-time stock daily-bar research experiment."""
+    result = await quant_research_engine.run(
+        days=days,
+        top_n=top_n,
+        lookback_days=lookback_days,
+        holding_days=holding_days,
+        capital=capital,
+    )
+    return {"code": 0, "data": result}
+
+
 @router.get("/quant/backtest")
-async def get_backtest(days: int = 30):
-    """运行回测"""
-    result = await BacktestEngine.run(days=days)
+async def get_backtest(
+    days: int = Query(365, ge=30, le=730),
+    top_n: int = Query(10, ge=1, le=50),
+    lookback_days: int = Query(20, ge=10, le=120),
+    holding_days: int = Query(5, ge=1, le=20),
+):
+    """Backward-compatible alias for the point-in-time research backtest."""
+    result = await quant_research_engine.run(
+        days=days,
+        top_n=top_n,
+        lookback_days=lookback_days,
+        holding_days=holding_days,
+    )
     return {"code": 0, "data": result}
 
 

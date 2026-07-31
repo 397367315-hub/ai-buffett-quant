@@ -20,7 +20,9 @@ from models import StockDailyBar
 from services.data_collector import as_float, as_int, shanghai_now
 from services.macro_policy_news import macro_policy_news_collector
 from services.quant_scorer import MarketRegime
+from services.research_protocol import research_protocol
 from services.data_collector import collector
+from services.a_stock_data import A_STOCK_DATA_SKILL, calculate_indicators
 
 
 VALID_SELECTION_MODES = {"quick", "full"}
@@ -120,8 +122,10 @@ class StockSelectionAgentService:
             histories[row.stock_code].append({
                 "date": row.trade_date.isoformat(),
                 "close": float(row.close_price),
-                "high": float(row.high_price or row.close_price),
-                "low": float(row.low_price or row.close_price),
+                "high": float(row.high_price) if row.high_price is not None else None,
+                "low": float(row.low_price) if row.low_price is not None else None,
+                "volume": int(row.volume) if row.volume is not None else None,
+                "amount": int(row.amount) if row.amount is not None else None,
             })
         return dict(histories)
 
@@ -166,8 +170,28 @@ class StockSelectionAgentService:
         ma20 = _mean(closes[-20:]) if len(closes) >= 20 else None
         ma60 = _mean(closes[-60:]) if len(closes) >= 60 else None
         rsi = self._rsi(closes)
-        volume_ratio = as_float(stock.get("volume_ratio"))
+        volume_ratio = _optional_number(stock.get("volume_ratio"))
         change_pct = as_float(stock.get("change_pct"))
+        indicator_history = [*history]
+        if price > 0 and (not indicator_history or abs(as_float(indicator_history[-1].get("close")) - price) > 0.0001):
+            current_bar = {"close": price}
+            current_high = _optional_number(stock.get("high"))
+            current_low = _optional_number(stock.get("low"))
+            if current_high is not None:
+                current_bar["high"] = current_high
+            if current_low is not None:
+                current_bar["low"] = current_low
+            current_volume = _optional_number(stock.get("volume"))
+            current_amount = _optional_number(stock.get("amount"))
+            if current_volume is not None:
+                current_bar["volume"] = current_volume
+            if current_amount is not None:
+                current_bar["amount"] = current_amount
+            indicator_history.append(current_bar)
+        indicators = calculate_indicators(indicator_history)
+        macd_hist = indicators["macd"].get("hist")
+        kdj_j = indicators["kdj"].get("j")
+        boll_upper = indicators["boll"].get("upper")
 
         score = 50.0
         evidence: list[str] = []
@@ -204,10 +228,10 @@ class StockSelectionAgentService:
                 score += 3
                 evidence.append(f"RSI {rsi:.0f}，存在超卖修复可能")
 
-        if 1.2 <= volume_ratio <= 4:
+        if volume_ratio is not None and 1.2 <= volume_ratio <= 4:
             score += 8
             evidence.append(f"量比 {volume_ratio:.2f}，成交活跃度匹配")
-        elif volume_ratio > 6:
+        elif volume_ratio is not None and volume_ratio > 6:
             score -= 5
             risks.append(f"量比 {volume_ratio:.2f}，短线交易过热")
         if 0 < change_pct <= 7:
@@ -219,6 +243,20 @@ class StockSelectionAgentService:
             score -= 6
             risks.append(f"当日跌幅 {change_pct:.2f}%，趋势需重新确认")
 
+        if macd_hist is not None:
+            if macd_hist > 0:
+                score += 4
+                evidence.append(f"MACD柱体 {macd_hist:.3f} 为正，短期动能偏强")
+            else:
+                score -= 4
+                risks.append(f"MACD柱体 {macd_hist:.3f} 为负，动能尚未修复")
+        if kdj_j is not None and kdj_j > 100:
+            score -= 3
+            risks.append(f"KDJ-J {kdj_j:.1f}，短线偏热")
+        if boll_upper is not None and price > boll_upper:
+            score -= 4
+            risks.append("收盘价高于布林上轨，追高风险增加")
+
         score = round(_clamp(score), 1)
         signal = "看多" if score >= 64 else "看空" if score <= 38 else "中性"
         recent_lows = [as_float(row.get("low")) for row in history[-20:] if as_float(row.get("low")) > 0]
@@ -227,7 +265,7 @@ class StockSelectionAgentService:
         resistance = max(recent_highs) if recent_highs else (ma60 or price)
         return {
             "agent": "技术面 Agent",
-            "skill": "均线趋势、RSI、量价与支撑阻力",
+            "skill": "a-stock-data 口径：MA、MACD、RSI、KDJ、BOLL、量价与支撑阻力",
             "score": score,
             "signal": signal,
             "summary": evidence[0] if evidence else "技术指标尚未形成明确方向",
@@ -239,7 +277,20 @@ class StockSelectionAgentService:
                 "ma20": round(ma20, 2) if ma20 else None,
                 "ma60": round(ma60, 2) if ma60 else None,
                 "rsi14": rsi,
-                "volume_ratio": round(volume_ratio, 2),
+                "rsi6": indicators["rsi"].get("rsi6"),
+                "rsi24": indicators["rsi"].get("rsi24"),
+                "macd_dif": indicators["macd"].get("dif"),
+                "macd_dea": indicators["macd"].get("dea"),
+                "macd_hist": macd_hist,
+                "kdj_k": indicators["kdj"].get("k"),
+                "kdj_d": indicators["kdj"].get("d"),
+                "kdj_j": kdj_j,
+                "boll_upper": boll_upper,
+                "boll_middle": indicators["boll"].get("middle"),
+                "boll_lower": indicators["boll"].get("lower"),
+                "volume_ma5": indicators["volume"].get("ma5"),
+                "indicator_volume_ratio": indicators["volume"].get("ratio"),
+                "volume_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
                 "support": round(support, 2) if support else None,
                 "resistance": round(resistance, 2) if resistance else None,
                 "history_points": history_points,
@@ -518,6 +569,8 @@ class StockSelectionAgentService:
         news: dict,
         profile: str,
         regime: dict,
+        quality: dict,
+        strategy_audit: dict,
     ) -> dict:
         weights = PROFILE_CONFIG[profile]["weights"]
         weighted_agents = [
@@ -533,6 +586,14 @@ class StockSelectionAgentService:
         composite = sum(score * weight for score, weight in weighted_agents) / weight_total
         bias = regime.get("bias", "neutral")
         composite += 3 if bias == "bullish" else -4 if bias == "bearish" else 0
+        # Evidence quality and an independent audit constrain the ranking. They
+        # cannot be offset by a stronger momentum or fund-flow score.
+        credibility = as_float(strategy_audit.get("credibility_score"))
+        composite -= max(0.0, 62.0 - credibility) * 0.12
+        if quality.get("grade") == "不足":
+            composite = min(composite, 57.0)
+        elif strategy_audit.get("overall_risk") == "高":
+            composite = min(composite, 64.0)
         composite = round(_clamp(composite), 1)
 
         bull_points = [
@@ -558,8 +619,17 @@ class StockSelectionAgentService:
         bear_score = round(100 - downside_safety, 1)
         history_points = technical["metrics"]["history_points"]
         confidence = round(_clamp(48 + abs(bull_score - bear_score) * 0.32 + min(history_points, 80) * 0.12, 35, 92), 1)
+        if quality.get("grade") == "一般":
+            confidence = min(confidence, 68.0)
+        elif quality.get("grade") == "不足":
+            confidence = min(confidence, 45.0)
+        confidence = min(confidence, max(35.0, credibility))
 
-        if composite >= 72 and technical["score"] >= 50 and capital["score"] >= 50 and risk["score"] >= 50:
+        if quality.get("grade") == "不足" or strategy_audit.get("blockers"):
+            verdict = "证据不足"
+        elif strategy_audit.get("overall_risk") == "高":
+            verdict = "待审计修复"
+        elif composite >= 72 and technical["score"] >= 50 and capital["score"] >= 50 and risk["score"] >= 50:
             verdict = "优先研究"
         elif composite >= 58:
             verdict = "持续跟踪"
@@ -576,17 +646,24 @@ class StockSelectionAgentService:
         decisive_factor = max(decisive_candidates, key=lambda item: item[1])[0]
         return {
             "agent": "研究主管 Agent",
-            "skill": "多空交叉验证、优先级裁决",
+            "skill": "多空交叉验证、Alpha/Beta 归因与审计约束",
             "score": composite,
             "verdict": verdict,
             "confidence": confidence,
-            "summary": f"{regime.get('regime', '震荡市')}环境下，决定性因素为{decisive_factor}。",
+            "summary": (
+                f"{regime.get('regime', '震荡市')}环境下，决定性因素为{decisive_factor}；"
+                f"数据质量{quality.get('grade', '不足')}，审计可信度{credibility:.0f}分。"
+            ),
             "debate": {
                 "bull_score": bull_score,
                 "bear_score": bear_score,
                 "bull_points": bull_points or ["暂无足够的看多证据"],
                 "bear_points": bear_points or ["暂无显著的量化风险信号"],
                 "decisive_factor": decisive_factor,
+                "alpha_beta_assessment": (
+                    "当前为横截面研究快照，尚未完成可交易收益的历史 Alpha/Beta 回归；"
+                    "市场环境和行业暴露不计作公司自身 Alpha。"
+                ),
             },
         }
 
@@ -598,13 +675,71 @@ class StockSelectionAgentService:
         regime: dict,
         news_context: dict,
         announcements: list[dict],
+        *,
+        source: str,
+        is_realtime: bool,
+        data_date: str | None,
+        updated_at: str,
     ) -> dict:
+        news = self._news_policy_agent(stock, news_context, announcements)
+        quality = research_protocol.data_quality(
+            stock,
+            history,
+            source=source,
+            news_available=bool(news.get("available")),
+        )
+        hypothesis = research_protocol.hypothesis_card(
+            stock,
+            data_date=data_date,
+            is_realtime=is_realtime,
+            source=source,
+            data_quality=quality["grade"],
+        )
+        timeline = research_protocol.time_audit(
+            stock,
+            history,
+            data_date=data_date,
+            updated_at=updated_at,
+            source=source,
+            is_realtime=is_realtime,
+        )
         technical = self._technical_agent(stock, history)
         fundamental = self._fundamental_agent(stock)
         capital = self._capital_flow_agent(stock)
         risk = self._risk_agent(stock, history, profile)
-        news = self._news_policy_agent(stock, news_context, announcements)
-        supervisor = self._supervisor_agent(stock, technical, fundamental, capital, risk, news, profile, regime)
+        execution = research_protocol.execution_plan(stock, risk["plan"], quality)
+        strategy_audit = research_protocol.strategy_audit(
+            stock,
+            history,
+            timeline=timeline,
+            quality=quality,
+            execution=execution,
+            source=source,
+            is_realtime=is_realtime,
+        )
+        risk["plan"].update({
+            "data_quality": quality["grade"],
+            "data_blindspot_discount_pct": round((1 - quality["position_multiplier"]) * 100, 0),
+            "final_research_position_pct": execution["position_cap_pct"],
+            "friction_cost": execution["friction_cost"],
+        })
+        audit_agent = {
+            "agent": "策略审计官",
+            "skill": "独立证伪：时间泄漏、成本、容量与样本偏差",
+            "score": strategy_audit["credibility_score"],
+            "signal": strategy_audit["verdict"],
+            "summary": f"审计风险{strategy_audit['overall_risk']}，{strategy_audit['verdict']}。",
+            "evidence": [
+                item["evidence"]
+                for item in strategy_audit["findings"]
+                if item["risk_level"] == "低"
+            ][:3],
+            "risks": strategy_audit["blockers"] or strategy_audit["warnings"][:3],
+            "metrics": {"credibility_score": strategy_audit["credibility_score"]},
+        }
+        supervisor = self._supervisor_agent(
+            stock, technical, fundamental, capital, risk, news, profile, regime, quality, strategy_audit,
+        )
         return {
             "code": stock["code"],
             "name": stock["name"],
@@ -612,17 +747,33 @@ class StockSelectionAgentService:
             "price": round(as_float(stock.get("price")), 2),
             "change_pct": round(as_float(stock.get("change_pct")), 2),
             "turnover": round(as_float(stock.get("turnover")), 2),
+            "amount": as_int(stock.get("amount")),
             "market_cap": as_int(stock.get("market_cap")),
             "selection_sources": stock.get("selection_sources") or [],
             "score": supervisor["score"],
             "verdict": supervisor["verdict"],
             "confidence": supervisor["confidence"],
+            "research": {
+                "hypothesis_card": hypothesis,
+                "data_contract": A_STOCK_DATA_SKILL,
+                "data_quality": quality,
+                "time_audit": timeline,
+                "execution_plan": execution,
+                "strategy_audit": strategy_audit,
+                "experiment_log": {
+                    "protocol": "v3.0 固定研究协议",
+                    "factor_changes": "本轮未针对结果调整因子、成本或交易规则",
+                    "backtest_base_locked": True,
+                    "failure_recording": "审计风险和证据不足项会随本次运行记录保存，不允许仅保留成功结论。",
+                },
+            },
             "agents": {
                 "technical": technical,
                 "fundamental": fundamental,
                 "capital": capital,
                 "risk": risk,
                 "news": news,
+                "audit": audit_agent,
                 "supervisor": supervisor,
             },
         }
@@ -635,6 +786,8 @@ class StockSelectionAgentService:
         news_context: dict,
         announcement_coverage: int,
         source_name: str,
+        *,
+        research_ready: bool = False,
     ) -> list[dict]:
         using_ftshare = source_name == "ftshare_mcp"
         freshness = (
@@ -664,6 +817,20 @@ class StockSelectionAgentService:
                 ),
             },
             {
+                "id": "hypothesis",
+                "name": "研究假设 Agent",
+                "skill": "成功标准、失败标准与基准预先写死",
+                "status": "completed" if research_ready else "waiting",
+                "summary": "先定义可证伪信号和对照基线，不根据结果倒推理由。",
+            },
+            {
+                "id": "time_audit",
+                "name": "数据时间审计 Agent",
+                "skill": "事件、可用、计算、交易四时间检查",
+                "status": "completed" if research_ready else "waiting",
+                "summary": "基本面披露日期缺失或同日成交假设会被标记为风险。",
+            },
+            {
                 "id": "market",
                 "name": "市场环境 Agent",
                 "skill": "板块资金与市场状态识别",
@@ -680,9 +847,23 @@ class StockSelectionAgentService:
             {
                 "id": "risk",
                 "name": "风险控制 Agent",
-                "skill": "波动率、回撤与研究仓位上限",
+                "skill": "波动率、回撤、成本与数据盲区仓位上限",
                 "status": "completed" if candidate_count else "waiting",
                 "summary": "风险结论会覆盖单一看多信号。",
+            },
+            {
+                "id": "execution",
+                "name": "交易执行 Agent",
+                "skill": "T+1、佣金、印花税、滑点与冲击成本",
+                "status": "completed" if research_ready else "waiting",
+                "summary": "先扣除真实摩擦成本，再判断参考收益是否还有研究价值。",
+            },
+            {
+                "id": "audit",
+                "name": "策略审计 Agent",
+                "skill": "独立证伪与失败实验记录",
+                "status": "completed" if research_ready else "waiting",
+                "summary": "不接受漂亮曲线作为证据，逐项检查未来函数、偏差、成本和容量。",
             },
             {
                 "id": "news",
@@ -763,18 +944,6 @@ class StockSelectionAgentService:
         if not isinstance(announcements_by_stock, dict):
             announcements_by_stock = {}
         announcement_coverage = sum(bool(items) for items in announcements_by_stock.values())
-        analyzed = [
-            self._analyze_candidate(
-                stock,
-                histories.get(stock["code"], []),
-                risk_profile,
-                regime,
-                news_context,
-                announcements_by_stock.get(stock["code"], []),
-            )
-            for stock in candidates
-        ]
-        analyzed.sort(key=lambda item: (item["score"], item["confidence"]), reverse=True)
         now = shanghai_now()
         # The FTShare fallback exposes a quote snapshot without a source
         # timestamp, so it must not be presented as a verified live tick.
@@ -786,6 +955,22 @@ class StockSelectionAgentService:
             if row.get("date")
         ]
         data_date = now.date().isoformat() if is_realtime else max(cached_dates, default=None)
+        analyzed = [
+            self._analyze_candidate(
+                stock,
+                histories.get(stock["code"], []),
+                risk_profile,
+                regime,
+                news_context,
+                announcements_by_stock.get(stock["code"], []),
+                source=source_name,
+                is_realtime=is_realtime,
+                data_date=data_date,
+                updated_at=now.isoformat(),
+            )
+            for stock in candidates
+        ]
+        analyzed.sort(key=lambda item: (item["score"], item["confidence"]), reverse=True)
         sector_metadata = {
             "value": sector_filter,
             "label": sector_filter or "全部行业",
@@ -799,6 +984,7 @@ class StockSelectionAgentService:
         }
         pipeline = self._pipeline_status(
             len(analyzed), regime, is_realtime, news_context, announcement_coverage, source_name,
+            research_ready=bool(analyzed),
         )
 
         if not analyzed:
@@ -824,6 +1010,7 @@ class StockSelectionAgentService:
                     "selected": 0,
                 },
                 "sector_filter": sector_metadata,
+                "data_contract": A_STOCK_DATA_SKILL,
                 "macro_policy": macro_policy,
                 "agent_pipeline": pipeline,
                 "recommendations": [],
@@ -851,13 +1038,14 @@ class StockSelectionAgentService:
                 "selected": len(recommendations),
             },
             "sector_filter": sector_metadata,
+            "data_contract": A_STOCK_DATA_SKILL,
             "macro_policy": macro_policy,
             "agent_pipeline": pipeline,
             "recommendations": recommendations,
             "message": (
-                "排序先由量化 Agent 交叉验证，再由风险规则约束；国际宏观、国内政策和公司公告仅在可核验时以低权重纳入评分。"
+                "排序先由量化 Agent 交叉验证，再经过数据时间审计、真实成本和独立证伪约束；宏观政策与公告仅在可核验时以低权重纳入评分。"
                 if pipeline[-1]["status"] == "completed"
-                else "排序先由量化 Agent 交叉验证，再由风险规则约束；宏观政策与公告源当前不可用，本轮未计入评分。"
+                else "排序先由量化 Agent 交叉验证，再经过数据时间审计、真实成本和独立证伪约束；宏观政策与公告源当前不可用，本轮未计入评分。"
             ),
             "disclaimer": "结果仅供研究与学习参考，不构成任何投资建议。市场行情和指标会随盘中数据变化。",
         }
