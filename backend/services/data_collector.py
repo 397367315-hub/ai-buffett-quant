@@ -239,7 +239,9 @@ class EastMoneyDataCollector:
         async def fetch_page(page: int) -> tuple[list[dict], int]:
             params = {
                 "pn": str(page), "pz": str(page_size), "po": "0", "np": "1",
-                "fid": "f62", "fs": board_filter,
+                # A live money-flow ranking can reorder between page requests,
+                # creating duplicate and missing boards. Codes are stable.
+                "fid": "f12", "fs": board_filter,
                 "fields": ",".join(self.FLOW_FIELD_MAP), "fltt": "2", "ut": EASTMONEY_UT,
             }
             data = await self.fetch_json(self.BASE_URL, params)

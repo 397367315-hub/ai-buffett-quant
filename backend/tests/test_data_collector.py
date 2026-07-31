@@ -124,6 +124,30 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, ["1", "0"])
 
+    async def test_complete_board_directory_uses_stable_code_pagination(self):
+        collector = EastMoneyDataCollector()
+        rows = [
+            {"f12": f"BK{index:04d}", "f14": f"板块{index}", "f62": index}
+            for index in range(205)
+        ]
+        calls = []
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            calls.append(dict(params))
+            page = int(params["pn"])
+            page_size = int(params["pz"])
+            start = (page - 1) * page_size
+            return {"data": {"total": len(rows), "diff": rows[start:start + page_size]}}
+
+        collector.fetch_json = fake_fetch_json
+        result = await collector.fetch_all_industry_flow()
+
+        self.assertEqual(len(result), len(rows))
+        self.assertEqual({int(call["pn"]) for call in calls}, {1, 2, 3})
+        self.assertTrue(all(call["fid"] == "f12" for call in calls))
+        self.assertEqual({row["code"] for row in result}, {row["f12"] for row in rows})
+
     async def test_technical_screener_uses_live_descending_quotes_and_skips_zero_price(self):
         collector = EastMoneyDataCollector()
         captured = {}
