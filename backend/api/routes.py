@@ -183,6 +183,39 @@ async def _realtime_flow_observer(board_type: str, limit: int) -> dict:
         ),
         _fetch_market_component("flow-observer-turnover", collector.fetch_market_turnover(), {}),
     )
+
+    # A sleeping regional proxy can use the first bounded request only to wake
+    # up. Retry missing components together once; successful components are
+    # retained and an unavailable upstream still remains visibly unavailable.
+    retry_slots = []
+    retry_components = []
+    if not inflow_rows:
+        retry_slots.append("inflows")
+        retry_components.append(_fetch_market_component(
+            "flow-observer-inflow-retry",
+            fetcher(sort_order=0, page_size=request_size),
+            [],
+        ))
+    if not outflow_rows:
+        retry_slots.append("outflows")
+        retry_components.append(_fetch_market_component(
+            "flow-observer-outflow-retry",
+            fetcher(sort_order=1, page_size=request_size),
+            [],
+        ))
+    if not turnover:
+        retry_slots.append("turnover")
+        retry_components.append(_fetch_market_component(
+            "flow-observer-turnover-retry",
+            collector.fetch_market_turnover(),
+            {},
+        ))
+    if retry_components:
+        retry_results = dict(zip(retry_slots, await asyncio.gather(*retry_components)))
+        inflow_rows = inflow_rows or retry_results.get("inflows", [])
+        outflow_rows = outflow_rows or retry_results.get("outflows", [])
+        turnover = turnover or retry_results.get("turnover", {})
+
     return _assemble_flow_observer(
         board_type,
         [*inflow_rows, *outflow_rows],

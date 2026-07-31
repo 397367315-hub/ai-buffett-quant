@@ -97,6 +97,36 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException):
             await routes.get_flow_observer(board_type="unknown", limit=4)
 
+    async def test_flow_observer_retries_components_missing_during_proxy_wakeup(self):
+        calls = {0: 0, 1: 0, "market": 0}
+
+        async def fetch_industry_flow(*, sort_order=0, **kwargs):
+            del kwargs
+            calls[sort_order] += 1
+            if calls[sort_order] == 1:
+                return []
+            if sort_order == 0:
+                return [{"code": "BK0001", "name": "电子", "main_net_inflow": 300_000_000}]
+            return [{"code": "BK0002", "name": "银行", "main_net_inflow": -200_000_000}]
+
+        async def fetch_market_turnover():
+            calls["market"] += 1
+            return {} if calls["market"] == 1 else {"sh_amount": 1_000_000_000}
+
+        with (
+            patch.object(routes.collector, "fetch_industry_flow", new=fetch_industry_flow),
+            patch.object(routes.collector, "fetch_market_turnover", new=fetch_market_turnover),
+        ):
+            response = await routes.get_flow_observer(board_type="industry", limit=2)
+
+        self.assertEqual(calls, {0: 2, 1: 2, "market": 2})
+        self.assertTrue(response["data"]["available"])
+        self.assertEqual(response["data"]["source_status"], {
+            "inflows": True,
+            "outflows": True,
+            "market": True,
+        })
+
     async def test_stock_flow_marks_today_source_data_as_realtime(self):
         flow_data = [{"date": "2026-07-30", "main_net_inflow": 1}]
 
