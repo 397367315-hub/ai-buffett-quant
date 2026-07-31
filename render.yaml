@@ -50,6 +50,8 @@ services:
         value: "2"
       - key: DATA_PROXY_RETRY_DELAY
         value: "0.35"
+      - key: FTSHARE_MCP_PROXY_TIMEOUT
+        value: "12"
 
 databases:
   - name: ai-buffett-cache-db

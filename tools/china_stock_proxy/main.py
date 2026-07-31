@@ -7,7 +7,7 @@ import time
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 
 
@@ -40,6 +40,17 @@ UPSTREAM_HEALTH_PARAMS = {
     "fltt": "2",
     "ut": "b2884a393a59ad6402e4dd90d24e112f",
 }
+FTSHARE_MCP_URL = "https://market.ft.tech/gateway/mcp"
+FTSHARE_ALLOWED_METHODS = frozenset({
+    "initialize",
+    "notifications/initialized",
+    "tools/call",
+})
+FTSHARE_ALLOWED_TOOLS = frozenset({
+    "daily_ohlc",
+    "ft_stock_announcements",
+    "ft_stock_filter",
+})
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -63,6 +74,10 @@ def _positive_int(name: str, default: int) -> int:
 UPSTREAM_TIMEOUT = min(_positive_float("DATA_PROXY_TIMEOUT", 8.0), 8.0)
 UPSTREAM_MAX_ATTEMPTS = min(_positive_int("DATA_PROXY_MAX_ATTEMPTS", 2), 2)
 UPSTREAM_RETRY_DELAY = _positive_float("DATA_PROXY_RETRY_DELAY", 0.35)
+FTSHARE_MCP_TIMEOUT = min(
+    max(_positive_float("FTSHARE_MCP_PROXY_TIMEOUT", 12.0), 2.0),
+    20.0,
+)
 RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 logger = logging.getLogger(__name__)
@@ -71,6 +86,13 @@ logger = logging.getLogger(__name__)
 class FetchRequest(BaseModel):
     url: str
     params: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class FTShareMCPRequest(BaseModel):
+    """A bounded Streamable HTTP request for the public FTShare gateway."""
+
+    payload: dict = Field(default_factory=dict)
     headers: dict[str, str] = Field(default_factory=dict)
 
 
@@ -102,6 +124,37 @@ def _validate_url(url: str):
         or parsed.password
     ):
         raise HTTPException(status_code=400, detail="Upstream host is not allowed")
+
+
+def _validate_ftshare_payload(payload: dict) -> None:
+    if str(payload.get("jsonrpc") or "") != "2.0":
+        raise HTTPException(status_code=400, detail="Invalid FTShare MCP payload")
+    method = str(payload.get("method") or "")
+    if method not in FTSHARE_ALLOWED_METHODS:
+        raise HTTPException(status_code=400, detail="FTShare MCP method is not allowed")
+    if method != "tools/call":
+        return
+
+    params = payload.get("params")
+    tool_name = str(params.get("name") or "") if isinstance(params, dict) else ""
+    if tool_name not in FTSHARE_ALLOWED_TOOLS:
+        raise HTTPException(status_code=400, detail="FTShare MCP tool is not allowed")
+
+
+def _ftshare_headers(headers: dict[str, str]) -> dict[str, str]:
+    forwarded = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    for header_name in ("Mcp-Session-Id", "MCP-Protocol-Version"):
+        value = headers.get(header_name) or headers.get(header_name.lower())
+        if value is None:
+            continue
+        value = str(value).strip()
+        if not value or len(value) > 512 or "\r" in value or "\n" in value:
+            raise HTTPException(status_code=400, detail="Invalid FTShare MCP header")
+        forwarded[header_name] = value
+    return forwarded
 
 
 async def _get_upstream_json(url: str, params: dict, headers: dict) -> dict:
@@ -269,3 +322,40 @@ async def fetch_market_data(
     except Exception as e:
         logger.warning("EastMoney proxy request failed: %s", type(e).__name__)
         raise HTTPException(status_code=502, detail="Upstream request failed") from e
+
+
+@app.post("/ftshare-mcp")
+async def fetch_ftshare_mcp(
+    request: FTShareMCPRequest,
+    x_data_proxy_token: str | None = Header(default=None),
+):
+    """Relay only the read-only FTShare tools needed by the research backend."""
+    _require_token(x_data_proxy_token)
+    _validate_ftshare_payload(request.payload)
+    try:
+        async with httpx.AsyncClient(
+            timeout=FTSHARE_MCP_TIMEOUT,
+            follow_redirects=True,
+        ) as client:
+            upstream = await client.post(
+                FTSHARE_MCP_URL,
+                json=request.payload,
+                headers=_ftshare_headers(request.headers),
+            )
+    except httpx.RequestError as exc:
+        logger.warning("FTShare MCP proxy request failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="FTShare MCP upstream unavailable") from exc
+
+    response_headers = {
+        "Cache-Control": "no-store",
+        "Content-Type": upstream.headers.get("content-type", "application/json"),
+    }
+    for header_name in ("Mcp-Session-Id", "MCP-Protocol-Version"):
+        value = upstream.headers.get(header_name)
+        if value:
+            response_headers[header_name] = value
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=response_headers,
+    )

@@ -46,6 +46,16 @@ class FTShareMCPClient:
         return value.rstrip("/")
 
     @staticmethod
+    def _proxy_url() -> str | None:
+        """Use the regional data proxy when one is configured for market data."""
+        base_url = str(settings.data_proxy_base_url or "").strip().rstrip("/")
+        if not base_url:
+            return None
+        if not base_url.startswith("https://"):
+            raise FTShareMCPError("FTShare MCP data proxy URL must use HTTPS")
+        return f"{base_url}/ftshare-mcp"
+
+    @staticmethod
     def _parse_rpc_response(payload: str) -> dict[str, Any]:
         """Extract one JSON-RPC message from JSON or a Streamable HTTP SSE body."""
         body = payload.strip()
@@ -78,7 +88,18 @@ class FTShareMCPClient:
         payload: dict[str, Any],
         headers: dict[str, str],
     ) -> tuple[dict[str, Any], httpx.Headers]:
-        response = await client.post(url, json=payload, headers=headers)
+        proxy_url = self._proxy_url()
+        if proxy_url:
+            proxy_headers: dict[str, str] = {}
+            if settings.data_proxy_token:
+                proxy_headers["X-Data-Proxy-Token"] = settings.data_proxy_token
+            response = await client.post(
+                proxy_url,
+                json={"payload": payload, "headers": headers},
+                headers=proxy_headers,
+            )
+        else:
+            response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         message = self._parse_rpc_response(response.text)
         error = self._rpc_error(message)
