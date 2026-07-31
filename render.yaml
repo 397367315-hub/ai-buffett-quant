@@ -20,6 +20,10 @@ services:
         sync: false
       - key: DATA_PROXY_TIMEOUT
         value: "20"
+      - key: FTSHARE_MCP_ENABLED
+        value: "true"
+      - key: FTSHARE_MCP_TIMEOUT
+        value: "10"
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: ADMIN_USERNAME

@@ -139,7 +139,7 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
                             "f2": 25.6, "f3": 3.2, "f5": 1_000_000, "f6": 20_000_000,
                             "f8": 4.1, "f9": 18.5, "f10": 2.4, "f12": "600519",
                             "f14": "贵州茅台", "f20": 100_000_000, "f23": 6.0,
-                            "f37": 22.1, "f62": 300_000_000, "f184": 5.5,
+                            "f37": 22.1, "f62": 300_000_000, "f100": "白酒", "f184": 5.5,
                         },
                     ]
                 }
@@ -154,9 +154,37 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["po"], "1")
         self.assertEqual(captured["fid"], "f10")
+        self.assertEqual(captured["fields"], "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f184")
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["stocks"][0]["code"], "600519")
+        self.assertEqual(result["stocks"][0]["sector"], "白酒")
         self.assertEqual(result["stocks"][0]["amount"], 20_000_000)
+
+    async def test_stock_history_uses_ftshare_only_after_primary_source_fails(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_json = AsyncMock(side_effect=RuntimeError("proxy unavailable"))
+        ftshare_rows = [
+            {
+                "ts_millis": 1785308400000,
+                "open": "1333.83", "close": "1321.00", "high": "1343.48", "low": "1312.06",
+                "volume": 6_232_985, "turnover": "8282396818.64",
+            },
+            {
+                "ts_millis": 1785394800000,
+                "open": "1323.00", "close": "1361.76", "high": "1362.00", "low": "1322.00",
+                "volume": 7_187_261, "turnover": "9712135434.49",
+            },
+        ]
+
+        with patch(
+            "services.data_collector.ftshare_mcp_client.get_daily_ohlc",
+            new=AsyncMock(return_value=ftshare_rows),
+        ), patch("services.data_collector.shanghai_now", return_value=datetime(2026, 7, 31)):
+            result = await collector.fetch_stock_price_history("600519", days=365)
+
+        self.assertEqual(result["source"], "ftshare_mcp")
+        self.assertEqual([item["trade_date"] for item in result["history"]], ["2026-07-29", "2026-07-30"])
+        self.assertAlmostEqual(result["history"][1]["change_pct"], 3.0855, places=3)
 
     async def test_intelligent_selection_candidates_merge_multiple_live_rankings(self):
         collector = EastMoneyDataCollector()
@@ -172,6 +200,28 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         by_code = {stock["code"]: stock for stock in result["stocks"]}
         self.assertEqual(by_code["600519"]["selection_sources"], ["fund_flow", "volume"])
         self.assertEqual(by_code["000001"]["selection_sources"], ["volume", "momentum"])
+
+    async def test_intelligent_selection_uses_ftshare_when_all_primary_rankings_are_empty(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_technical_screener = AsyncMock(return_value={"stocks": []})
+        fallback_rows = [{
+            "symbol": "600519.XSHG", "name": "贵州茅台", "close": "1361.76",
+            "change_rate": 0.032, "volume": 7_187_261, "turnover": "9712135434.49",
+            "turnover_rate": 0.014, "pe_ttm": 20.7, "float_a_market_cap": "1700000000000",
+        }]
+        with patch(
+            "services.data_collector.ftshare_mcp_client.get_stock_filter",
+            new=AsyncMock(return_value=fallback_rows),
+        ):
+            result = await collector.fetch_intelligent_selection_candidates(page_size=100)
+
+        self.assertEqual(result["source"], "ftshare_mcp")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["stocks"][0]["code"], "600519")
+        self.assertEqual(result["stocks"][0]["change_pct"], 3.2)
+        self.assertEqual(result["stocks"][0]["turnover"], 1.4)
+        self.assertEqual(result["stocks"][0]["sector"], "")
+        self.assertIsNone(result["stocks"][0]["main_net_inflow"])
 
     async def test_tencent_history_preserves_known_fields_and_nulls_unknown_ones(self):
         collector = EastMoneyDataCollector()

@@ -19,6 +19,7 @@ ALLOWED_HOSTS = {
     "push2his.eastmoney.com",
     "datacenter.eastmoney.com",
     "datacenter-web.eastmoney.com",
+    "np-anotice-stock.eastmoney.com",
     "web.ifzq.gtimg.cn",
 }
 

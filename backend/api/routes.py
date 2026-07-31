@@ -740,6 +740,24 @@ async def get_technical_screener(
 # ── 智能选股 Agent ──
 
 
+@router.get("/stock-selection/sectors")
+async def get_stock_selection_sectors():
+    """List live industry labels that can be used to filter the candidate pool."""
+    sectors = await collector.fetch_intelligent_selection_sectors()
+    today = shanghai_now().date().isoformat()
+    return {
+        "code": 0,
+        "data": {
+            "sectors": sectors,
+            **_market_metadata(
+                available=bool(sectors),
+                data_date=today if sectors else None,
+                is_realtime=True,
+            ),
+        },
+    }
+
+
 async def _store_stock_selection_run(result: dict) -> int | None:
     """Persist the complete agent trace without making a live scan depend on DB health."""
     try:
@@ -781,8 +799,19 @@ async def run_stock_selection(request: dict | None = None):
         raise HTTPException(status_code=422, detail="risk_profile 仅支持 conservative、balanced 或 aggressive")
     if not 3 <= top_n <= 10:
         raise HTTPException(status_code=422, detail="top_n 必须在 3 到 10 之间")
+    raw_sector = payload.get("sector")
+    if raw_sector is not None and not isinstance(raw_sector, str):
+        raise HTTPException(status_code=422, detail="sector 必须是行业名称字符串")
+    sector = raw_sector.strip() if isinstance(raw_sector, str) else None
+    if sector and len(sector) > 60:
+        raise HTTPException(status_code=422, detail="sector 长度不能超过 60 个字符")
 
-    result = await stock_selection_agents.run(mode=mode, risk_profile=risk_profile, top_n=top_n)
+    result = await stock_selection_agents.run(
+        mode=mode,
+        risk_profile=risk_profile,
+        top_n=top_n,
+        sector=sector,
+    )
     run_id = await _store_stock_selection_run(result)
     result["run_id"] = run_id
     result["trace_available"] = run_id is not None

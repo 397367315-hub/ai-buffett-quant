@@ -18,6 +18,32 @@ def _history(start_price: float, days: int = 80) -> list[dict]:
     ]
 
 
+def _macro_context() -> dict:
+    return {
+        "available": True,
+        "updated_at": "2026-07-30T12:00:00+08:00",
+        "summary": "已核验国际宏观数据源 1 个，国内政策与发展信息 1 条。",
+        "international_items": [{
+            "source": "IMF WEO DataMapper",
+            "scope": "international_macro",
+            "title": "IMF 2026 年实际 GDP 增长预测：中国 4.4%",
+            "published_at": "2026-07-30",
+            "url": "https://www.imf.org/external/datamapper/NGDP_RPCH",
+            "impact": "neutral",
+        }],
+        "policy_items": [{
+            "source": "中国政府网",
+            "scope": "domestic_policy",
+            "title": "关于促进白酒产业高质量发展的行动计划",
+            "published_at": "2026-07-29",
+            "url": "https://www.gov.cn/example-policy",
+            "impact": "neutral",
+        }],
+        "source_status": {"中国政府网": "available", "IMF WEO DataMapper": "available"},
+        "macro_adjustment": 2.0,
+    }
+
+
 class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_pipeline_ranks_source_backed_candidate_and_exposes_agent_trace(self):
         service = StockSelectionAgentService()
@@ -29,6 +55,7 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
                     "change_pct": 2.5, "turnover": 4.0, "pe": 18.0, "pb": 5.0,
                     "roe": 21.0, "volume_ratio": 2.0, "market_cap": 100_000_000_000,
                     "main_net_inflow": 800_000_000, "main_net_inflow_pct": 6.0,
+                    "sector": "白酒",
                     "selection_sources": ["fund_flow", "volume", "momentum"],
                 },
                 {
@@ -36,6 +63,7 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
                     "change_pct": -1.0, "turnover": 2.0, "pe": -8.0, "pb": 0.6,
                     "roe": -1.0, "volume_ratio": 0.8, "market_cap": 100_000_000_000,
                     "main_net_inflow": -500_000_000, "main_net_inflow_pct": -6.0,
+                    "sector": "银行",
                     "selection_sources": ["fund_flow"],
                 },
                 {
@@ -43,6 +71,7 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
                     "change_pct": 5.0, "turnover": 9.0, "pe": 10.0, "pb": 1.0,
                     "roe": 10.0, "volume_ratio": 3.0, "market_cap": 10_000_000_000,
                     "main_net_inflow": 900_000_000, "main_net_inflow_pct": 8.0,
+                    "sector": "白酒",
                     "selection_sources": ["fund_flow"],
                 },
             ],
@@ -53,12 +82,33 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         })
         regime = {"regime": "震荡市", "confidence": 0.7, "bias": "neutral"}
 
-        with patch(
-            "services.stock_selection_agents.collector.fetch_intelligent_selection_candidates",
-            new=AsyncMock(return_value=candidates),
-        ), patch(
-            "services.stock_selection_agents.MarketRegime.detect",
-            new=AsyncMock(return_value=regime),
+        announcements = {
+            "600519": [{
+                "source": "东方财富公告聚合",
+                "scope": "company_announcement",
+                "title": "贵州茅台2025年年度权益分派实施公告",
+                "published_at": "2026-07-29",
+                "url": "https://data.eastmoney.com/notices/detail/600519/example.html",
+                "impact": "neutral",
+            }],
+        }
+        with (
+            patch(
+                "services.stock_selection_agents.collector.fetch_intelligent_selection_candidates",
+                new=AsyncMock(return_value=candidates),
+            ),
+            patch(
+                "services.stock_selection_agents.MarketRegime.detect",
+                new=AsyncMock(return_value=regime),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_context",
+                new=AsyncMock(return_value=_macro_context()),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_stock_announcements",
+                new=AsyncMock(return_value=announcements),
+            ),
         ):
             result = await service.run(mode="full", risk_profile="balanced", top_n=3)
 
@@ -66,21 +116,35 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["candidate_summary"]["live_candidates"], 2)
         self.assertEqual(result["candidate_summary"]["analyzed"], 2)
         self.assertEqual(result["recommendations"][0]["code"], "600519")
+        self.assertEqual(result["recommendations"][0]["sector"], "白酒")
         self.assertIn("technical", result["recommendations"][0]["agents"])
         self.assertIn("risk", result["recommendations"][0]["agents"])
+        self.assertIn("news", result["recommendations"][0]["agents"])
+        self.assertTrue(result["recommendations"][0]["agents"]["news"]["sources"])
         self.assertEqual(
             next(agent for agent in result["agent_pipeline"] if agent["id"] == "news")["status"],
-            "not_configured",
+            "completed",
         )
 
     async def test_pipeline_refuses_to_create_recommendations_without_tradable_quotes(self):
         service = StockSelectionAgentService()
-        with patch(
-            "services.stock_selection_agents.collector.fetch_intelligent_selection_candidates",
-            new=AsyncMock(return_value={"total": 0, "stocks": []}),
-        ), patch(
-            "services.stock_selection_agents.MarketRegime.detect",
-            new=AsyncMock(return_value={"regime": "震荡市", "confidence": 0.5, "bias": "neutral"}),
+        with (
+            patch(
+                "services.stock_selection_agents.collector.fetch_intelligent_selection_candidates",
+                new=AsyncMock(return_value={"total": 0, "stocks": []}),
+            ),
+            patch(
+                "services.stock_selection_agents.MarketRegime.detect",
+                new=AsyncMock(return_value={"regime": "震荡市", "confidence": 0.5, "bias": "neutral"}),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_context",
+                new=AsyncMock(return_value={"available": False, "international_items": [], "policy_items": []}),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_stock_announcements",
+                new=AsyncMock(return_value={}),
+            ),
         ):
             result = await service.run()
 
@@ -92,3 +156,107 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         service = StockSelectionAgentService()
         with self.assertRaisesRegex(ValueError, "risk_profile"):
             await service.run(risk_profile="unknown")
+
+    async def test_sector_filter_excludes_nonmatching_candidates_before_ranking(self):
+        service = StockSelectionAgentService()
+        candidates = {
+            "total": 2,
+            "stocks": [
+                {
+                    "code": "600519", "name": "贵州茅台", "price": 120.0,
+                    "change_pct": 2.5, "turnover": 4.0, "pe": 18.0, "pb": 5.0,
+                    "roe": 21.0, "volume_ratio": 2.0, "market_cap": 100_000_000_000,
+                    "main_net_inflow": 800_000_000, "main_net_inflow_pct": 6.0,
+                    "sector": "白酒", "selection_sources": ["fund_flow"],
+                },
+                {
+                    "code": "000001", "name": "平安银行", "price": 10.0,
+                    "change_pct": 5.0, "turnover": 5.0, "pe": 10.0, "pb": 0.6,
+                    "roe": 10.0, "volume_ratio": 3.0, "market_cap": 100_000_000_000,
+                    "main_net_inflow": 900_000_000, "main_net_inflow_pct": 8.0,
+                    "sector": "银行", "selection_sources": ["fund_flow", "volume"],
+                },
+            ],
+        }
+        service._load_histories = AsyncMock(return_value={"600519": _history(100)})
+        with (
+            patch(
+                "services.stock_selection_agents.collector.fetch_intelligent_selection_candidates",
+                new=AsyncMock(return_value=candidates),
+            ),
+            patch(
+                "services.stock_selection_agents.MarketRegime.detect",
+                new=AsyncMock(return_value={"regime": "震荡市", "confidence": 0.5, "bias": "neutral"}),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_context",
+                new=AsyncMock(return_value={"available": False, "international_items": [], "policy_items": []}),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_stock_announcements",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            result = await service.run(sector="白酒", top_n=3)
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sector_filter"]["value"], "白酒")
+        self.assertEqual(result["sector_filter"]["matched_candidates"], 1)
+        self.assertEqual(result["candidate_summary"]["market_candidates"], 2)
+        self.assertEqual([item["code"] for item in result["recommendations"]], ["600519"])
+
+    def test_unavailable_news_source_is_not_marked_as_an_active_signal(self):
+        service = StockSelectionAgentService()
+        report = service._news_policy_agent(
+            {"sector": "银行"},
+            {"available": False, "international_items": [], "policy_items": []},
+            [],
+        )
+
+        self.assertFalse(report["available"])
+        self.assertEqual(report["score"], 50.0)
+        self.assertIn("未计分", report["summary"])
+
+    async def test_ftshare_candidate_snapshot_is_not_presented_as_verified_live_data(self):
+        service = StockSelectionAgentService()
+        candidates = {
+            "source": "ftshare_mcp",
+            "total": 1,
+            "stocks": [{
+                "code": "600519", "name": "贵州茅台", "price": 120.0,
+                "change_pct": 2.5, "turnover": 4.0, "pe": 18.0, "pb": "", "roe": "",
+                "volume_ratio": None, "market_cap": 100_000_000_000,
+                "main_net_inflow": None, "main_net_inflow_pct": None,
+                "sector": "", "selection_sources": ["ftshare_market"],
+            }],
+        }
+        service._load_histories = AsyncMock(return_value={})
+        with (
+            patch(
+                "services.stock_selection_agents.collector.fetch_intelligent_selection_candidates",
+                new=AsyncMock(return_value=candidates),
+            ),
+            patch(
+                "services.stock_selection_agents.MarketRegime.detect",
+                new=AsyncMock(return_value={"regime": "震荡市", "confidence": 0.5, "bias": "neutral"}),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_context",
+                new=AsyncMock(return_value={"available": False, "international_items": [], "policy_items": []}),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_stock_announcements",
+                new=AsyncMock(return_value={}),
+            ),
+            patch.object(service, "_is_market_session", return_value=True),
+        ):
+            result = await service.run(top_n=3)
+
+        self.assertEqual(result["source"], "ftshare_mcp")
+        self.assertFalse(result["is_realtime"])
+        self.assertIsNone(result["data_date"])
+        self.assertIn("未提供主力资金流", result["recommendations"][0]["agents"]["capital"]["summary"])
+        self.assertEqual(
+            next(agent for agent in result["agent_pipeline"] if agent["id"] == "data")["skill"],
+            "FTShare 行情快照候选池",
+        )

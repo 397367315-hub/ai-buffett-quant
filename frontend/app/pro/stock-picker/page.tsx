@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   BrainCircuit,
@@ -40,6 +40,8 @@ interface AgentReport {
   summary: string;
   evidence: string[];
   risks: string[];
+  available?: boolean;
+  sources?: SourceItem[];
   metrics?: Record<string, number | null>;
   plan?: {
     risk_level: string;
@@ -58,10 +60,26 @@ interface AgentReport {
   };
 }
 
+interface SourceItem {
+  source: string;
+  scope?: string;
+  title: string;
+  published_at?: string | null;
+  url: string;
+  impact?: 'positive' | 'negative' | 'neutral';
+  category?: string;
+}
+
+interface SectorOption {
+  name: string;
+  candidate_count: number;
+}
+
 interface Recommendation {
   rank: number;
   code: string;
   name: string;
+  sector: string;
   price: number;
   change_pct: number;
   turnover: number;
@@ -75,6 +93,7 @@ interface Recommendation {
     fundamental: AgentReport;
     capital: AgentReport;
     risk: AgentReport;
+    news: AgentReport;
     supervisor: AgentReport;
   };
 }
@@ -83,7 +102,7 @@ interface SelectionResult {
   available: boolean;
   source: string;
   is_realtime: boolean;
-  data_date: string;
+  data_date: string | null;
   updated_at: string;
   mode: SelectionMode;
   risk_profile: RiskProfile;
@@ -97,8 +116,26 @@ interface SelectionResult {
   };
   candidate_summary: {
     live_candidates: number;
+    market_candidates?: number;
     analyzed: number;
     selected: number;
+  };
+  sector_filter?: {
+    value: string;
+    label: string;
+    matched_candidates: number;
+    market_candidates: number;
+  };
+  macro_policy?: {
+    available: boolean;
+    updated_at: string;
+    summary: string;
+    international_items: SourceItem[];
+    policy_items: SourceItem[];
+    source_status: Record<string, string>;
+    macro_adjustment: number;
+    announcement_coverage: number;
+    announcement_requested: number;
   };
   agent_pipeline: PipelineAgent[];
   recommendations: Recommendation[];
@@ -109,7 +146,7 @@ interface SelectionResult {
 }
 
 const modes: Array<{ id: SelectionMode; label: string; detail: string }> = [
-  { id: 'quick', label: '快速扫描', detail: '实时候选池 + 多维交叉验证' },
+  { id: 'quick', label: '快速扫描', detail: '来源候选池 + 多维交叉验证' },
   { id: 'full', label: '深度扫描', detail: '扩大候选池并完整保留研究轨迹' },
 ];
 
@@ -149,17 +186,55 @@ function sourceLabel(source: string): string {
   if (source === 'fund_flow') return '资金流';
   if (source === 'volume') return '量比';
   if (source === 'momentum') return '动量';
+  if (source === 'ftshare_market') return 'FTShare 行情';
   return source;
+}
+
+function marketSourceLabel(source: string): string {
+  if (source === 'eastmoney') return '东方财富';
+  if (source === 'ftshare_mcp') return 'FTShare MCP';
+  return source;
+}
+
+function sourceImpactClass(impact?: SourceItem['impact']): string {
+  if (impact === 'positive') return 'text-down';
+  if (impact === 'negative') return 'text-up';
+  return 'text-text-secondary';
+}
+
+function sourceDate(value?: string | null): string {
+  return value ? value.slice(0, 10) : '日期未披露';
 }
 
 export default function StockPickerPage() {
   const [mode, setMode] = useState<SelectionMode>('quick');
   const [riskProfile, setRiskProfile] = useState<RiskProfile>('balanced');
   const [topN, setTopN] = useState(5);
+  const [sector, setSector] = useState('');
+  const [sectors, setSectors] = useState<SectorOption[]>([]);
+  const [sectorsLoading, setSectorsLoading] = useState(true);
   const [result, setResult] = useState<SelectionResult | null>(null);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadSectors = async () => {
+      try {
+        const res = await apiFetch<{ code: number; data: { sectors: SectorOption[] } }>('/stock-selection/sectors');
+        if (active) setSectors(res.data.sectors || []);
+      } catch (err) {
+        console.error('Failed to load stock-selection sectors:', err);
+      } finally {
+        if (active) setSectorsLoading(false);
+      }
+    };
+
+    loadSectors();
+    return () => { active = false; };
+  }, []);
 
   const runSelection = async () => {
     setLoading(true);
@@ -167,7 +242,7 @@ export default function StockPickerPage() {
     try {
       const res = await apiFetch<{ code: number; data: SelectionResult }>('/stock-selection/run', {
         method: 'POST',
-        body: JSON.stringify({ mode, risk_profile: riskProfile, top_n: topN }),
+        body: JSON.stringify({ mode, risk_profile: riskProfile, top_n: topN, sector: sector || undefined }),
       });
       setResult(res.data);
       setSelectedCode(res.data.recommendations[0]?.code ?? null);
@@ -181,11 +256,15 @@ export default function StockPickerPage() {
 
   const recommendations = result?.recommendations || [];
   const selected = recommendations.find((item) => item.code === selectedCode) || recommendations[0];
+  const macroSources = result?.macro_policy
+    ? [...result.macro_policy.international_items, ...result.macro_policy.policy_items]
+    : [];
   const agentPanels: Array<{ key: keyof Recommendation['agents']; icon: typeof Gauge }> = [
     { key: 'technical', icon: TrendingUp },
     { key: 'fundamental', icon: Target },
     { key: 'capital', icon: Database },
     { key: 'risk', icon: ShieldCheck },
+    { key: 'news', icon: BrainCircuit },
   ];
 
   return (
@@ -196,22 +275,22 @@ export default function StockPickerPage() {
             <BrainCircuit size={22} className="text-warn" />
             智能选股 Agent
           </h1>
-          <p className="text-text-secondary text-sm mt-1">实时候选池 · 多空交叉验证 · 风险约束</p>
+          <p className="text-text-secondary text-sm mt-1">来源候选池 · 多空交叉验证 · 风险约束</p>
         </div>
         {result && (
           <div className="text-right text-xs text-text-secondary leading-5">
             <div className="flex items-center justify-end gap-1.5">
               <span className={`inline-block h-2 w-2 rounded-full ${result.is_realtime ? 'bg-down' : 'bg-warn'}`} />
-              {result.is_realtime ? '盘中实时行情' : `最近交易快照 · 数据日期 ${result.data_date}`}
+              {result.is_realtime ? '盘中实时行情' : result.data_date ? `最近交易快照 · 数据日期 ${result.data_date}` : '来源快照 · 未提供日期'}
             </div>
-            <div>{result.source} · 本次运行 {formatTime(result.updated_at)}</div>
+            <div>{marketSourceLabel(result.source)} · 本次运行 {formatTime(result.updated_at)}</div>
           </div>
         )}
       </div>
 
       <section className="border border-border bg-card rounded-lg p-4 mb-6">
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-4 items-end">
-          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto_auto] gap-4 items-end">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-4 items-end">
             <div>
               <div className="text-xs text-text-secondary mb-1.5">运行模式</div>
               <div className="grid grid-cols-2 gap-1 rounded-md bg-[#0D1117] p-1" role="group" aria-label="运行模式">
@@ -243,6 +322,21 @@ export default function StockPickerPage() {
                 ))}
               </div>
             </div>
+            <label className="block">
+              <span className="block text-xs text-text-secondary mb-1.5">行业板块</span>
+              <select
+                value={sector}
+                onChange={(event) => setSector(event.target.value)}
+                className="w-full min-w-32 bg-[#0D1117] border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                aria-label="按行业板块筛选"
+              >
+                <option value="">全部行业</option>
+                {sectors.map((item) => (
+                  <option key={item.name} value={item.name}>{item.name} ({item.candidate_count})</option>
+                ))}
+              </select>
+              {sectorsLoading && <span className="block text-xs text-text-secondary mt-1">正在加载行业</span>}
+            </label>
             <label className="block">
               <span className="block text-xs text-text-secondary mb-1.5">入选数量</span>
               <select
@@ -289,9 +383,9 @@ export default function StockPickerPage() {
                 <div className="text-xs text-text-secondary mt-1">置信度 {(result.market_regime.confidence * 100).toFixed(0)}%</div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
-                <div className="text-xs text-text-secondary">行情候选</div>
+                <div className="text-xs text-text-secondary">{result.sector_filter?.label || '全部行业'}候选</div>
                 <div className="mt-1 text-lg font-mono font-bold text-text">{result.candidate_summary.live_candidates}</div>
-                <div className="text-xs text-text-secondary mt-1">{result.is_realtime ? '有效实时行情' : '最近有效快照'}</div>
+                <div className="text-xs text-text-secondary mt-1">全市场 {result.sector_filter?.market_candidates ?? result.candidate_summary.market_candidates ?? result.candidate_summary.live_candidates} 只</div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">完成研究</div>
@@ -338,7 +432,7 @@ export default function StockPickerPage() {
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
                   <div>
                     <h2 className="text-base font-bold text-text flex items-center gap-2"><SearchCheck size={16} className="text-accent" />研究优先级</h2>
-                    <p className="text-xs text-text-secondary mt-1">{result.message}</p>
+                    <p className="text-xs text-text-secondary mt-1">{result.sector_filter?.label || '全部行业'} · {result.message}</p>
                   </div>
                   {result.trace_available && <span className="text-xs text-text-secondary">运行记录 #{result.run_id}</span>}
                 </div>
@@ -353,6 +447,7 @@ export default function StockPickerPage() {
                           <th className="w-[16%] sm:w-auto text-right px-1 sm:px-3 py-3 font-medium whitespace-nowrap">综合分</th>
                           <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">技术</th>
                           <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">资金</th>
+                          <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">政策</th>
                           <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">风险</th>
                           <th className="hidden sm:table-cell text-left px-3 py-3 font-medium">裁决</th>
                           <th className="w-[10%] sm:w-12 px-1 sm:px-2 py-3"><span className="sr-only">查看</span></th>
@@ -368,7 +463,7 @@ export default function StockPickerPage() {
                                   <span className="w-4 sm:w-5 shrink-0 text-xs font-mono text-text-secondary">{stock.rank}</span>
                                   <div className="min-w-0">
                                     <div className="font-medium text-text">{stock.name}</div>
-                                    <div className="text-xs text-text-secondary leading-4 break-words">{stock.code} · {stock.selection_sources.map(sourceLabel).join(' / ')}</div>
+                                    <div className="text-xs text-text-secondary leading-4 break-words">{stock.code} · {stock.sector || '行业未标注'} · {stock.selection_sources.map(sourceLabel).join(' / ')}</div>
                                   </div>
                                 </div>
                               </td>
@@ -377,6 +472,7 @@ export default function StockPickerPage() {
                               <td className={`px-1 sm:px-3 py-3 text-right font-mono text-xs sm:text-sm font-bold whitespace-nowrap ${scoreClass(stock.score)}`}>{stock.score.toFixed(1)}</td>
                               <td className="hidden sm:table-cell px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.technical.score.toFixed(0)}</td>
                               <td className="hidden sm:table-cell px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.capital.score.toFixed(0)}</td>
+                              <td className={`hidden sm:table-cell px-3 py-3 text-right font-mono ${scoreClass(stock.agents.news.score)}`}>{stock.agents.news.score.toFixed(0)}</td>
                               <td className="hidden sm:table-cell px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.risk.score.toFixed(0)}</td>
                               <td className="hidden sm:table-cell px-3 py-3"><span className={`inline-flex border rounded px-2 py-1 text-xs whitespace-nowrap ${verdictClass(stock.verdict)}`}>{stock.verdict}</span></td>
                               <td className="px-1 sm:px-2 py-3 text-right">
@@ -401,12 +497,12 @@ export default function StockPickerPage() {
                         <Target size={18} className="text-warn" /> {selected.name}
                         <span className="text-sm font-mono text-text-secondary">{selected.code}</span>
                       </h2>
-                      <p className="text-xs text-text-secondary mt-1">置信度 {selected.confidence.toFixed(0)}% · 现价 {selected.price.toFixed(2)} · 换手率 {selected.turnover.toFixed(2)}%</p>
+                      <p className="text-xs text-text-secondary mt-1">{selected.sector || '行业未标注'} · 置信度 {selected.confidence.toFixed(0)}% · 现价 {selected.price.toFixed(2)} · 换手率 {selected.turnover.toFixed(2)}%</p>
                     </div>
                     <span className={`border rounded px-2.5 py-1 text-sm ${verdictClass(selected.verdict)}`}>{selected.verdict}</span>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3 mb-5">
                     {agentPanels.map(({ key, icon: Icon }) => {
                       const agent = selected.agents[key];
                       return (
@@ -420,10 +516,58 @@ export default function StockPickerPage() {
                             {agent.evidence.slice(0, 2).map((item) => <div key={item} className="text-xs text-down leading-4">{item}</div>)}
                             {agent.risks.slice(0, 2).map((item) => <div key={item} className="text-xs text-warn leading-4">{item}</div>)}
                           </div>
+                          {agent.sources && agent.sources.length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-border space-y-1.5">
+                              {agent.sources.slice(0, 2).map((source) => (
+                                <a
+                                  key={`${source.source}-${source.url}`}
+                                  href={source.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className={`block text-xs leading-4 break-words hover:text-accent transition-colors ${sourceImpactClass(source.impact)}`}
+                                >
+                                  {source.source} · {source.title}
+                                </a>
+                              ))}
+                            </div>
+                          )}
                         </article>
                       );
                     })}
                   </div>
+
+                  {result.macro_policy && (
+                    <section className="border border-border bg-card rounded-lg p-4 mb-5">
+                      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                        <div>
+                          <h3 className="text-sm font-bold text-text flex items-center gap-2"><BrainCircuit size={16} className="text-accent" />宏观与国内政策来源</h3>
+                          <p className="text-xs text-text-secondary mt-1">{result.macro_policy.summary}</p>
+                        </div>
+                        <div className="text-xs text-text-secondary">公告覆盖 {result.macro_policy.announcement_coverage}/{result.macro_policy.announcement_requested} 只候选</div>
+                      </div>
+                      {macroSources.length > 0 ? (
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                          {macroSources.slice(0, 9).map((source) => (
+                            <a
+                              key={`${source.source}-${source.url}`}
+                              href={source.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="border border-border rounded-md p-3 hover:border-accent transition-colors min-w-0"
+                            >
+                              <div className="flex items-center justify-between gap-2 text-xs">
+                                <span className="text-accent min-w-0 break-words">{source.source}</span>
+                                <span className="text-text-secondary shrink-0">{sourceDate(source.published_at)}</span>
+                              </div>
+                              <p className={`text-xs leading-5 mt-2 break-words ${sourceImpactClass(source.impact)}`}>{source.title}</p>
+                            </a>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-text-secondary py-2">本轮未取得可展示的宏观或政策原始链接。</div>
+                      )}
+                    </section>
+                  )}
 
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-5">
                     <article className="border border-border bg-card rounded-lg p-4">
@@ -455,7 +599,9 @@ export default function StockPickerPage() {
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-text-secondary border-t border-border pt-4">
-                    <span>主力净流入 {formatYi(selected.agents.capital.metrics?.main_net_inflow || 0)}</span>
+                    {selected.agents.capital.metrics?.main_net_inflow == null
+                      ? <span>主力资金数据未提供</span>
+                      : <span>主力净流入 {formatYi(selected.agents.capital.metrics.main_net_inflow)}</span>}
                     <span>日线样本 {selected.agents.technical.metrics?.history_points ?? 0} 条</span>
                     <span>{result.disclaimer}</span>
                   </div>

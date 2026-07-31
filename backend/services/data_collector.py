@@ -1,7 +1,7 @@
 """东方财富公开行情采集器。
 
-所有金额保持数据源原始的人民币单位，页面层再负责格式化。这里不制造兜底
-行情：上游不可用时返回空结果，由 API 明确标记不可用。
+所有金额保持数据源原始的人民币单位，页面层再负责格式化。主数据源失败时，
+只会使用配置明确启用的 FTShare 结构化日线补源，不会制造行情数据。
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from config import settings
+from services.ftshare_mcp import ftshare_mcp_client
 
 
 EASTMONEY_UT = "b2884a393a59ad6402e4dd90d24e112f"
@@ -113,7 +114,7 @@ class EastMoneyDataCollector:
         "Accept": HEADERS["Accept"],
     }
     STOCK_SCREENER_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
-    STOCK_SCREENER_FIELDS = "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f184"
+    STOCK_SCREENER_FIELDS = "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f184"
 
     @staticmethod
     def _request_timeout() -> float:
@@ -488,7 +489,9 @@ class EastMoneyDataCollector:
         EastMoney's historical endpoint is often unavailable from overseas
         service regions, even while its realtime endpoints remain reachable.
         Tencent supplies daily OHLCV coverage for Shanghai, Shenzhen, and
-        Beijing-listed shares. Fields absent from that source remain null.
+        Beijing-listed shares. If that request fails, an enabled FTShare MCP
+        fallback supplies documented daily OHLC data. Fields absent from a
+        source remain null.
         """
         code = normalize_stock_code(stock_code)
         symbol = self._tencent_symbol(code)
@@ -497,7 +500,17 @@ class EastMoneyDataCollector:
             # change against the preceding close.
             "param": f"{symbol},day,,,{min(max(days + 20, 30), 800)},qfq",
         }
-        data = await self.fetch_json(self.TENCENT_KLINE_URL, params, self.TENCENT_HEADERS)
+        try:
+            data = await self.fetch_json(self.TENCENT_KLINE_URL, params, self.TENCENT_HEADERS)
+        except Exception as source_error:
+            try:
+                fallback = await self._fetch_ftshare_stock_price_history(code, days)
+            except Exception as fallback_error:
+                print(f"FTShare history fallback failed for {code}: {type(fallback_error).__name__}")
+                raise RuntimeError(f"股票历史行情不可用: {code}") from source_error
+            if fallback.get("history"):
+                return fallback
+            raise RuntimeError(f"股票历史行情不可用: {code}") from source_error
         payload = ((data.get("data") or {}).get(symbol) or {})
         series = payload.get("qfqday") or payload.get("day") or []
         history = []
@@ -538,6 +551,56 @@ class EastMoneyDataCollector:
             "code": code,
             "name": name,
             "source": "tencent",
+            "history": self._history_in_window(history, days),
+        }
+
+    async def _fetch_ftshare_stock_price_history(self, stock_code: str, days: int) -> dict:
+        """Map FTShare's documented daily OHLC fallback into the cache schema."""
+        rows = await ftshare_mcp_client.get_daily_ohlc(stock_code, min(max(days + 20, 30), 500))
+        by_date: dict[str, dict] = {}
+        for item in rows:
+            timestamp = as_optional_float(item.get("ts_millis"))
+            close_price = as_optional_float(item.get("close"))
+            if timestamp is None or close_price is None or close_price <= 0:
+                continue
+            try:
+                trade_date = datetime.fromtimestamp(timestamp / 1000, tz=ZoneInfo("Asia/Shanghai")).date().isoformat()
+            except (OverflowError, OSError, ValueError):
+                continue
+            volume = as_optional_float(item.get("volume"))
+            amount = as_optional_float(item.get("turnover"))
+            by_date[trade_date] = {
+                "trade_date": trade_date,
+                "open": as_optional_float(item.get("open")),
+                "close": close_price,
+                "high": as_optional_float(item.get("high")),
+                "low": as_optional_float(item.get("low")),
+                "volume": int(volume) if volume is not None else None,
+                "amount": int(amount) if amount is not None else None,
+                "amplitude": None,
+                "change_pct": None,
+                "change_amount": None,
+                "turnover": None,
+            }
+
+        history = []
+        previous_close: float | None = None
+        for trade_date in sorted(by_date):
+            row = by_date[trade_date]
+            close_price = row["close"]
+            high_price = row["high"]
+            low_price = row["low"]
+            if previous_close not in (None, 0):
+                row["change_amount"] = close_price - previous_close
+                row["change_pct"] = row["change_amount"] / previous_close * 100
+                if high_price is not None and low_price is not None:
+                    row["amplitude"] = (high_price - low_price) / previous_close * 100
+            previous_close = close_price
+            history.append(row)
+        return {
+            "code": stock_code,
+            "name": "",
+            "source": "ftshare_mcp",
             "history": self._history_in_window(history, days),
         }
 
@@ -839,6 +902,7 @@ class EastMoneyDataCollector:
             "roe": item.get("f37") if item.get("f37") not in (None, "-") else "",
             "volume_ratio": as_float(item.get("f10")),
             "market_cap": as_int(item.get("f20")),
+            "sector": str(item.get("f100") or "").strip(),
             "main_net_inflow": as_int(item.get("f62")),
             "main_net_inflow_pct": as_float(item.get("f184")),
         }
@@ -919,7 +983,75 @@ class EastMoneyDataCollector:
             return flow_score + volume_score + change_score + len(stock.get("selection_sources", [])) * 5
 
         stocks = sorted(candidates.values(), key=priority, reverse=True)
-        return {"total": len(stocks), "stocks": stocks}
+        if stocks:
+            return {"total": len(stocks), "stocks": stocks, "source": "eastmoney"}
+        return await self._fetch_ftshare_intelligent_selection_candidates(page_size)
+
+    async def _fetch_ftshare_intelligent_selection_candidates(self, page_size: int) -> dict:
+        """Use FTShare quotes only when every primary candidate ranking is empty.
+
+        FTShare's documented stock filter does not expose per-stock industry
+        labels or EastMoney's capital-flow ranking fields. It can keep the
+        unfiltered research pipeline available, but cannot truthfully satisfy
+        an industry-specific scan on its own.
+        """
+        try:
+            rows = await ftshare_mcp_client.get_stock_filter(min(max(page_size, 50), 300))
+        except Exception as exc:
+            print(f"FTShare candidate fallback failed: {type(exc).__name__}")
+            return {"total": 0, "stocks": [], "source": "ftshare_mcp"}
+
+        stocks = []
+        for item in rows:
+            raw_symbol = str(item.get("symbol") or "")
+            code = raw_symbol.split(".", 1)[0]
+            try:
+                code = normalize_stock_code(code)
+            except ValueError:
+                continue
+            price = as_optional_float(item.get("close"))
+            if price is None or price <= 0:
+                continue
+            turnover_rate = as_optional_float(item.get("turnover_rate"))
+            stocks.append({
+                "code": code,
+                "name": str(item.get("name") or ""),
+                "price": price,
+                # FTShare publishes ratios in decimal form for these fields.
+                "change_pct": round(as_float(item.get("change_rate")) * 100, 4),
+                "volume": as_int(item.get("volume")),
+                "amount": as_int(item.get("turnover")),
+                "turnover": round(turnover_rate * 100, 4) if turnover_rate is not None else 0.0,
+                "pe": item.get("pe_ttm") if item.get("pe_ttm") not in (None, "-") else "",
+                "pb": "",
+                "roe": "",
+                "volume_ratio": None,
+                "market_cap": as_int(item.get("float_a_market_cap")),
+                "sector": "",
+                "main_net_inflow": None,
+                "main_net_inflow_pct": None,
+                "selection_sources": ["ftshare_market"],
+            })
+        def fallback_priority(stock: dict) -> float:
+            change_score = max(-15.0, min(20.0, as_float(stock.get("change_pct")) * 3))
+            turnover_score = max(0.0, min(15.0, as_float(stock.get("turnover")) * 2))
+            return change_score + turnover_score
+
+        stocks.sort(key=fallback_priority, reverse=True)
+        return {"total": len(stocks), "stocks": stocks, "source": "ftshare_mcp"}
+
+    async def fetch_intelligent_selection_sectors(self, page_size: int = 180) -> list[dict]:
+        """Return live industry labels that exactly match the selection universe."""
+        snapshot = await self.fetch_intelligent_selection_candidates(page_size=page_size)
+        counts: dict[str, int] = {}
+        for stock in snapshot.get("stocks") or []:
+            sector = str(stock.get("sector") or "").strip()
+            if sector:
+                counts[sector] = counts.get(sector, 0) + 1
+        return [
+            {"name": sector, "candidate_count": count}
+            for sector, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
 
 
 collector = EastMoneyDataCollector()
