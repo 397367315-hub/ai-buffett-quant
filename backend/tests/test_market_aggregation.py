@@ -3,6 +3,8 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
+
 from api import routes
 
 
@@ -64,6 +66,36 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["data"]["summary"]["outflow_board_count"], 1)
         self.assertFalse(response["data"]["summary"]["rankings_are_complete"])
         self.assertEqual(set(requested_orders), {0, 1})
+
+    async def test_flow_observer_keeps_bidirectional_rows_in_one_snapshot(self):
+        inflow_rows = [
+            {"code": "BK0001", "name": "半导体", "main_net_inflow": 300_000_000},
+            {"code": "BK0002", "name": "通信设备", "main_net_inflow": 100_000_000},
+        ]
+        outflow_rows = [
+            {"code": "BK0003", "name": "房地产", "main_net_inflow": -250_000_000},
+            {"code": "BK0004", "name": "银行", "main_net_inflow": -80_000_000},
+        ]
+
+        async def fetch_industry_flow(*, sort_order=0, **kwargs):
+            del kwargs
+            return inflow_rows if sort_order == 0 else outflow_rows
+
+        with (
+            patch.object(routes.collector, "fetch_industry_flow", new=fetch_industry_flow),
+            patch.object(routes.collector, "fetch_market_turnover", new=AsyncMock(return_value={"sh_amount": 1_000_000_000})),
+        ):
+            response = await routes.get_flow_observer(board_type="industry", limit=2)
+
+        data = response["data"]
+        self.assertEqual([row["name"] for row in data["inflows"]], ["半导体", "通信设备"])
+        self.assertEqual([row["name"] for row in data["outflows"]], ["房地产", "银行"])
+        self.assertEqual(data["summary"]["shown_net_flow"], 70_000_000)
+        self.assertEqual(data["board_label"], "行业板块")
+
+    async def test_flow_observer_rejects_unknown_board_type(self):
+        with self.assertRaises(HTTPException):
+            await routes.get_flow_observer(board_type="unknown", limit=4)
 
     async def test_stock_flow_marks_today_source_data_as_realtime(self):
         flow_data = [{"date": "2026-07-30", "main_net_inflow": 1}]

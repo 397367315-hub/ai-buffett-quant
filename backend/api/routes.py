@@ -25,7 +25,7 @@ from services.stock_selection_agents import (
 )
 from models import (
     KnowledgeTerm, LearningCase, ConceptBoard,
-    ConceptFundFlowDaily, MarketFundFlowDaily, AIChatHistory, MarketBoard,
+    ConceptFundFlowDaily, IndustryFundFlowDaily, MarketFundFlowDaily, AIChatHistory, MarketBoard,
     StockSelectionRun,
 )
 from database import async_session
@@ -94,6 +94,186 @@ async def _realtime_concept_extremes(limit: int = 50) -> list[dict]:
     }
     ordered = sorted(by_code.values(), key=lambda item: as_int(item.get("main_net_inflow")), reverse=True)
     return [_flow_ranking(item, index + 1) for index, item in enumerate(ordered)]
+
+
+def _assemble_flow_observer(
+    board_type: str,
+    rows: list[dict],
+    limit: int,
+    *,
+    market: dict | None,
+    source: str,
+    data_date: str | None,
+    is_realtime: bool,
+    history_coverage: dict | None = None,
+) -> dict:
+    """Shape board rows into the same two-sided contract for live and cache data."""
+    # Keep one source row per board, then enforce the sign of each side. This
+    # protects the visual direction when an upstream ranking contains zeros.
+    by_code = {
+        str(row.get("code")): row
+        for row in rows
+        if row.get("code")
+    }
+    inflows = sorted(
+        (row for row in by_code.values() if as_int(row.get("main_net_inflow")) > 0),
+        key=lambda row: as_int(row.get("main_net_inflow")),
+        reverse=True,
+    )[:limit]
+    outflows = sorted(
+        (row for row in by_code.values() if as_int(row.get("main_net_inflow")) < 0),
+        key=lambda row: as_int(row.get("main_net_inflow")),
+    )[:limit]
+
+    inflow_data = [_flow_ranking(row, index + 1) for index, row in enumerate(inflows)]
+    outflow_data = [_flow_ranking(row, index + 1) for index, row in enumerate(outflows)]
+    inflow_total = sum(row["main_net_inflow"] for row in inflow_data)
+    outflow_total = sum(row["main_net_inflow"] for row in outflow_data)
+    market = market or {}
+    available = bool(inflow_data or outflow_data or market)
+    result = {
+        "board_type": board_type,
+        "board_label": "行业板块" if board_type == "industry" else "概念板块",
+        "inflows": inflow_data,
+        "outflows": outflow_data,
+        "market": market,
+        "summary": {
+            "inflow_total": inflow_total,
+            "outflow_total": outflow_total,
+            "shown_net_flow": inflow_total + outflow_total,
+            "inflow_count": len(inflow_data),
+            "outflow_count": len(outflow_data),
+            "requested_limit": limit,
+        },
+        "source_status": {
+            "inflows": bool(inflow_data),
+            "outflows": bool(outflow_data),
+            "market": bool(market),
+        },
+        **_market_metadata(
+            available=available,
+            data_date=data_date if available else None,
+            is_realtime=is_realtime,
+            source=source,
+        ),
+    }
+    if history_coverage is not None:
+        result["history_coverage"] = history_coverage
+    return result
+
+
+async def _realtime_flow_observer(board_type: str, limit: int) -> dict:
+    """Build one timestamped, bidirectional board-flow snapshot.
+
+    The two directional rankings are requested together so the animation never
+    combines an inflow list from one refresh with an outflow list from another.
+    """
+    fetcher = collector.fetch_industry_flow if board_type == "industry" else collector.fetch_concept_flow
+    request_size = min(max(limit * 4, 24), 100)
+    inflow_rows, outflow_rows, turnover = await asyncio.gather(
+        _fetch_market_component(
+            "flow-observer-inflow",
+            fetcher(sort_order=0, page_size=request_size),
+            [],
+        ),
+        _fetch_market_component(
+            "flow-observer-outflow",
+            fetcher(sort_order=1, page_size=request_size),
+            [],
+        ),
+        _fetch_market_component("flow-observer-turnover", collector.fetch_market_turnover(), {}),
+    )
+    return _assemble_flow_observer(
+        board_type,
+        [*inflow_rows, *outflow_rows],
+        limit,
+        market=turnover,
+        source="eastmoney",
+        data_date=shanghai_now().date().isoformat(),
+        is_realtime=True,
+    )
+
+
+async def _historical_flow_observer(board_type: str, target_date: date, limit: int) -> dict:
+    """Load a single daily board snapshot from the verified local cache."""
+    model = IndustryFundFlowDaily if board_type == "industry" else ConceptFundFlowDaily
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(model)
+            .where(model.trade_date == target_date)
+            .order_by(model.main_net_inflow.desc())
+        )).scalars().all()
+        codes = [row.board_code for row in rows]
+        board_rows = (await session.execute(
+            select(MarketBoard).where(
+                MarketBoard.board_type == board_type,
+                MarketBoard.code.in_(codes),
+            )
+        )).scalars().all() if codes else []
+        directory_board_count = (await session.execute(
+            select(func.count()).select_from(MarketBoard).where(MarketBoard.board_type == board_type)
+        )).scalar_one()
+
+    names = {row.code: row.name for row in board_rows}
+    records = [
+        {
+            "code": row.board_code,
+            "name": names.get(row.board_code, row.board_code),
+            "close_price": row.close_price,
+            "change_pct": row.change_pct,
+            "main_net_inflow": row.main_net_inflow,
+            "main_net_inflow_pct": row.main_net_inflow_pct,
+            "super_large_net_inflow": row.super_large_net_inflow,
+            "large_net_inflow": row.large_net_inflow,
+            "medium_net_inflow": row.medium_net_inflow,
+            "up_count": row.up_count,
+            "down_count": row.down_count,
+            "leading_stock": getattr(row, "leading_stock", "") or "",
+        }
+        for row in rows
+    ]
+    required_board_count = max(1, (directory_board_count * 95 + 99) // 100)
+    coverage = {
+        "snapshot_board_count": len(rows),
+        "directory_board_count": directory_board_count,
+        "is_complete": bool(directory_board_count) and len(rows) >= required_board_count,
+    }
+    return _assemble_flow_observer(
+        board_type,
+        records,
+        limit,
+        market={},
+        source="cache",
+        data_date=target_date.isoformat(),
+        is_realtime=False,
+        history_coverage=coverage,
+    )
+
+
+async def _flow_observer_history_dates(board_type: str) -> list[dict]:
+    """List cached daily snapshots in chronological order for playback."""
+    model = IndustryFundFlowDaily if board_type == "industry" else ConceptFundFlowDaily
+    cutoff = shanghai_now().date() - timedelta(days=365)
+    async with async_session() as session:
+        directory_board_count = (await session.execute(
+            select(func.count()).select_from(MarketBoard).where(MarketBoard.board_type == board_type)
+        )).scalar_one()
+        rows = (await session.execute(
+            select(model.trade_date, func.count(func.distinct(model.board_code)))
+            .where(model.trade_date >= cutoff)
+            .group_by(model.trade_date)
+            .order_by(model.trade_date.asc())
+        )).all()
+
+    required_board_count = max(1, (directory_board_count * 95 + 99) // 100)
+    return [
+        {
+            "date": trade_date.isoformat(),
+            "board_count": board_count,
+            "is_complete": bool(directory_board_count) and board_count >= required_board_count,
+        }
+        for trade_date, board_count in rows
+    ]
 
 
 async def _concept_history_rankings(
@@ -689,6 +869,48 @@ async def get_market_sentiment():
 
 
 # ── 轮动追踪接口 ──
+
+
+@router.get("/flow/observer")
+async def get_flow_observer(
+    board_type: str = Query("industry"),
+    limit: int = Query(9, ge=4, le=12),
+    target_date: Optional[str] = Query(None, alias="date"),
+):
+    """Return a real-time or cached daily snapshot for the animated observer."""
+    if not isinstance(target_date, str):
+        target_date = None
+    normalized_type = board_type.strip().lower()
+    if normalized_type not in {"industry", "concept"}:
+        raise HTTPException(status_code=422, detail="board_type 仅支持 industry 或 concept")
+    if target_date:
+        try:
+            requested_date = date.fromisoformat(target_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必须是 YYYY-MM-DD") from exc
+        if requested_date > shanghai_now().date():
+            raise HTTPException(status_code=422, detail="不能查询未来交易日")
+        if requested_date < shanghai_now().date():
+            return {"code": 0, "data": await _historical_flow_observer(normalized_type, requested_date, limit)}
+    return {"code": 0, "data": await _realtime_flow_observer(normalized_type, limit)}
+
+
+@router.get("/flow/observer/dates")
+async def get_flow_observer_dates(board_type: str = Query("industry")):
+    """List cached dates and coverage for the historical observer playback."""
+    normalized_type = board_type.strip().lower()
+    if normalized_type not in {"industry", "concept"}:
+        raise HTTPException(status_code=422, detail="board_type 仅支持 industry 或 concept")
+    dates = await _flow_observer_history_dates(normalized_type)
+    return {
+        "code": 0,
+        "data": {
+            "board_type": normalized_type,
+            "dates": dates,
+            "count": len(dates),
+            "source": "cache",
+        },
+    }
 
 
 @router.get("/flow/rotation")
