@@ -189,7 +189,7 @@ interface Recommendation {
     capital: AgentReport;
     risk: AgentReport;
     news: AgentReport;
-    audit: AgentReport;
+    audit?: AgentReport;
     supervisor: AgentReport;
   };
   research?: ResearchReport;
@@ -257,6 +257,14 @@ const profiles: Array<{ id: RiskProfile; label: string }> = [
   { id: 'conservative', label: '稳健' },
   { id: 'balanced', label: '均衡' },
   { id: 'aggressive', label: '进取' },
+];
+
+const analysisStages = [
+  { threshold: 0, label: '读取实时行情与候选池' },
+  { threshold: 20, label: '计算技术、资金与基本面' },
+  { threshold: 40, label: '分析宏观政策与公司公告' },
+  { threshold: 62, label: '执行风险、成本与偏差审计' },
+  { threshold: 82, label: '汇总 Agent 裁决' },
 ];
 
 const statusClass: Record<PipelineAgent['status'], string> = {
@@ -341,6 +349,8 @@ export default function StockPickerPage() {
   const [result, setResult] = useState<SelectionResult | null>(null);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [loadingElapsed, setLoadingElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -361,7 +371,22 @@ export default function StockPickerPage() {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    if (!loading) return undefined;
+    const startedAt = Date.now();
+    const updateProgress = () => {
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+      setLoadingElapsed(elapsedSeconds);
+      setLoadingProgress((current) => Math.max(current, Math.min(93, 5 + elapsedSeconds * 3)));
+    };
+    updateProgress();
+    const timer = window.setInterval(updateProgress, 500);
+    return () => window.clearInterval(timer);
+  }, [loading]);
+
   const runSelection = async () => {
+    setLoadingProgress(5);
+    setLoadingElapsed(0);
     setLoading(true);
     setError(null);
     try {
@@ -371,6 +396,8 @@ export default function StockPickerPage() {
       });
       setResult(res.data);
       setSelectedCode(res.data.recommendations[0]?.code ?? null);
+      setLoadingProgress(100);
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
     } catch (err) {
       console.error('Failed to run stock selection:', err);
       setError('实时选股暂时无法完成，请稍后重试。');
@@ -395,6 +422,11 @@ export default function StockPickerPage() {
   const selectedTechnicalMetrics = selected?.agents.technical.metrics;
   const selectedResearch = selected?.research;
   const selectedContract = selectedResearch?.data_contract || result?.data_contract;
+  const loadingStageIndex = analysisStages.reduce(
+    (activeIndex, stage, index) => loadingProgress >= stage.threshold ? index : activeIndex,
+    0,
+  );
+  const loadingStage = analysisStages[loadingStageIndex];
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 overflow-x-hidden">
@@ -484,7 +516,7 @@ export default function StockPickerPage() {
             className="min-h-10 px-4 py-2 bg-accent text-white text-sm rounded-md hover:opacity-90 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5"
           >
             {loading ? <RefreshCw size={15} className="animate-spin" /> : <Play size={15} />}
-            {loading ? 'Agent 分析中...' : '开始实时选股'}
+            {loading ? `分析中 ${loadingProgress}%` : '开始实时选股'}
           </button>
         </div>
       </section>
@@ -496,10 +528,46 @@ export default function StockPickerPage() {
       )}
 
       {loading && (
-        <div className="py-16 text-center text-text-secondary">
-          <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full mx-auto mb-3" />
-          正在汇集实时行情与 Agent 结论...
-        </div>
+        <section className="border border-border bg-card rounded-lg px-4 py-5 mb-6" role="status" aria-live="polite">
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="flex min-w-0 items-center gap-2 text-text">
+              <RefreshCw size={16} className="shrink-0 animate-spin text-accent" />
+              <span className="truncate">{loadingStage.label}</span>
+            </div>
+            <span className="shrink-0 font-mono font-semibold text-accent">{loadingProgress}%</span>
+          </div>
+          <div
+            className="mt-3 h-2 overflow-hidden rounded bg-[#0D1117]"
+            role="progressbar"
+            aria-label="智能选股分析进度"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={loadingProgress}
+          >
+            <div
+              className="h-full bg-accent transition-[width] duration-500 ease-out"
+              style={{ width: `${loadingProgress}%` }}
+            />
+          </div>
+          <div className="mt-4 grid grid-cols-5 gap-1.5" aria-hidden="true">
+            {analysisStages.map((stage, index) => {
+              const completed = index < loadingStageIndex || loadingProgress === 100;
+              const active = index === loadingStageIndex && loadingProgress < 100;
+              return (
+                <div key={stage.label} className="min-w-0 text-center">
+                  <div className={`mx-auto flex h-6 w-6 items-center justify-center rounded-full border ${completed ? 'border-down bg-[#26A69A22] text-down' : active ? 'border-accent bg-[#58A6FF22] text-accent' : 'border-border text-text-secondary'}`}>
+                    {completed ? <CheckCircle2 size={13} /> : active ? <RefreshCw size={12} className="animate-spin" /> : <Clock3 size={12} />}
+                  </div>
+                  <div className={`mt-1 hidden truncate text-[10px] sm:block ${completed ? 'text-down' : active ? 'text-accent' : 'text-text-secondary'}`}>{stage.label}</div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary">
+            <span>第 {loadingStageIndex + 1}/{analysisStages.length} 阶段</span>
+            <span>已等待 {loadingElapsed} 秒 · 进度为处理阶段估算</span>
+          </div>
+        </section>
       )}
 
       {!loading && result && (
@@ -634,6 +702,7 @@ export default function StockPickerPage() {
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3 mb-5">
                     {agentPanels.map(({ key, icon: Icon }) => {
                       const agent = selected.agents[key];
+                      if (!agent) return null;
                       return (
                         <article key={key} className="border border-border bg-card rounded-lg p-4">
                           <div className="flex items-start justify-between gap-2">
