@@ -1147,11 +1147,16 @@ class EastMoneyDataCollector:
                 str(item["name"]).strip(): as_int(item["stock_count"])
                 for item in verified_seed
             }
-            flow_result = await asyncio.gather(
-                self.fetch_industry_flow(page_size=100),
-                return_exceptions=True,
-            )
-            flow_result = flow_result[0]
+            try:
+                flow_result: list[dict] | Exception = await asyncio.wait_for(
+                    self.fetch_industry_flow(page_size=100),
+                    timeout=settings.stock_selection_sector_refresh_timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                print("Industry hot-signal refresh timed out; using verified sector cache")
+                flow_result = exc
+            except Exception as exc:
+                flow_result = exc
             mapping_rows = verified_seed
         else:
             counts_result, flow_result = await asyncio.gather(
@@ -1168,6 +1173,18 @@ class EastMoneyDataCollector:
         if isinstance(flow_result, Exception):
             print(f"Industry directory failed: {type(flow_result).__name__}")
             rows = verified_seed
+        elif verified_seed:
+            live_by_name = {
+                str(item.get("name") or "").strip(): item
+                for item in rows
+                if str(item.get("name") or "").strip()
+            }
+            # A single ranking page only contains the hottest boards. Keep the
+            # last verified signal for every other board instead of zeroing it.
+            rows = [
+                {**item, **live_by_name.get(str(item["name"]).strip(), {})}
+                for item in verified_seed
+            ]
 
         code_by_name: dict[str, str] = {}
         for row in [*mapping_rows, *rows]:

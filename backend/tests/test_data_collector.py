@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
@@ -244,7 +245,35 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         collector.fetch_stock_universe.assert_not_awaited()
         self.assertEqual([item["code"] for item in sectors], ["BK0475", "BK0477"])
         self.assertEqual(sectors[0]["main_net_inflow"], 4_618_064_640)
-        self.assertEqual(sectors[1]["main_net_inflow"], 0)
+        self.assertEqual(sectors[1]["main_net_inflow"], 1)
+
+    async def test_sector_seed_timeout_returns_verified_cache_within_deadline(self):
+        collector = EastMoneyDataCollector()
+        seed = [{
+            "code": "BK0475", "name": "软件开发", "stock_count": 133,
+            "candidate_count": 133, "count_source": "stock_universe",
+            "change_pct": 2.5, "main_net_inflow": 800_000_000,
+            "main_net_inflow_pct": 4.2, "up_count": 100,
+            "down_count": 30, "flat_count": 3, "leading_stock": "测试龙头",
+            "heat_rank": 1,
+        }]
+
+        async def blocked_refresh(*, page_size):
+            self.assertEqual(page_size, 100)
+            await asyncio.sleep(1)
+            return []
+
+        collector.fetch_industry_flow = AsyncMock(side_effect=blocked_refresh)
+        started_at = asyncio.get_running_loop().time()
+        with patch("services.data_collector.settings.stock_selection_sector_refresh_timeout", 0.01):
+            sectors = await collector.fetch_intelligent_selection_sectors(seed_sectors=seed)
+        elapsed = asyncio.get_running_loop().time() - started_at
+
+        self.assertLess(elapsed, 0.1)
+        self.assertEqual(len(sectors), 1)
+        self.assertEqual(sectors[0]["code"], "BK0475")
+        self.assertEqual(sectors[0]["stock_count"], 133)
+        self.assertEqual(sectors[0]["main_net_inflow"], 800_000_000)
 
     async def test_technical_screener_uses_live_descending_quotes_and_skips_zero_price(self):
         collector = EastMoneyDataCollector()

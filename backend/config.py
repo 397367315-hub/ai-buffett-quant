@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     data_proxy_token: str = ""
     data_proxy_timeout: float = 20.0
     market_aggregate_timeout: float = 12.0
+    stock_selection_sector_refresh_timeout: float = 1.5
     macro_news_timeout: float = 8.0
     macro_news_cache_seconds: int = 900
     macro_news_announcement_limit: int = 32
