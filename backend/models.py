@@ -139,6 +139,16 @@ class MarketBoard(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MarketDataCache(Base):
+    """Small persistent JSON snapshots that make cold-start directories usable."""
+
+    __tablename__ = "market_data_cache"
+
+    key = Column(String(100), primary_key=True)
+    payload = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class NorthboundDealDaily(Base):
     """北向汇总成交额。净买入字段停止公开时保持为空，绝不填造数据。"""
 

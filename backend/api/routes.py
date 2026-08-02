@@ -27,7 +27,7 @@ from services.stock_selection_agents import (
 from models import (
     KnowledgeTerm, LearningCase, ConceptBoard,
     ConceptFundFlowDaily, IndustryFundFlowDaily, MarketFundFlowDaily, AIChatHistory, MarketBoard,
-    StockSelectionRun,
+    MarketDataCache, StockSelectionRun,
 )
 from database import async_session
 from services.history_cache import history_cache
@@ -1073,7 +1073,24 @@ async def get_technical_screener(
 @router.get("/stock-selection/sectors")
 async def get_stock_selection_sectors():
     """List every live industry board available to the stock-selection pipeline."""
-    sectors = await collector.fetch_intelligent_selection_sectors()
+    cache_key = "stock_selection_sector_directory_v1"
+    seed_sectors: list[dict] = []
+    classification_refreshed_at: str | None = None
+    try:
+        async with async_session() as session:
+            cache_row = await session.get(MarketDataCache, cache_key)
+        payload = cache_row.payload if cache_row and isinstance(cache_row.payload, dict) else {}
+        raw_refreshed_at = payload.get("classification_refreshed_at")
+        refreshed_at = datetime.fromisoformat(raw_refreshed_at) if raw_refreshed_at else None
+        if refreshed_at and datetime.utcnow() - refreshed_at <= timedelta(hours=24):
+            cached_sectors = payload.get("sectors")
+            if isinstance(cached_sectors, list):
+                seed_sectors = [item for item in cached_sectors if isinstance(item, dict)]
+                classification_refreshed_at = raw_refreshed_at
+    except Exception as exc:
+        print(f"Sector directory cache load failed: {type(exc).__name__}")
+
+    sectors = await collector.fetch_intelligent_selection_sectors(seed_sectors=seed_sectors)
     coverage_complete = bool(sectors) and all(
         item.get("count_source") == "stock_universe" for item in sectors
     )
@@ -1082,6 +1099,23 @@ async def get_stock_selection_sectors():
         if coverage_complete
         else None
     )
+    if coverage_complete:
+        classification_refreshed_at = classification_refreshed_at or datetime.utcnow().isoformat()
+        try:
+            async with async_session() as session:
+                cache_row = await session.get(MarketDataCache, cache_key)
+                payload = {
+                    "classification_refreshed_at": classification_refreshed_at,
+                    "sectors": sectors,
+                }
+                if cache_row:
+                    cache_row.payload = payload
+                    cache_row.updated_at = datetime.utcnow()
+                else:
+                    session.add(MarketDataCache(key=cache_key, payload=payload))
+                await session.commit()
+        except Exception as exc:
+            print(f"Sector directory cache save failed: {type(exc).__name__}")
     return {
         "code": 0,
         "data": {
@@ -1090,6 +1124,8 @@ async def get_stock_selection_sectors():
             "covered_stock_count": covered_stock_count,
             "coverage_complete": coverage_complete,
             "mapped_sector_count": sum(bool(item.get("code")) for item in sectors),
+            "classification_refreshed_at": classification_refreshed_at,
+            "directory_cache_used": bool(seed_sectors),
             **_quote_metadata(available=bool(sectors)),
         },
     }

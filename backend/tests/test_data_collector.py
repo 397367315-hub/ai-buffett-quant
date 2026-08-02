@@ -216,6 +216,36 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sectors[0]["heat_rank"], 1)
         collector.fetch_intelligent_selection_candidates.assert_not_awaited()
 
+    async def test_sector_seed_refreshes_one_live_page_without_full_directory_scan(self):
+        collector = EastMoneyDataCollector()
+        seed = [
+            {
+                "code": "BK0475", "name": "软件开发", "stock_count": 133,
+                "count_source": "stock_universe", "main_net_inflow": 1,
+            },
+            {
+                "code": "BK0477", "name": "银行", "stock_count": 42,
+                "count_source": "stock_universe", "main_net_inflow": 1,
+            },
+        ]
+        collector.fetch_industry_flow = AsyncMock(return_value=[{
+            "code": "BK0475", "name": "软件开发", "change_pct": 6.15,
+            "main_net_inflow": 4_618_064_640, "main_net_inflow_pct": 5.85,
+            "up_count": 133, "down_count": 0, "flat_count": 0,
+            "leading_stock": "普联软件",
+        }])
+        collector.fetch_all_industry_flow = AsyncMock()
+        collector.fetch_stock_universe = AsyncMock()
+
+        sectors = await collector.fetch_intelligent_selection_sectors(seed_sectors=seed)
+
+        collector.fetch_industry_flow.assert_awaited_once_with(page_size=100)
+        collector.fetch_all_industry_flow.assert_not_awaited()
+        collector.fetch_stock_universe.assert_not_awaited()
+        self.assertEqual([item["code"] for item in sectors], ["BK0475", "BK0477"])
+        self.assertEqual(sectors[0]["main_net_inflow"], 4_618_064_640)
+        self.assertEqual(sectors[1]["main_net_inflow"], 0)
+
     async def test_technical_screener_uses_live_descending_quotes_and_skips_zero_price(self):
         collector = EastMoneyDataCollector()
         captured = {}

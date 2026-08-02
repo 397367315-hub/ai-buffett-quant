@@ -1130,19 +1130,51 @@ class EastMoneyDataCollector:
         stocks.sort(key=fallback_priority, reverse=True)
         return {"total": len(stocks), "stocks": stocks, "source": "ftshare_mcp"}
 
-    async def fetch_intelligent_selection_sectors(self, page_size: int = 180) -> list[dict]:
+    async def fetch_intelligent_selection_sectors(
+        self,
+        page_size: int = 180,
+        seed_sectors: list[dict] | None = None,
+    ) -> list[dict]:
         """Return unique stock industries merged with their live board signals."""
-        counts_result, flow_result = await asyncio.gather(
-            self._fetch_stock_sector_counts(),
-            self.fetch_all_industry_flow(),
-            return_exceptions=True,
-        )
+        verified_seed = [
+            item for item in (seed_sectors or [])
+            if item.get("count_source") == "stock_universe"
+            and as_int(item.get("stock_count")) > 0
+            and str(item.get("name") or "").strip()
+        ]
+        if verified_seed:
+            counts_result: dict[str, int] | Exception = {
+                str(item["name"]).strip(): as_int(item["stock_count"])
+                for item in verified_seed
+            }
+            flow_result = await asyncio.gather(
+                self.fetch_industry_flow(page_size=100),
+                return_exceptions=True,
+            )
+            flow_result = flow_result[0]
+            mapping_rows = verified_seed
+        else:
+            counts_result, flow_result = await asyncio.gather(
+                self._fetch_stock_sector_counts(),
+                self.fetch_all_industry_flow(),
+                return_exceptions=True,
+            )
+            mapping_rows = [] if isinstance(flow_result, Exception) else flow_result
+
         counts = {} if isinstance(counts_result, Exception) else counts_result
         if isinstance(counts_result, Exception):
             print(f"Stock sector counts failed: {type(counts_result).__name__}")
         rows = [] if isinstance(flow_result, Exception) else flow_result
         if isinstance(flow_result, Exception):
             print(f"Industry directory failed: {type(flow_result).__name__}")
+            rows = verified_seed
+
+        code_by_name: dict[str, str] = {}
+        for row in [*mapping_rows, *rows]:
+            code = str(row.get("code") or "").strip().upper()
+            name = str(row.get("name") or "").strip()
+            if BOARD_CODE_RE.fullmatch(code) and name:
+                code_by_name.setdefault(name, code)
 
         rows_by_name: dict[str, list[dict]] = {}
         for row in rows:
@@ -1168,7 +1200,7 @@ class EastMoneyDataCollector:
             down_count = as_int(row.get("down_count"))
             flat_count = as_int(row.get("flat_count"))
             sectors.append({
-                "code": str(row.get("code") or ""),
+                "code": code_by_name.get(name, str(row.get("code") or "")),
                 "name": name,
                 # Keep candidate_count during the frontend rollout for older clients.
                 "candidate_count": stock_count,
