@@ -17,7 +17,7 @@ from sqlalchemy import select
 from config import settings
 from database import async_session
 from models import StockDailyBar
-from services.data_collector import as_float, as_int, shanghai_now
+from services.data_collector import as_float, as_int, is_a_share_market_session, normalize_board_code, shanghai_now
 from services.macro_policy_news import macro_policy_news_collector
 from services.quant_scorer import MarketRegime
 from services.research_protocol import research_protocol
@@ -88,13 +88,7 @@ class StockSelectionAgentService:
 
     @staticmethod
     def _is_market_session() -> bool:
-        now = shanghai_now()
-        if now.weekday() >= 5:
-            return False
-        current_time = now.time()
-        morning = current_time.replace(hour=9, minute=15, second=0, microsecond=0) <= current_time <= current_time.replace(hour=11, minute=30, second=0, microsecond=0)
-        afternoon = current_time.replace(hour=13, minute=0, second=0, microsecond=0) <= current_time <= current_time.replace(hour=15, minute=30, second=0, microsecond=0)
-        return morning or afternoon
+        return is_a_share_market_session()
 
     async def _load_histories(self, stock_codes: list[str]) -> dict[str, list[dict]]:
         """Load cached daily bars in one query instead of issuing one request per stock."""
@@ -880,6 +874,7 @@ class StockSelectionAgentService:
         risk_profile: str = "balanced",
         top_n: int = 5,
         sector: str | None = None,
+        sector_code: str | None = None,
     ) -> dict:
         if mode not in VALID_SELECTION_MODES:
             raise ValueError("mode 必须是 quick 或 full")
@@ -887,9 +882,18 @@ class StockSelectionAgentService:
             raise ValueError("risk_profile 必须是 conservative、balanced 或 aggressive")
         top_n = min(max(int(top_n), 3), 10)
         sector_filter = _normalise_sector(sector)
+        sector_board_code = normalize_board_code(sector_code) if sector_code else ""
+        if sector_board_code and not sector_filter:
+            raise ValueError("sector_code 必须与行业名称一起提交")
+
+        source_awaitable = (
+            collector.fetch_all_board_stocks(sector_board_code, sector_name=sector_filter)
+            if sector_board_code
+            else collector.fetch_intelligent_selection_candidates()
+        )
 
         source_result, regime_result, macro_result = await asyncio.gather(
-            collector.fetch_intelligent_selection_candidates(),
+            source_awaitable,
             MarketRegime.detect(),
             macro_policy_news_collector.get_context(),
             return_exceptions=True,
@@ -914,8 +918,12 @@ class StockSelectionAgentService:
             and "ST" not in str(stock.get("name") or "").upper()
             and "退" not in str(stock.get("name") or "")
         ]
-        market_candidate_count = len(candidates)
-        if sector_filter:
+        market_candidate_count = (
+            as_int(source_result.get("total"), len(candidates))
+            if sector_board_code and not isinstance(source_result, Exception)
+            else len(candidates)
+        )
+        if sector_filter and not sector_board_code:
             candidates = [
                 stock for stock in candidates
                 if _normalise_sector(stock.get("sector")) == sector_filter
@@ -974,8 +982,14 @@ class StockSelectionAgentService:
         sector_metadata = {
             "value": sector_filter,
             "label": sector_filter or "全部行业",
+            "code": sector_board_code or None,
             "matched_candidates": filtered_candidate_count,
             "market_candidates": market_candidate_count,
+            "directory_complete": (
+                bool(source_result.get("complete", True))
+                if sector_board_code and not isinstance(source_result, Exception)
+                else True
+            ),
         }
         macro_policy = {
             **news_context,

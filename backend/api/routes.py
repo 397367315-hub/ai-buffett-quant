@@ -11,6 +11,7 @@ from services.data_collector import (
     as_float,
     as_int,
     collector,
+    is_a_share_market_session,
     normalize_board_code,
     normalize_stock_code,
     shanghai_now,
@@ -49,6 +50,28 @@ def _market_metadata(*, available: bool, data_date: str | None, is_realtime: boo
         "data_date": data_date,
         "updated_at": shanghai_now().isoformat(),
     }
+
+
+def _quote_metadata(
+    *,
+    available: bool,
+    data_date: str | None = None,
+    source: str = "eastmoney",
+) -> dict:
+    """Mark undated quote snapshots live only while the A-share market is open."""
+    now = shanghai_now()
+    is_realtime = (
+        bool(available)
+        and is_a_share_market_session(now)
+        and (data_date is None or data_date == now.date().isoformat())
+    )
+    verified_date = data_date or (now.date().isoformat() if is_realtime else None)
+    return _market_metadata(
+        available=available,
+        data_date=verified_date,
+        is_realtime=is_realtime,
+        source=source,
+    )
 
 
 async def _fetch_market_component(name: str, awaitable, fallback):
@@ -220,14 +243,16 @@ async def _realtime_flow_observer(board_type: str, limit: int) -> dict:
         outflow_rows = outflow_rows or retry_results.get("outflows", [])
         turnover = turnover or retry_results.get("turnover", {})
 
+    now = shanghai_now()
+    is_realtime = is_a_share_market_session(now)
     return _assemble_flow_observer(
         board_type,
         [*inflow_rows, *outflow_rows],
         limit,
         market=turnover,
         source="eastmoney",
-        data_date=shanghai_now().date().isoformat(),
-        is_realtime=True,
+        data_date=now.date().isoformat() if is_realtime else None,
+        is_realtime=is_realtime,
     )
 
 
@@ -446,11 +471,12 @@ async def get_concept_rank(
     total_inflow = sum(row["main_net_inflow"] for row in result)
     inflow_count = sum(row["main_net_inflow"] > 0 for row in result)
     outflow_count = sum(row["main_net_inflow"] < 0 for row in result)
+    metadata = _quote_metadata(available=bool(result))
 
     return {
         "code": 0,
         "data": {
-            "trade_date": today.isoformat(),
+            "trade_date": metadata["data_date"],
             "update_time": shanghai_now().isoformat(),
             "rankings": result,
             "summary": {
@@ -458,7 +484,7 @@ async def get_concept_rank(
                 "inflow_board_count": inflow_count,
                 "outflow_board_count": outflow_count,
             },
-            **_market_metadata(available=bool(result), data_date=today.isoformat(), is_realtime=True),
+            **metadata,
         },
         "message": "success",
     }
@@ -475,14 +501,18 @@ async def get_industry_rank(
         sort_field=FLOW_SORT_FIELDS.get(sort, "f62"), sort_order=sort_order, page_size=limit
     )
     result = [_flow_ranking(item, index + 1) for index, item in enumerate(data[:limit])]
-    today = shanghai_now().date().isoformat()
-    return {"code": 0, "data": {"trade_date": today, "rankings": result, **_market_metadata(available=bool(result), data_date=today, is_realtime=True)}}
+    metadata = _quote_metadata(available=bool(result))
+    return {"code": 0, "data": {"trade_date": metadata["data_date"], "rankings": result, **metadata}}
 
 
 @router.get("/flow/market/summary")
 async def get_market_summary():
     data = await collector.fetch_market_summary()
-    return {"code": 0, "data": {"markets": data, **_market_metadata(available=bool(data), data_date=shanghai_now().date().isoformat(), is_realtime=True)}}
+    data_date = max(
+        (str(item.get("date")) for item in data.values() if item.get("date")),
+        default=None,
+    )
+    return {"code": 0, "data": {"markets": data, **_quote_metadata(available=bool(data), data_date=data_date)}}
 
 
 @router.get("/flow/stock/{stock_code}")
@@ -493,7 +523,9 @@ async def get_stock_flow(stock_code: str):
         raise HTTPException(status_code=422, detail=str(exc))
     data = await collector.fetch_stock_fund_flow(code)
     latest_date = data[-1]["date"] if data else None
-    return {"code": 0, "data": {"stock_code": code, "flow_data": data, **_market_metadata(available=bool(data), data_date=latest_date, is_realtime=latest_date == shanghai_now().date().isoformat())}}
+    now = shanghai_now()
+    is_realtime = bool(data) and latest_date == now.date().isoformat() and is_a_share_market_session(now)
+    return {"code": 0, "data": {"stock_code": code, "flow_data": data, **_market_metadata(available=bool(data), data_date=latest_date, is_realtime=is_realtime)}}
 
 
 @router.get("/flow/north/today")
@@ -518,7 +550,7 @@ async def get_limit_up():
     for d in data:
         sector = d.get("sector", "其他") or "其他"
         stats["by_sector"][sector] = stats["by_sector"].get(sector, 0) + 1
-    return {"code": 0, "data": {"stocks": data, "stats": stats, **_market_metadata(available=pool["trade_date"] is not None, data_date=pool["trade_date"], is_realtime=True)}}
+    return {"code": 0, "data": {"stocks": data, "stats": stats, **_quote_metadata(available=pool["trade_date"] is not None, data_date=pool["trade_date"])}}
 
 
 @router.get("/flow/limit-down")
@@ -533,7 +565,7 @@ async def get_limit_down():
     for d in data:
         sector = d.get("sector", "其他") or "其他"
         stats["by_sector"][sector] = stats["by_sector"].get(sector, 0) + 1
-    return {"code": 0, "data": {"stocks": data, "stats": stats, **_market_metadata(available=pool["trade_date"] is not None, data_date=pool["trade_date"], is_realtime=True)}}
+    return {"code": 0, "data": {"stocks": data, "stats": stats, **_quote_metadata(available=pool["trade_date"] is not None, data_date=pool["trade_date"])}}
 
 
 # ── 美联储利率分析接口 ──
@@ -671,17 +703,13 @@ async def get_board_stocks(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     data = await collector.fetch_board_stocks(board_code, page=page, page_size=page_size)
-    data.update(_market_metadata(
-        available=bool(data.get("stocks")),
-        data_date=shanghai_now().date().isoformat() if data.get("stocks") else None,
-        is_realtime=True,
-    ))
+    data.update(_quote_metadata(available=bool(data.get("stocks"))))
     return {"code": 0, "data": data}
 
 
 @router.get("/board/list")
 async def get_board_list():
-    """获取所有可查询的概念板块列表。"""
+    """获取全部概念板块，并将实时资金热点排在前面。"""
     async with async_session() as session:
         legacy_rows = (await session.execute(
             select(ConceptBoard).order_by(ConceptBoard.code)
@@ -699,18 +727,43 @@ async def get_board_list():
         live_rows = []
 
     if live_rows:
-        boards = [
-            {
-                "code": row["code"],
-                "name": row["name"],
-                "category": (legacy_by_code.get(row["code"]).category if row["code"] in legacy_by_code else "实时概念"),
-                # A separate component request per board is both slow and can
-                # overload the market source. Keep an unknown count explicit.
-                "stock_count": None,
-            }
-            for row in live_rows
-            if row.get("code") and row.get("name")
-        ]
+        boards = []
+        for row in live_rows:
+            code = str(row.get("code") or "")
+            name = str(row.get("name") or "")
+            if not code or not name:
+                continue
+            up_count = as_int(row.get("up_count"))
+            down_count = as_int(row.get("down_count"))
+            flat_count = as_int(row.get("flat_count"))
+            active_stock_count = up_count + down_count + flat_count
+            legacy = legacy_by_code.get(code)
+            boards.append({
+                "code": code,
+                "name": name,
+                "category": legacy.category if legacy else "概念板块",
+                "stock_count": active_stock_count or (legacy.stock_count if legacy else None),
+                "change_pct": as_float(row.get("change_pct")),
+                "main_net_inflow": as_int(row.get("main_net_inflow")),
+                "main_net_inflow_pct": as_float(row.get("main_net_inflow_pct")),
+                "up_count": up_count,
+                "down_count": down_count,
+                "flat_count": flat_count,
+                "leading_stock": str(row.get("leading_stock") or ""),
+                "leading_stock_code": str(row.get("leading_stock_code") or ""),
+                "leading_stock_change_pct": as_float(row.get("leading_stock_change_pct")),
+            })
+        boards.sort(
+            key=lambda item: (
+                item["main_net_inflow"],
+                item["change_pct"],
+                item["up_count"] - item["down_count"],
+                item["stock_count"] or 0,
+            ),
+            reverse=True,
+        )
+        for rank, board in enumerate(boards, start=1):
+            board["heat_rank"] = rank
     else:
         cached_by_code = {row.code: row for row in cached_rows}
         codes = sorted(set(cached_by_code) | set(legacy_by_code))
@@ -718,12 +771,30 @@ async def get_board_list():
             {
                 "code": code,
                 "name": cached_by_code[code].name if code in cached_by_code else legacy_by_code[code].name,
-                "category": legacy_by_code[code].category if code in legacy_by_code else "实时概念",
-                "stock_count": None,
+                "category": legacy_by_code[code].category if code in legacy_by_code else "概念板块",
+                "stock_count": legacy_by_code[code].stock_count if code in legacy_by_code else None,
+                "change_pct": None,
+                "main_net_inflow": None,
+                "main_net_inflow_pct": None,
+                "up_count": None,
+                "down_count": None,
+                "flat_count": None,
+                "leading_stock": "",
+                "leading_stock_code": "",
+                "leading_stock_change_pct": None,
+                "heat_rank": None,
             }
             for code in codes
         ]
-    return {"code": 0, "data": boards}
+    return {
+        "code": 0,
+        "data": boards,
+        "meta": (
+            _quote_metadata(available=bool(boards))
+            if live_rows
+            else _market_metadata(available=bool(boards), data_date=None, is_realtime=False, source="cache")
+        ),
+    }
 
 
 @router.post("/board/ai-analysis")
@@ -900,7 +971,7 @@ async def get_market_sentiment():
             "limit_counts": {"up": up_count, "down": down_count},
             "main_flow_trend": main_flow_trend,
             "main_flow_amount": total_inflow,
-            **_market_metadata(available=available, data_date=shanghai_now().date().isoformat() if available else None, is_realtime=True),
+            **_quote_metadata(available=available),
         },
     }
 
@@ -954,7 +1025,7 @@ async def get_flow_observer_dates(board_type: str = Query("industry")):
 async def get_sector_rotation():
     """获取板块轮动数据"""
     data = await collector.fetch_sector_rotation()
-    data.update(_market_metadata(available=bool(data.get("sectors")), data_date=shanghai_now().date().isoformat() if data.get("sectors") else None, is_realtime=True))
+    data.update(_quote_metadata(available=bool(data.get("sectors"))))
     return {"code": 0, "data": data}
 
 
@@ -992,7 +1063,7 @@ async def get_technical_screener(
 ):
     """技术面筛选器"""
     data = await collector.fetch_technical_screener({"min_change": min_change, "max_pe": max_pe, "min_turnover": min_turnover})
-    data.update(_market_metadata(available=bool(data.get("stocks")), data_date=shanghai_now().date().isoformat() if data.get("stocks") else None, is_realtime=True))
+    data.update(_quote_metadata(available=bool(data.get("stocks"))))
     return {"code": 0, "data": data}
 
 
@@ -1001,18 +1072,25 @@ async def get_technical_screener(
 
 @router.get("/stock-selection/sectors")
 async def get_stock_selection_sectors():
-    """List live industry labels that can be used to filter the candidate pool."""
+    """List every live industry board available to the stock-selection pipeline."""
     sectors = await collector.fetch_intelligent_selection_sectors()
-    today = shanghai_now().date().isoformat()
+    coverage_complete = bool(sectors) and all(
+        item.get("count_source") == "stock_universe" for item in sectors
+    )
+    covered_stock_count = (
+        sum(as_int(item.get("stock_count")) for item in sectors)
+        if coverage_complete
+        else None
+    )
     return {
         "code": 0,
         "data": {
             "sectors": sectors,
-            **_market_metadata(
-                available=bool(sectors),
-                data_date=today if sectors else None,
-                is_realtime=True,
-            ),
+            "sector_count": len(sectors),
+            "covered_stock_count": covered_stock_count,
+            "coverage_complete": coverage_complete,
+            "mapped_sector_count": sum(bool(item.get("code")) for item in sectors),
+            **_quote_metadata(available=bool(sectors)),
         },
     }
 
@@ -1064,12 +1142,22 @@ async def run_stock_selection(request: dict | None = None):
     sector = raw_sector.strip() if isinstance(raw_sector, str) else None
     if sector and len(sector) > 60:
         raise HTTPException(status_code=422, detail="sector 长度不能超过 60 个字符")
+    raw_sector_code = payload.get("sector_code")
+    if raw_sector_code is not None and not isinstance(raw_sector_code, str):
+        raise HTTPException(status_code=422, detail="sector_code 必须是行业板块编码")
+    try:
+        sector_code = normalize_board_code(raw_sector_code) if raw_sector_code else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if sector_code and not sector:
+        raise HTTPException(status_code=422, detail="sector_code 必须与 sector 一起提交")
 
     result = await stock_selection_agents.run(
         mode=mode,
         risk_profile=risk_profile,
         top_n=top_n,
         sector=sector,
+        sector_code=sector_code,
     )
     run_id = await _store_stock_selection_run(result)
     result["run_id"] = run_id
@@ -1177,7 +1265,7 @@ async def get_market_overview():
                 "market_breadth": bool(breadth),
                 "market_turnover": bool(turnover),
             },
-            **_market_metadata(available=available, data_date=data_date if available else None, is_realtime=True),
+            **_quote_metadata(available=available, data_date=data_date if available else None),
         },
     }
 
@@ -1317,9 +1405,9 @@ async def get_concept_by_date(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    if d == shanghai_now().date():
+    if d == shanghai_now().date() and is_a_share_market_session(shanghai_now()):
         rankings = await _realtime_concept_extremes()
-        return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, "rankings_are_complete": False, **_market_metadata(available=bool(rankings), data_date=target_date, is_realtime=True)}}
+        return {"code": 0, "data": {"trade_date": target_date, "rankings": rankings, "rankings_are_complete": False, **_quote_metadata(available=bool(rankings))}}
 
     rankings = await _concept_history_rankings(d)
     coverage = await _concept_snapshot_coverage(d)
@@ -1350,7 +1438,7 @@ async def get_concept_summary(
             raise HTTPException(status_code=422, detail=str(exc))
 
     # 今日只读取实时行情；其余范围只读取已经验证并入库的数据。
-    if range == "today":
+    if range == "today" and is_a_share_market_session(shanghai_now()):
         result = await _realtime_concept_extremes()
         if result:
             total = sum(r["main_net_inflow"] for r in result)
@@ -1369,7 +1457,7 @@ async def get_concept_summary(
                         "rankings_are_complete": False,
                     },
                     "has_data": True,
-                    **_market_metadata(available=True, data_date=today.isoformat(), is_realtime=True),
+                    **_quote_metadata(available=True),
                 },
             }
 

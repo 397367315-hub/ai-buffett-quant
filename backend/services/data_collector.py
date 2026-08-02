@@ -31,6 +31,15 @@ def shanghai_now() -> datetime:
     return datetime.now(ZoneInfo("Asia/Shanghai"))
 
 
+def is_a_share_market_session(moment: datetime | None = None) -> bool:
+    """Return whether a timestamp is inside the regular weekday A-share session."""
+    current = moment or shanghai_now()
+    if current.weekday() >= 5:
+        return False
+    minute = current.hour * 60 + current.minute
+    return 9 * 60 + 15 <= minute <= 11 * 60 + 30 or 13 * 60 <= minute <= 15 * 60 + 30
+
+
 def as_float(value: object, default: float = 0.0) -> float:
     if value in (None, "", "-"):
         return default
@@ -115,6 +124,11 @@ class EastMoneyDataCollector:
     }
     STOCK_SCREENER_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
     STOCK_SCREENER_FIELDS = "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f184"
+    SECTOR_COUNTS_CACHE_SECONDS = 3600
+
+    def __init__(self):
+        self._sector_counts_cache: tuple[float, dict[str, int]] | None = None
+        self._sector_counts_lock = asyncio.Lock()
 
     @staticmethod
     def _request_timeout() -> float:
@@ -138,6 +152,7 @@ class EastMoneyDataCollector:
         "f84": "small_net_inflow",
         "f104": "up_count",
         "f105": "down_count",
+        "f106": "flat_count",
         "f128": "leading_stock",
         "f140": "leading_stock_code",
         "f136": "leading_stock_change_pct",
@@ -404,14 +419,23 @@ class EastMoneyDataCollector:
     async def fetch_limit_down_stocks(self, page: int = 1, page_size: int = 200) -> list[dict]:
         return (await self.fetch_limit_down_pool(page, page_size))["stocks"]
 
-    async def fetch_board_stocks(self, board_code: str, page: int = 1, page_size: int = 100) -> dict:
+    async def fetch_board_stocks(
+        self,
+        board_code: str,
+        page: int = 1,
+        page_size: int = 100,
+        sort_field: str = "f62",
+    ) -> dict:
         try:
             code = normalize_board_code(board_code)
         except ValueError as exc:
             return {"total": 0, "stocks": [], "error": str(exc)}
+        if sort_field not in {"f12", "f62"}:
+            raise ValueError("板块成分股仅支持按股票代码或主力资金排序")
         params = {
-            "pn": str(page), "pz": str(page_size), "po": "1", "np": "1", "fltt": "2", "invt": "2",
-            "fid": "f62", "fs": f"b:{code}",
+            "pn": str(page), "pz": str(page_size), "po": "0" if sort_field == "f12" else "1",
+            "np": "1", "fltt": "2", "invt": "2",
+            "fid": sort_field, "fs": f"b:{code}",
             "fields": "f2,f3,f5,f6,f8,f9,f10,f12,f14,f15,f16,f20,f21,f23,f37,f45,f62,f184",
             "ut": EASTMONEY_UT,
         }
@@ -450,6 +474,64 @@ class EastMoneyDataCollector:
         return {
             "total": as_int(payload.get("total")), "stocks": stocks,
             "page": page, "page_size": page_size, "board_code": code,
+        }
+
+    async def fetch_all_board_stocks(self, board_code: str, sector_name: str = "") -> dict:
+        """Fetch every verified, tradable constituent of one industry board."""
+        code = normalize_board_code(board_code)
+        page_size = self.MAX_LIST_PAGE_SIZE
+        first_page = await self.fetch_board_stocks(
+            code, page=1, page_size=page_size, sort_field="f12",
+        )
+        if first_page.get("error"):
+            return {
+                "total": 0,
+                "tradable_total": 0,
+                "stocks": [],
+                "board_code": code,
+                "complete": False,
+                "error": first_page["error"],
+                "source": "eastmoney",
+            }
+
+        upstream_total = as_int(first_page.get("total"))
+        pages = max(1, (upstream_total + page_size - 1) // page_size)
+        page_results = [first_page]
+        for start in range(2, pages + 1, self.PAGE_FETCH_CONCURRENCY):
+            page_numbers = range(start, min(start + self.PAGE_FETCH_CONCURRENCY, pages + 1))
+            page_results.extend(await asyncio.gather(*(
+                self.fetch_board_stocks(
+                    code, page=page, page_size=page_size, sort_field="f12",
+                )
+                for page in page_numbers
+            )))
+
+        by_code: dict[str, dict] = {}
+        complete = True
+        for result in page_results:
+            if result.get("error"):
+                complete = False
+                continue
+            for stock in result.get("stocks") or []:
+                stock_code = str(stock.get("code") or "")
+                if not stock_code:
+                    continue
+                by_code[stock_code] = {
+                    **stock,
+                    "sector": sector_name.strip(),
+                    "selection_sources": ["industry_constituent"],
+                }
+
+        stocks = list(by_code.values())
+        if upstream_total and len(stocks) < upstream_total:
+            complete = False
+        return {
+            "total": upstream_total or len(stocks),
+            "tradable_total": len(stocks),
+            "stocks": stocks,
+            "board_code": code,
+            "complete": complete,
+            "source": "eastmoney",
         }
 
     async def fetch_board_flow_history(self, board_code: str, days: int = 365) -> dict:
@@ -636,9 +718,9 @@ class EastMoneyDataCollector:
 
         async def fetch_page(page: int) -> tuple[list[dict], int]:
             params = {
-                "pn": str(page), "pz": str(page_size), "po": "0", "np": "1", "fid": "f3",
+                "pn": str(page), "pz": str(page_size), "po": "0", "np": "1", "fid": "f12",
                 "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
-                "fields": "f2,f12,f13,f14", "fltt": "2", "ut": EASTMONEY_UT,
+                "fields": "f2,f12,f13,f14,f100", "fltt": "2", "ut": EASTMONEY_UT,
             }
             data = await self.fetch_json(self.BASE_URL, params)
             payload = data.get("data") or {}
@@ -676,7 +758,12 @@ class EastMoneyDataCollector:
             if code in seen_codes:
                 continue
             seen_codes.add(code)
-            records.append({"code": code, "name": item.get("f14", ""), "market": item.get("f13")})
+            records.append({
+                "code": code,
+                "name": item.get("f14", ""),
+                "market": item.get("f13"),
+                "sector": str(item.get("f100") or "").strip(),
+            })
         return records
 
     async def fetch_north_bound_daily(self, days: int = 365) -> list[dict]:
@@ -776,13 +863,14 @@ class EastMoneyDataCollector:
         row = data.get("data") or {}
         if not row:
             return {}
+        now = shanghai_now()
         return {
             "sh_index": round(as_float(row.get("f43")) / 100, 2),
             "sh_change": round(as_float(row.get("f169")) / 100, 2),
             "sh_change_pct": round(as_float(row.get("f170")) / 100, 2),
             "sh_volume": as_int(row.get("f47")),
             "sh_amount": as_int(row.get("f48")),
-            "data_date": shanghai_now().date().isoformat(),
+            "data_date": now.date().isoformat() if is_a_share_market_session(now) else None,
         }
 
     async def fetch_dragon_board(self, page_size: int = 50) -> list[dict]:
@@ -1043,7 +1131,96 @@ class EastMoneyDataCollector:
         return {"total": len(stocks), "stocks": stocks, "source": "ftshare_mcp"}
 
     async def fetch_intelligent_selection_sectors(self, page_size: int = 180) -> list[dict]:
-        """Return live industry labels that exactly match the selection universe."""
+        """Return unique stock industries merged with their live board signals."""
+        counts_result, flow_result = await asyncio.gather(
+            self._fetch_stock_sector_counts(),
+            self.fetch_all_industry_flow(),
+            return_exceptions=True,
+        )
+        counts = {} if isinstance(counts_result, Exception) else counts_result
+        if isinstance(counts_result, Exception):
+            print(f"Stock sector counts failed: {type(counts_result).__name__}")
+        rows = [] if isinstance(flow_result, Exception) else flow_result
+        if isinstance(flow_result, Exception):
+            print(f"Industry directory failed: {type(flow_result).__name__}")
+
+        rows_by_name: dict[str, list[dict]] = {}
+        for row in rows:
+            code = str(row.get("code") or "").strip().upper()
+            name = str(row.get("name") or "").strip()
+            if BOARD_CODE_RE.fullmatch(code) and name:
+                rows_by_name.setdefault(name, []).append(row)
+
+        sectors = []
+        for name, stock_count in counts.items():
+            matches = rows_by_name.get(name, [])
+            row = min(
+                matches,
+                key=lambda item: abs(
+                    as_int(item.get("up_count"))
+                    + as_int(item.get("down_count"))
+                    + as_int(item.get("flat_count"))
+                    - stock_count
+                ),
+                default={},
+            )
+            up_count = as_int(row.get("up_count"))
+            down_count = as_int(row.get("down_count"))
+            flat_count = as_int(row.get("flat_count"))
+            sectors.append({
+                "code": str(row.get("code") or ""),
+                "name": name,
+                # Keep candidate_count during the frontend rollout for older clients.
+                "candidate_count": stock_count,
+                "stock_count": stock_count,
+                "count_source": "stock_universe",
+                "change_pct": as_float(row.get("change_pct")),
+                "main_net_inflow": as_int(row.get("main_net_inflow")),
+                "main_net_inflow_pct": as_float(row.get("main_net_inflow_pct")),
+                "up_count": up_count,
+                "down_count": down_count,
+                "flat_count": flat_count,
+                "leading_stock": str(row.get("leading_stock") or ""),
+            })
+
+        # If the full stock list is temporarily unavailable, keep every board
+        # selectable but mark its overlapping active-member count explicitly.
+        if not sectors:
+            for name, matches in rows_by_name.items():
+                row = max(matches, key=lambda item: as_int(item.get("main_net_inflow")))
+                up_count = as_int(row.get("up_count"))
+                down_count = as_int(row.get("down_count"))
+                flat_count = as_int(row.get("flat_count"))
+                stock_count = up_count + down_count + flat_count
+                sectors.append({
+                    "code": str(row.get("code") or ""),
+                    "name": name,
+                    "candidate_count": stock_count,
+                    "stock_count": stock_count,
+                    "count_source": "board_active_members",
+                    "change_pct": as_float(row.get("change_pct")),
+                    "main_net_inflow": as_int(row.get("main_net_inflow")),
+                    "main_net_inflow_pct": as_float(row.get("main_net_inflow_pct")),
+                    "up_count": up_count,
+                    "down_count": down_count,
+                    "flat_count": flat_count,
+                    "leading_stock": str(row.get("leading_stock") or ""),
+                })
+
+        if sectors:
+            sectors.sort(
+                key=lambda item: (
+                    item["main_net_inflow"],
+                    item["change_pct"],
+                    item["stock_count"],
+                ),
+                reverse=True,
+            )
+            for rank, sector in enumerate(sectors, start=1):
+                sector["heat_rank"] = rank
+            return sectors
+
+        # Preserve a usable name-only fallback when both complete sources fail.
         snapshot = await self.fetch_intelligent_selection_candidates(page_size=page_size)
         counts: dict[str, int] = {}
         for stock in snapshot.get("stocks") or []:
@@ -1051,9 +1228,47 @@ class EastMoneyDataCollector:
             if sector:
                 counts[sector] = counts.get(sector, 0) + 1
         return [
-            {"name": sector, "candidate_count": count}
-            for sector, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+            {
+                "code": "",
+                "name": sector,
+                "candidate_count": count,
+                "stock_count": count,
+                "count_source": "leader_pool",
+                "change_pct": 0.0,
+                "main_net_inflow": 0,
+                "main_net_inflow_pct": 0.0,
+                "up_count": 0,
+                "down_count": 0,
+                "flat_count": 0,
+                "leading_stock": "",
+                "heat_rank": rank,
+            }
+            for rank, (sector, count) in enumerate(
+                sorted(counts.items(), key=lambda item: (-item[1], item[0])),
+                start=1,
+            )
         ]
+
+    async def _fetch_stock_sector_counts(self) -> dict[str, int]:
+        now = time.monotonic()
+        cached = self._sector_counts_cache
+        if cached and now - cached[0] < self.SECTOR_COUNTS_CACHE_SECONDS:
+            return dict(cached[1])
+
+        async with self._sector_counts_lock:
+            now = time.monotonic()
+            cached = self._sector_counts_cache
+            if cached and now - cached[0] < self.SECTOR_COUNTS_CACHE_SECONDS:
+                return dict(cached[1])
+
+            counts: dict[str, int] = {}
+            for stock in await self.fetch_stock_universe():
+                sector = str(stock.get("sector") or "").strip()
+                if sector:
+                    counts[sector] = counts.get(sector, 0) + 1
+            if counts:
+                self._sector_counts_cache = (now, dict(counts))
+            return counts
 
 
 collector = EastMoneyDataCollector()

@@ -9,6 +9,13 @@ interface BoardInfo {
   name: string;
   category: string;
   stock_count: number | null;
+  change_pct: number | null;
+  main_net_inflow: number | null;
+  main_net_inflow_pct: number | null;
+  up_count: number | null;
+  down_count: number | null;
+  leading_stock: string;
+  heat_rank: number | null;
 }
 
 interface StockItem {
@@ -32,9 +39,11 @@ export default function PotentialStocksPage() {
   const [stocks, setStocks] = useState<StockItem[]>([]);
   const [analysis, setAnalysis] = useState<string>('');
   const [rawStocks, setRawStocks] = useState<StockItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [boardsLoading, setBoardsLoading] = useState(true);
+  const [stocksLoading, setStocksLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [boardQuery, setBoardQuery] = useState('');
+  const [stockQuery, setStockQuery] = useState('');
 
   useEffect(() => {
     const fetchBoards = async () => {
@@ -47,7 +56,7 @@ export default function PotentialStocksPage() {
       } catch (err) {
         console.error('Failed to fetch boards:', err);
       } finally {
-        setLoading(false);
+        setBoardsLoading(false);
       }
     };
     fetchBoards();
@@ -60,7 +69,9 @@ export default function PotentialStocksPage() {
   }, [selectedBoard]);
 
   const fetchStocks = async (boardCode: string) => {
-    setLoading(true);
+    setStocksLoading(true);
+    setStocks([]);
+    setStockQuery('');
     setAnalysis('');
     try {
       const res = await apiFetch<any>(`/board/stocks/${boardCode}?page_size=50`);
@@ -68,7 +79,7 @@ export default function PotentialStocksPage() {
     } catch (err) {
       console.error('Failed to fetch stocks:', err);
     } finally {
-      setLoading(false);
+      setStocksLoading(false);
     }
   };
 
@@ -99,17 +110,32 @@ export default function PotentialStocksPage() {
     return inflowB - inflowA;
   });
 
-  const filteredStocks = searchTerm
+  const normalizedStockQuery = stockQuery.trim().toLowerCase();
+  const filteredStocks = normalizedStockQuery
     ? sortedStocks.filter(
         (s) =>
-          s.name.includes(searchTerm) ||
-          s.code.includes(searchTerm)
+          s.name.toLowerCase().includes(normalizedStockQuery) ||
+          s.code.toLowerCase().includes(normalizedStockQuery)
       )
     : sortedStocks;
 
-  const filteredBoards = searchTerm && !selectedBoard
-    ? boards.filter(b => b.name.includes(searchTerm) || b.code.includes(searchTerm))
+  const normalizedBoardQuery = boardQuery.trim().toLowerCase();
+  const filteredBoards = normalizedBoardQuery
+    ? boards.filter(
+        (board) =>
+          board.name.toLowerCase().includes(normalizedBoardQuery) ||
+          board.code.toLowerCase().includes(normalizedBoardQuery)
+      )
     : boards;
+  const visibleBoards = filteredBoards.slice(0, normalizedBoardQuery ? 80 : 24);
+
+  const boardSignal = (board: BoardInfo) => {
+    if (board.main_net_inflow == null || board.change_pct == null) {
+      return board.stock_count == null ? '行情待更新' : `${board.stock_count}只`;
+    }
+    const changeSign = board.change_pct > 0 ? '+' : '';
+    return `${formatYi(board.main_net_inflow)} · ${changeSign}${board.change_pct.toFixed(2)}%`;
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">
@@ -129,13 +155,17 @@ export default function PotentialStocksPage() {
           <Search size={16} className="text-text-secondary" />
           <input
             type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="搜索板块..."
-            className="bg-[#0D1117] border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-secondary focus:outline-none focus:border-accent w-40"
+            value={boardQuery}
+            onChange={(e) => setBoardQuery(e.target.value)}
+            placeholder="搜索板块名称或BK编码..."
+            className="w-64 max-w-full bg-[#0D1117] border border-border rounded-md px-3 py-1.5 text-sm text-text placeholder:text-text-secondary focus:outline-none focus:border-accent"
           />
-          <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
-            {filteredBoards.slice(0, 20).map((b) => (
+          <span className="text-xs text-text-secondary ml-auto">
+            {normalizedBoardQuery ? `找到${filteredBoards.length}个` : `共${boards.length}个板块`}
+          </span>
+        </div>
+        <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto mt-3 pr-1">
+            {visibleBoards.map((b) => (
               <button
                 key={b.code}
                 className={`px-2.5 py-1 text-xs rounded-full border transition-colors whitespace-nowrap ${
@@ -143,23 +173,25 @@ export default function PotentialStocksPage() {
                     ? 'bg-accent border-accent text-white'
                     : 'border-border text-text-secondary hover:border-text-secondary hover:text-text'
                 }`}
-                onClick={() => { setSelectedBoard(b); setSearchTerm(''); }}
+                onClick={() => { setSelectedBoard(b); setBoardQuery(''); }}
+                title={b.leading_stock ? `领涨：${b.leading_stock}` : b.code}
               >
                 {b.name}
-                <span className="ml-1 opacity-60">{b.stock_count == null ? '实时目录' : `${b.stock_count}只`}</span>
+                <span className={`ml-1 ${b.main_net_inflow != null && b.main_net_inflow > 0 ? 'text-up' : 'opacity-60'}`}>
+                  {boardSignal(b)}
+                </span>
               </button>
             ))}
-          </div>
-          <span className="text-xs text-text-secondary ml-auto">
-            共{boards.length}个板块可选
-          </span>
+            {!boardsLoading && visibleBoards.length === 0 && (
+              <div className="py-3 text-sm text-text-secondary">未找到匹配板块</div>
+            )}
         </div>
       </div>
 
       {selectedBoard && (
         <>
           {/* AI 分析按钮 */}
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-end justify-between gap-3 flex-wrap mb-4">
             <div>
               <h2 className="text-lg font-bold text-text">
                 <Layers size={16} className="inline text-accent mr-1" />
@@ -169,14 +201,26 @@ export default function PotentialStocksPage() {
                 {selectedBoard.category} · {stocks.length}只成分股
               </span>
             </div>
-            <button
-              onClick={handleAnalyze}
-              disabled={analyzing || stocks.length === 0}
-              className="flex items-center gap-1.5 px-4 py-2 bg-accent text-white text-sm rounded-md hover:opacity-90 disabled:opacity-50 transition-colors"
-            >
-              <Sparkles size={14} className={analyzing ? 'animate-pulse' : ''} />
-              {analyzing ? 'AI分析中...' : '🤖 AI 量化分析'}
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="relative block">
+                <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-secondary" />
+                <input
+                  type="text"
+                  value={stockQuery}
+                  onChange={(event) => setStockQuery(event.target.value)}
+                  placeholder="搜索成分股..."
+                  className="w-40 bg-[#0D1117] border border-border rounded-md pl-8 pr-3 py-2 text-sm text-text placeholder:text-text-secondary focus:outline-none focus:border-accent"
+                />
+              </label>
+              <button
+                onClick={handleAnalyze}
+                disabled={analyzing || stocks.length === 0}
+                className="flex items-center gap-1.5 px-4 py-2 bg-accent text-white text-sm rounded-md hover:opacity-90 disabled:opacity-50 transition-colors"
+              >
+                <Sparkles size={14} className={analyzing ? 'animate-pulse' : ''} />
+                {analyzing ? 'AI分析中...' : 'AI 量化分析'}
+              </button>
+            </div>
           </div>
 
           {/* AI 分析结果 */}
@@ -237,7 +281,7 @@ export default function PotentialStocksPage() {
           )}
 
           {/* 成分股列表 */}
-          {!loading && (
+          {!stocksLoading && (
             <div className="bg-card border border-border rounded-lg overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -297,6 +341,13 @@ export default function PotentialStocksPage() {
                         </td>
                       </tr>
                     ))}
+                    {filteredStocks.length === 0 && (
+                      <tr>
+                        <td colSpan={10} className="px-4 py-10 text-center text-sm text-text-secondary">
+                          未找到匹配成分股
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -305,7 +356,7 @@ export default function PotentialStocksPage() {
         </>
       )}
 
-      {loading && (
+      {(boardsLoading || stocksLoading) && (
         <div className="text-center text-text-secondary py-12">
           <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full mx-auto mb-3" />
           加载中...

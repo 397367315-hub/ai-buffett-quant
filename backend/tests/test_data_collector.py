@@ -38,7 +38,7 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
             del url, headers
             page = int(params["pn"])
             page_size = int(params["pz"])
-            calls.append((page, page_size))
+            calls.append(dict(params))
             start = (page - 1) * page_size
             return {"data": {"total": len(rows), "diff": rows[start:start + page_size]}}
 
@@ -46,8 +46,9 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         universe = await collector.fetch_stock_universe()
 
         self.assertEqual(len(universe), len(rows))
-        self.assertEqual({page for page, _ in calls}, {1, 2, 3})
-        self.assertTrue(all(page_size == 100 for _, page_size in calls))
+        self.assertEqual({int(call["pn"]) for call in calls}, {1, 2, 3})
+        self.assertTrue(all(int(call["pz"]) == 100 for call in calls))
+        self.assertTrue(all(call["fid"] == "f12" for call in calls))
         self.assertIn("302132", {item["code"] for item in universe})
         self.assertIn("920065", {item["code"] for item in universe})
         self.assertEqual(normalize_stock_code("920065"), "920065")
@@ -56,12 +57,13 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         collector = EastMoneyDataCollector()
 
         async def fake_fetch_json(url, params, headers=None):
-            del url, params, headers
+            del url, headers
+            self.assertIn("f100", params["fields"])
             return {
                 "data": {
                     "total": 3,
                     "diff": [
-                        {"f2": 1361.76, "f12": "600519", "f13": 1, "f14": "贵州茅台"},
+                        {"f2": 1361.76, "f12": "600519", "f13": 1, "f14": "贵州茅台", "f100": "白酒Ⅱ"},
                         {"f2": 0, "f12": "600001", "f13": 1, "f14": "邯郸钢铁"},
                         {"f2": "-", "f12": "000003", "f13": 0, "f14": "PT金田A"},
                     ],
@@ -71,7 +73,7 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         collector.fetch_json = fake_fetch_json
         universe = await collector.fetch_stock_universe()
 
-        self.assertEqual(universe, [{"code": "600519", "name": "贵州茅台", "market": 1}])
+        self.assertEqual(universe, [{"code": "600519", "name": "贵州茅台", "market": 1, "sector": "白酒Ⅱ"}])
 
     def test_stock_code_exchange_qualifiers_must_match_the_code(self):
         self.assertEqual(normalize_stock_code("SH600519"), "600519")
@@ -147,6 +149,72 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({int(call["pn"]) for call in calls}, {1, 2, 3})
         self.assertTrue(all(call["fid"] == "f12" for call in calls))
         self.assertEqual({row["code"] for row in result}, {row["f12"] for row in rows})
+
+    async def test_complete_board_constituents_are_paginated_and_annotated(self):
+        collector = EastMoneyDataCollector()
+        rows = [
+            {"code": f"600{index:03d}", "name": f"测试{index}", "price": 10 + index}
+            for index in range(205)
+        ]
+
+        async def fake_fetch_board_stocks(board_code, page=1, page_size=100, sort_field="f62"):
+            self.assertEqual(board_code, "BK0475")
+            self.assertEqual(sort_field, "f12")
+            start = (page - 1) * page_size
+            return {
+                "total": len(rows),
+                "stocks": rows[start:start + page_size],
+                "page": page,
+                "page_size": page_size,
+                "board_code": board_code,
+            }
+
+        collector.fetch_board_stocks = AsyncMock(side_effect=fake_fetch_board_stocks)
+        result = await collector.fetch_all_board_stocks("BK0475", sector_name="软件开发")
+
+        self.assertEqual(result["total"], 205)
+        self.assertEqual(result["tradable_total"], 205)
+        self.assertTrue(result["complete"])
+        self.assertEqual({call.kwargs["page"] for call in collector.fetch_board_stocks.await_args_list}, {1, 2, 3})
+        self.assertTrue(all(stock["sector"] == "软件开发" for stock in result["stocks"]))
+        self.assertTrue(all(stock["selection_sources"] == ["industry_constituent"] for stock in result["stocks"]))
+
+    async def test_stock_selection_sector_directory_uses_all_live_industry_boards(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_stock_universe = AsyncMock(return_value=[
+            *[
+                {"code": f"600{index:03d}", "name": f"软件{index}", "sector": "软件开发"}
+                for index in range(240)
+            ],
+            *[
+                {"code": f"000{index:03d}", "name": f"银行{index}", "sector": "银行"}
+                for index in range(40)
+            ],
+        ])
+        collector.fetch_all_industry_flow = AsyncMock(return_value=[
+            {
+                "code": "BK0475", "name": "软件开发", "change_pct": 2.5,
+                "main_net_inflow": 800_000_000, "main_net_inflow_pct": 4.2,
+                "up_count": 201, "down_count": 35, "flat_count": 4,
+                "leading_stock": "测试龙头",
+            },
+            {
+                "code": "BK0477", "name": "银行", "change_pct": -0.2,
+                "main_net_inflow": -100_000_000, "main_net_inflow_pct": -0.5,
+                "up_count": 8, "down_count": 30, "flat_count": 2,
+                "leading_stock": "",
+            },
+        ])
+        collector.fetch_intelligent_selection_candidates = AsyncMock()
+
+        sectors = await collector.fetch_intelligent_selection_sectors()
+
+        self.assertEqual([item["code"] for item in sectors], ["BK0475", "BK0477"])
+        self.assertEqual(sectors[0]["stock_count"], 240)
+        self.assertEqual(sectors[0]["candidate_count"], 240)
+        self.assertEqual(sectors[0]["count_source"], "stock_universe")
+        self.assertEqual(sectors[0]["heat_rank"], 1)
+        collector.fetch_intelligent_selection_candidates.assert_not_awaited()
 
     async def test_technical_screener_uses_live_descending_quotes_and_skips_zero_price(self):
         collector = EastMoneyDataCollector()

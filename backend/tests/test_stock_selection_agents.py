@@ -209,6 +209,58 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["candidate_summary"]["market_candidates"], 2)
         self.assertEqual([item["code"] for item in result["recommendations"]], ["600519"])
 
+    async def test_sector_code_scans_complete_board_instead_of_leader_pool(self):
+        service = StockSelectionAgentService()
+        board_snapshot = {
+            "source": "eastmoney",
+            "total": 120,
+            "complete": True,
+            "stocks": [{
+                "code": "600519", "name": "贵州茅台", "price": 120.0,
+                "change_pct": 2.5, "turnover": 4.0, "pe": 18.0, "pb": 5.0,
+                "roe": 21.0, "volume_ratio": 2.0, "market_cap": 100_000_000_000,
+                "main_net_inflow": 800_000_000, "main_net_inflow_pct": 6.0,
+                "sector": "酿酒行业", "selection_sources": ["industry_constituent"],
+            }],
+        }
+        service._load_histories = AsyncMock(return_value={"600519": _history(100)})
+        leader_pool = AsyncMock()
+        with (
+            patch(
+                "services.stock_selection_agents.collector.fetch_all_board_stocks",
+                new=AsyncMock(return_value=board_snapshot),
+            ) as board_fetch,
+            patch(
+                "services.stock_selection_agents.collector.fetch_intelligent_selection_candidates",
+                new=leader_pool,
+            ),
+            patch(
+                "services.stock_selection_agents.MarketRegime.detect",
+                new=AsyncMock(return_value={"regime": "震荡市", "confidence": 0.5, "bias": "neutral"}),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_context",
+                new=AsyncMock(return_value={"available": False, "international_items": [], "policy_items": []}),
+            ),
+            patch(
+                "services.stock_selection_agents.macro_policy_news_collector.get_stock_announcements",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            result = await service.run(
+                sector="酿酒行业",
+                sector_code="BK0475",
+                top_n=3,
+            )
+
+        board_fetch.assert_awaited_once_with("BK0475", sector_name="酿酒行业")
+        leader_pool.assert_not_awaited()
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sector_filter"]["code"], "BK0475")
+        self.assertEqual(result["sector_filter"]["market_candidates"], 120)
+        self.assertEqual(result["sector_filter"]["matched_candidates"], 1)
+        self.assertEqual(result["recommendations"][0]["selection_sources"], ["industry_constituent"])
+
     def test_unavailable_news_source_is_not_marked_as_an_active_signal(self):
         service = StockSelectionAgentService()
         report = service._news_policy_agent(

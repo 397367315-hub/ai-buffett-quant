@@ -166,8 +166,13 @@ interface SourceItem {
 }
 
 interface SectorOption {
+  code: string;
   name: string;
   candidate_count: number;
+  stock_count: number;
+  change_pct: number;
+  main_net_inflow: number;
+  heat_rank: number;
 }
 
 interface Recommendation {
@@ -220,8 +225,10 @@ interface SelectionResult {
   sector_filter?: {
     value: string;
     label: string;
+    code?: string | null;
     matched_candidates: number;
     market_candidates: number;
+    directory_complete?: boolean;
   };
   data_contract?: {
     slug: string;
@@ -346,6 +353,7 @@ export default function StockPickerPage() {
   const [sector, setSector] = useState('');
   const [sectors, setSectors] = useState<SectorOption[]>([]);
   const [sectorsLoading, setSectorsLoading] = useState(true);
+  const [coveredStockCount, setCoveredStockCount] = useState<number | null>(null);
   const [result, setResult] = useState<SelectionResult | null>(null);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -358,8 +366,14 @@ export default function StockPickerPage() {
 
     const loadSectors = async () => {
       try {
-        const res = await apiFetch<{ code: number; data: { sectors: SectorOption[] } }>('/stock-selection/sectors');
-        if (active) setSectors(res.data.sectors || []);
+        const res = await apiFetch<{
+          code: number;
+          data: { sectors: SectorOption[]; covered_stock_count?: number | null; coverage_complete?: boolean };
+        }>('/stock-selection/sectors');
+        if (active) {
+          setSectors(res.data.sectors || []);
+          setCoveredStockCount(res.data.coverage_complete ? (res.data.covered_stock_count ?? null) : null);
+        }
       } catch (err) {
         console.error('Failed to load stock-selection sectors:', err);
       } finally {
@@ -384,6 +398,8 @@ export default function StockPickerPage() {
     return () => window.clearInterval(timer);
   }, [loading]);
 
+  const selectedSector = sectors.find((item) => (item.code || item.name) === sector);
+
   const runSelection = async () => {
     setLoadingProgress(5);
     setLoadingElapsed(0);
@@ -392,7 +408,13 @@ export default function StockPickerPage() {
     try {
       const res = await apiFetch<{ code: number; data: SelectionResult }>('/stock-selection/run', {
         method: 'POST',
-        body: JSON.stringify({ mode, risk_profile: riskProfile, top_n: topN, sector: sector || undefined }),
+        body: JSON.stringify({
+          mode,
+          risk_profile: riskProfile,
+          top_n: topN,
+          sector: selectedSector?.name,
+          sector_code: selectedSector?.code || undefined,
+        }),
       });
       setResult(res.data);
       setSelectedCode(res.data.recommendations[0]?.code ?? null);
@@ -488,15 +510,23 @@ export default function StockPickerPage() {
               <select
                 value={sector}
                 onChange={(event) => setSector(event.target.value)}
-                className="w-full min-w-32 bg-[#0D1117] border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                className="w-full min-w-44 bg-[#0D1117] border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
                 aria-label="按行业板块筛选"
               >
                 <option value="">全部行业</option>
                 {sectors.map((item) => (
-                  <option key={item.name} value={item.name}>{item.name} ({item.candidate_count})</option>
+                  <option key={item.code || item.name} value={item.code || item.name}>
+                    {item.name} ({item.stock_count || item.candidate_count}只)
+                  </option>
                 ))}
               </select>
-              {sectorsLoading && <span className="block text-xs text-text-secondary mt-1">正在加载行业</span>}
+              <span className="block text-xs text-text-secondary mt-1">
+                {sectorsLoading
+                  ? '正在加载全市场行业'
+                  : coveredStockCount != null
+                    ? `${sectors.length}个行业 · 覆盖${coveredStockCount.toLocaleString('zh-CN')}只股票`
+                    : `${sectors.length}个行业 · 实时目录`}
+              </span>
             </label>
             <label className="block">
               <span className="block text-xs text-text-secondary mb-1.5">入选数量</span>
@@ -582,7 +612,9 @@ export default function StockPickerPage() {
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">{result.sector_filter?.label || '全部行业'}候选</div>
                 <div className="mt-1 text-lg font-mono font-bold text-text">{result.candidate_summary.live_candidates}</div>
-                <div className="text-xs text-text-secondary mt-1">全市场 {result.sector_filter?.market_candidates ?? result.candidate_summary.market_candidates ?? result.candidate_summary.live_candidates} 只</div>
+                <div className="text-xs text-text-secondary mt-1">
+                  {result.sector_filter?.code ? '行业成分' : '实时榜单池'} {result.sector_filter?.market_candidates ?? result.candidate_summary.market_candidates ?? result.candidate_summary.live_candidates} 只
+                </div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">完成研究</div>

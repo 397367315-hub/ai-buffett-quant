@@ -57,7 +57,10 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
             requested_orders.append(sort_order)
             return inflow_rows if sort_order == 0 else outflow_rows
 
-        with patch.object(routes.collector, "fetch_concept_flow", new=fetch_concept_flow):
+        with (
+            patch.object(routes.collector, "fetch_concept_flow", new=fetch_concept_flow),
+            patch.object(routes, "shanghai_now", return_value=datetime(2026, 7, 30, 10, 0)),
+        ):
             response = await routes.get_concept_summary(range="today", board_code=None)
 
         rankings = response["data"]["rankings"]
@@ -141,6 +144,13 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(response["data"]["is_realtime"])
         self.assertEqual(response["data"]["stock_code"], "600519")
+
+    def test_undated_quote_is_not_claimed_as_realtime_before_market_open(self):
+        with patch.object(routes, "shanghai_now", return_value=datetime(2026, 8, 3, 2, 0)):
+            metadata = routes._quote_metadata(available=True)
+
+        self.assertFalse(metadata["is_realtime"])
+        self.assertIsNone(metadata["data_date"])
 
 
 if __name__ == "__main__":
