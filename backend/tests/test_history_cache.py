@@ -1,7 +1,7 @@
 import asyncio
 import socket
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -9,6 +9,7 @@ import httpx
 from sqlalchemy.exc import OperationalError
 
 from services.history_cache import HistoryCacheService, collector, engine
+from services.data_sync import DataSyncService, history_cache
 
 
 class _Bind:
@@ -59,6 +60,49 @@ class HistoryCacheTests(unittest.TestCase):
 
 
 class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_current_concept_snapshot_uses_verified_stock_trade_date(self):
+        service = HistoryCacheService()
+        service._upsert = AsyncMock(side_effect=[1, 2])
+        service._clear_stale_current_board_snapshot = AsyncMock(return_value=3)
+        rows = [{
+            "code": "BK001", "name": "测试概念", "close_price": 10.0,
+            "change_pct": 1.2, "main_net_inflow": 100, "main_net_inflow_pct": 2.0,
+            "super_large_net_inflow": 50, "large_net_inflow": 20,
+            "medium_net_inflow": 10, "small_net_inflow": 5,
+            "up_count": 3, "down_count": 1, "leading_stock": "测试股份",
+        }]
+
+        with patch.object(collector, "fetch_all_concept_flow", new_callable=AsyncMock, return_value=rows):
+            result = await service.cache_current_concept_flow(
+                trade_date=date(2026, 8, 3),
+                verified_trade_date=True,
+            )
+
+        self.assertEqual(result["trade_date"], "2026-08-03")
+        self.assertEqual(result["cleared_stale_rows"], 3)
+        service._clear_stale_current_board_snapshot.assert_awaited_once()
+        payload = service._upsert.await_args_list[1].args[1]
+        self.assertEqual(payload[0]["trade_date"], date(2026, 8, 3))
+
+    async def test_market_sync_uses_stock_snapshot_date_for_board_snapshots(self):
+        stock_bars = {
+            "status": "success",
+            "data_date": "2026-08-03",
+            "count": 5_000,
+        }
+        with (
+            patch.object(history_cache, "cache_current_stock_bars", new_callable=AsyncMock, return_value=stock_bars),
+            patch.object(history_cache, "cache_current_northbound", new_callable=AsyncMock, return_value={"status": "success"}),
+            patch.object(history_cache, "cache_current_concept_flow", new_callable=AsyncMock, return_value={"status": "success"}) as concept,
+            patch.object(history_cache, "cache_current_industry_flow", new_callable=AsyncMock, return_value={"status": "success"}) as industry,
+        ):
+            result = await DataSyncService.sync_market_snapshot()
+
+        expected = {"trade_date": date(2026, 8, 3), "verified_trade_date": True}
+        concept.assert_awaited_once_with(**expected)
+        industry.assert_awaited_once_with(**expected)
+        self.assertEqual(result["stock_bars"], stock_bars)
+
     async def test_current_stock_snapshot_writes_only_timestamp_verified_rows(self):
         service = HistoryCacheService()
         quote_at = datetime(2026, 8, 3, 15, 10, tzinfo=ZoneInfo("Asia/Shanghai"))

@@ -1,6 +1,7 @@
 """兼容旧 API 的真实数据同步入口。"""
 
 import asyncio
+from datetime import date
 
 from services.history_cache import history_cache
 
@@ -13,11 +14,29 @@ class DataSyncService:
 
     @staticmethod
     async def sync_market_snapshot() -> dict:
-        concept, industry, northbound, stock_bars = await asyncio.gather(
-            history_cache.cache_current_concept_flow(),
-            history_cache.cache_current_industry_flow(),
+        northbound, stock_bars = await asyncio.gather(
             history_cache.cache_current_northbound(),
             history_cache.cache_current_stock_bars(),
+        )
+        raw_trade_date = stock_bars.get("data_date") if isinstance(stock_bars, dict) else None
+        try:
+            trade_date = date.fromisoformat(str(raw_trade_date)) if raw_trade_date else None
+        except ValueError:
+            trade_date = None
+        verified_trade_date = bool(
+            trade_date
+            and isinstance(stock_bars, dict)
+            and stock_bars.get("status") in {"success", "partial"}
+        )
+        concept, industry = await asyncio.gather(
+            history_cache.cache_current_concept_flow(
+                trade_date=trade_date,
+                verified_trade_date=verified_trade_date,
+            ),
+            history_cache.cache_current_industry_flow(
+                trade_date=trade_date,
+                verified_trade_date=verified_trade_date,
+            ),
         )
         return {
             "concept": concept,

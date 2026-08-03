@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import DBAPIError
@@ -698,6 +698,33 @@ class HistoryCacheService:
 
         return await self._with_database_retry(load_dates)
 
+    async def _latest_cached_stock_bar_date(self) -> date | None:
+        """Return the latest market date already verified in stock daily bars."""
+
+        async def load_date():
+            async with async_session() as session:
+                return (
+                    await session.execute(select(func.max(StockDailyBar.trade_date)))
+                ).scalar_one_or_none()
+
+        return await self._with_database_retry(load_date)
+
+    async def _clear_stale_current_board_snapshot(self, model, source_trade_date: date) -> int:
+        """Remove a pre-market row that was previously stamped with today."""
+        current_date = shanghai_now().date()
+        if source_trade_date >= current_date:
+            return 0
+
+        async def clear_rows():
+            async with async_session() as session:
+                result = await session.execute(
+                    delete(model).where(model.trade_date == current_date)
+                )
+                await session.commit()
+                return int(result.rowcount or 0)
+
+        return await self._with_database_retry(clear_rows)
+
     async def refresh_recent_stock_histories(
         self,
         stocks: list[dict],
@@ -793,11 +820,28 @@ class HistoryCacheService:
         # so a process restart resumes only genuinely missing histories.
         return codes
 
-    async def cache_current_concept_flow(self) -> dict:
+    async def cache_current_concept_flow(
+        self,
+        trade_date: date | None = None,
+        *,
+        verified_trade_date: bool = False,
+    ) -> dict:
+        trade_date = trade_date or await self._latest_cached_stock_bar_date()
+        if trade_date is None:
+            return {
+                "status": "unavailable",
+                "count": 0,
+                "source": "eastmoney",
+                "error": "market_date_unverified",
+            }
         rows = await collector.fetch_all_concept_flow()
         if not rows:
             return {"status": "unavailable", "count": 0, "source": "eastmoney"}
-        today = shanghai_now().date()
+        cleared_stale_rows = (
+            await self._clear_stale_current_board_snapshot(ConceptFundFlowDaily, trade_date)
+            if verified_trade_date
+            else 0
+        )
         await self._upsert(
             MarketBoard,
             [
@@ -808,7 +852,7 @@ class HistoryCacheService:
         )
         payload = [
             {
-                "board_code": row["code"], "trade_date": today,
+                "board_code": row["code"], "trade_date": trade_date,
                 "close_price": row["close_price"], "change_pct": row["change_pct"],
                 "main_net_inflow": row["main_net_inflow"], "main_net_inflow_pct": row["main_net_inflow_pct"],
                 "super_large_net_inflow": row["super_large_net_inflow"], "large_net_inflow": row["large_net_inflow"],
@@ -818,13 +862,36 @@ class HistoryCacheService:
             for row in rows
         ]
         count = await self._upsert(ConceptFundFlowDaily, payload, ["board_code", "trade_date"])
-        return {"status": "success", "count": count, "source": "eastmoney", "trade_date": today.isoformat()}
+        return {
+            "status": "success",
+            "count": count,
+            "source": "eastmoney",
+            "trade_date": trade_date.isoformat(),
+            "cleared_stale_rows": cleared_stale_rows,
+        }
 
-    async def cache_current_industry_flow(self) -> dict:
+    async def cache_current_industry_flow(
+        self,
+        trade_date: date | None = None,
+        *,
+        verified_trade_date: bool = False,
+    ) -> dict:
+        trade_date = trade_date or await self._latest_cached_stock_bar_date()
+        if trade_date is None:
+            return {
+                "status": "unavailable",
+                "count": 0,
+                "source": "eastmoney",
+                "error": "market_date_unverified",
+            }
         rows = await collector.fetch_all_industry_flow()
         if not rows:
             return {"status": "unavailable", "count": 0, "source": "eastmoney"}
-        today = shanghai_now().date()
+        cleared_stale_rows = (
+            await self._clear_stale_current_board_snapshot(IndustryFundFlowDaily, trade_date)
+            if verified_trade_date
+            else 0
+        )
         await self._upsert(
             MarketBoard,
             [
@@ -835,7 +902,7 @@ class HistoryCacheService:
         )
         payload = [
             {
-                "board_code": row["code"], "trade_date": today,
+                "board_code": row["code"], "trade_date": trade_date,
                 "close_price": row["close_price"], "change_pct": row["change_pct"],
                 "main_net_inflow": row["main_net_inflow"], "main_net_inflow_pct": row["main_net_inflow_pct"],
                 "super_large_net_inflow": row["super_large_net_inflow"], "large_net_inflow": row["large_net_inflow"],
@@ -845,7 +912,13 @@ class HistoryCacheService:
             for row in rows
         ]
         count = await self._upsert(IndustryFundFlowDaily, payload, ["board_code", "trade_date"])
-        return {"status": "success", "count": count, "source": "eastmoney", "trade_date": today.isoformat()}
+        return {
+            "status": "success",
+            "count": count,
+            "source": "eastmoney",
+            "trade_date": trade_date.isoformat(),
+            "cleared_stale_rows": cleared_stale_rows,
+        }
 
     async def cache_current_northbound(self) -> dict:
         history = await collector.fetch_north_bound_daily(days=1)
