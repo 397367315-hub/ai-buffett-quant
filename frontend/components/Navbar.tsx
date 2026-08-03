@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit, LineChart } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -14,6 +14,7 @@ const proSubItems = [
   { href: '/pro/limit-board', label: '涨跌停板', icon: Zap },
   { href: '/pro/potential', label: '潜力股分析', icon: Sparkles },
   { href: '/pro/stock-picker', label: '智能选股', icon: BrainCircuit },
+  { href: '/quant', label: '量化策略', icon: LineChart },
   { href: '/pro/rotation', label: '板块轮动', icon: TrendingUp },
   { href: '/pro/flow-observer', label: '资金流观察', icon: Activity },
   { href: '/pro/dragon-board', label: '龙虎榜', icon: TrendingUp },
@@ -56,7 +57,7 @@ export default function Navbar() {
           onMouseEnter={() => setProDropdownOpen(true)}
           onMouseLeave={() => setProDropdownOpen(false)}
         >
-          <Link href="/pro" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${pathname.startsWith('/pro') || pathname.startsWith('/fed') || pathname.startsWith('/market') ? 'bg-[#1F6FEB22] text-accent font-medium' : 'text-text-secondary hover:text-text hover:bg-[#21262D]'}`}>
+          <Link href="/pro" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${pathname.startsWith('/pro') || pathname.startsWith('/quant') || pathname.startsWith('/fed') || pathname.startsWith('/market') ? 'bg-[#1F6FEB22] text-accent font-medium' : 'text-text-secondary hover:text-text hover:bg-[#21262D]'}`}>
             <BarChart3 size={16} /> 专业看板 <ChevronDown size={12} />
           </Link>
           {proDropdownOpen && (

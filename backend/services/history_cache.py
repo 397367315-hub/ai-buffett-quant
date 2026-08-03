@@ -560,6 +560,34 @@ class HistoryCacheService:
             )
         return written, failures
 
+    async def cache_stock_price_histories(self, payloads: list[tuple[dict, dict]]) -> int:
+        """Persist on-demand strategy history using the same canonical bar schema.
+
+        Quant backtests can fill a small missing subset without starting a
+        second market-wide backfill. The existing unique key keeps this
+        idempotent and preserves the source used for every bar.
+        """
+        rows = []
+        for stock, payload in payloads:
+            for bar in payload.get("history") or []:
+                try:
+                    trade_date = _parse_date(str(bar["trade_date"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                rows.append({
+                    "stock_code": payload.get("code") or stock.get("code"),
+                    "stock_name": payload.get("name") or stock.get("name"),
+                    "market": str(stock.get("market") or ""),
+                    "trade_date": trade_date,
+                    "open_price": bar.get("open"), "close_price": bar.get("close"),
+                    "high_price": bar.get("high"), "low_price": bar.get("low"),
+                    "volume": bar.get("volume"), "amount": bar.get("amount"),
+                    "amplitude": bar.get("amplitude"), "change_pct": bar.get("change_pct"),
+                    "change_amount": bar.get("change_amount"), "turnover": bar.get("turnover"),
+                    "source": payload.get("source", "tencent"), "updated_at": datetime.utcnow(),
+                })
+        return await self._upsert(StockDailyBar, rows, ["stock_code", "trade_date"])
+
     async def _cached_stock_codes(self, days: int) -> set[str]:
         cutoff = shanghai_now().date() - timedelta(days=max(days, 1))
 

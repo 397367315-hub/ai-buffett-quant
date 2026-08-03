@@ -76,6 +76,57 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(universe, [{"code": "600519", "name": "贵州茅台", "market": 1, "sector": "白酒Ⅱ"}])
 
+    async def test_quant_market_snapshot_paginates_complete_code_sorted_quotes(self):
+        collector = EastMoneyDataCollector()
+        rows = [
+            {
+                "f2": 10 + index / 100, "f3": 1.2, "f8": 3.1, "f9": 18,
+                "f10": 1.4, "f12": f"600{index:03d}", "f14": f"测试{index}",
+                "f20": 20_000_000_000, "f23": 2, "f37": 10, "f62": 50_000_000,
+                "f100": "软件开发", "f184": 2.5,
+            }
+            for index in range(205)
+        ]
+        rows[10]["f2"] = 0
+        rows[11]["f14"] = "ST测试"
+        calls = []
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            calls.append(dict(params))
+            page = int(params["pn"])
+            size = int(params["pz"])
+            start = (page - 1) * size
+            return {"data": {"total": len(rows), "diff": rows[start:start + size]}}
+
+        collector.fetch_json = fake_fetch_json
+        snapshot = await collector.fetch_quant_market_snapshot()
+
+        self.assertTrue(snapshot["complete"])
+        self.assertEqual(snapshot["upstream_total"], 205)
+        self.assertEqual(snapshot["total"], 203)
+        self.assertEqual({int(call["pn"]) for call in calls}, {1, 2, 3})
+        self.assertTrue(all(call["fid"] == "f12" and call["po"] == "0" for call in calls))
+        self.assertEqual(snapshot["stocks"], sorted(snapshot["stocks"], key=lambda item: item["code"]))
+
+    async def test_small_stock_quote_refresh_uses_validated_exchange_codes(self):
+        collector = EastMoneyDataCollector()
+        calls = []
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            calls.append(dict(params))
+            code = str(params["secid"]).split(".")[-1]
+            return {"data": {"f43": 1234, "f57": code, "f58": f"测试{code}", "f124": 0}}
+
+        collector.fetch_json = fake_fetch_json
+        snapshot = await collector.fetch_stock_quotes(["600000", "000001", "600000"])
+
+        self.assertEqual([item["code"] for item in snapshot["stocks"]], ["600000", "000001"])
+        self.assertTrue(all(item["price"] == 12.34 for item in snapshot["stocks"]))
+        self.assertEqual([call["secid"] for call in calls], ["1.600000", "0.000001"])
+        self.assertTrue(snapshot["complete"])
+
     def test_stock_code_exchange_qualifiers_must_match_the_code(self):
         self.assertEqual(normalize_stock_code("SH600519"), "600519")
         self.assertEqual(normalize_stock_code("000001.SZ"), "000001")
@@ -305,7 +356,7 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["po"], "1")
         self.assertEqual(captured["fid"], "f10")
-        self.assertEqual(captured["fields"], "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f184")
+        self.assertEqual(captured["fields"], "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f124,f184")
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["stocks"][0]["code"], "600519")
         self.assertEqual(result["stocks"][0]["sector"], "白酒")

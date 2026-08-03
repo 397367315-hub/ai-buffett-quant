@@ -6,10 +6,21 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
     headers: { 'Content-Type': 'application/json', ...options?.headers },
     ...options,
   });
-  if (!res.ok) {
-    throw new Error(`API error: ${res.status} ${res.statusText}`);
+  let payload: any = null;
+  try {
+    payload = await res.json();
+  } catch {
+    // Non-JSON proxy failures still receive the HTTP status below.
   }
-  return res.json() as Promise<T>;
+  if (!res.ok) {
+    const detail = typeof payload?.detail === 'string'
+      ? payload.detail
+      : Array.isArray(payload?.detail)
+        ? payload.detail.map((item: any) => item?.msg).filter(Boolean).join('；')
+        : payload?.message;
+    throw new Error(detail || `请求失败：${res.status} ${res.statusText}`);
+  }
+  return payload as T;
 }
 
 export function formatYi(value: number): string {

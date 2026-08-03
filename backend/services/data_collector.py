@@ -123,7 +123,7 @@ class EastMoneyDataCollector:
         "Accept": HEADERS["Accept"],
     }
     STOCK_SCREENER_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
-    STOCK_SCREENER_FIELDS = "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f184"
+    STOCK_SCREENER_FIELDS = "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f124,f184"
     SECTOR_COUNTS_CACHE_SECONDS = 3600
 
     def __init__(self):
@@ -959,6 +959,141 @@ class EastMoneyDataCollector:
         data = await self.fetch_json(self.BASE_URL, params)
         return (data.get("data") or {}).get("diff") or []
 
+    async def fetch_quant_market_snapshot(self) -> dict:
+        """Fetch a complete, code-sorted A-share quote snapshot for rule scans.
+
+        Ranking endpoints only return market leaders and therefore cannot be
+        used to claim an all-market scan. This method walks every upstream
+        page using the immutable stock code as the sort key and rejects a
+        partial response instead of presenting it as complete coverage.
+        """
+        page_size = self.MAX_LIST_PAGE_SIZE
+        market_filter = f"{self.STOCK_SCREENER_FILTER},m:0+t:81+s:2048"
+
+        async def fetch_page(page: int) -> tuple[list[dict], int]:
+            params = {
+                "pn": str(page), "pz": str(page_size), "po": "0", "np": "1",
+                "fltt": "2", "invt": "2", "fid": "f12", "fs": market_filter,
+                "fields": self.STOCK_SCREENER_FIELDS, "ut": EASTMONEY_UT,
+            }
+            data = await self.fetch_json(self.BASE_URL, params)
+            payload = data.get("data") or {}
+            return payload.get("diff") or [], as_int(payload.get("total"))
+
+        try:
+            first_rows, upstream_total = await fetch_page(1)
+            if not first_rows:
+                raise RuntimeError("全市场行情首批为空")
+            page_count = max(1, (upstream_total + page_size - 1) // page_size)
+            pages: dict[int, list[dict]] = {1: first_rows}
+            for start in range(2, page_count + 1, self.PAGE_FETCH_CONCURRENCY):
+                page_numbers = list(range(start, min(start + self.PAGE_FETCH_CONCURRENCY, page_count + 1)))
+                page_results = await asyncio.gather(*(fetch_page(page) for page in page_numbers))
+                for page, (rows, _) in zip(page_numbers, page_results):
+                    if not rows:
+                        raise RuntimeError(f"全市场行情第 {page} 页为空")
+                    pages[page] = rows
+        except Exception as exc:
+            raise RuntimeError(f"获取量化全市场行情失败: {type(exc).__name__}") from exc
+
+        by_code: dict[str, dict] = {}
+        raw_count = 0
+        for page in sorted(pages):
+            for item in pages[page]:
+                raw_count += 1
+                stock = self._map_screener_stock(item)
+                if stock is None or self._is_special_treatment_stock(stock.get("name")):
+                    continue
+                by_code[stock["code"]] = stock
+
+        if upstream_total and raw_count < upstream_total:
+            raise RuntimeError(
+                f"量化全市场行情不完整: expected={upstream_total}, received={raw_count}"
+            )
+        stocks = [by_code[code] for code in sorted(by_code)]
+        now = shanghai_now()
+        quote_timestamps = [as_int(item.get("quote_timestamp")) for item in stocks if item.get("quote_timestamp")]
+        quote_at: datetime | None = None
+        if quote_timestamps:
+            try:
+                quote_at = datetime.fromtimestamp(max(quote_timestamps), tz=ZoneInfo("Asia/Shanghai"))
+            except (OverflowError, OSError, ValueError):
+                quote_at = None
+        quote_age_seconds = (now - quote_at).total_seconds() if quote_at else None
+        is_realtime = bool(
+            quote_at
+            and quote_at.date() == now.date()
+            and quote_age_seconds is not None
+            and 0 <= quote_age_seconds <= 15 * 60
+            and is_a_share_market_session(now)
+        )
+        return {
+            "stocks": stocks,
+            "total": len(stocks),
+            "upstream_total": upstream_total,
+            "source": "eastmoney",
+            "data_date": quote_at.date().isoformat() if quote_at else None,
+            "source_updated_at": quote_at.isoformat() if quote_at else None,
+            "is_realtime": is_realtime,
+            "fetched_at": now.isoformat(),
+            "complete": True,
+        }
+
+    async def fetch_stock_quotes(self, stock_codes: list[str]) -> dict:
+        """Fetch current quotes for a small, explicitly requested stock set."""
+        codes = list(dict.fromkeys(normalize_stock_code(code) for code in stock_codes))
+
+        async def fetch_one(code: str) -> dict | None:
+            data = await self.fetch_json(
+                "https://push2.eastmoney.com/api/qt/stock/get",
+                {
+                    "secid": stock_secid(code),
+                    "fields": "f43,f57,f58,f124",
+                    "ut": EASTMONEY_UT,
+                },
+            )
+            row = data.get("data") or {}
+            price = as_optional_float(row.get("f43"))
+            if price is None or price <= 0:
+                return None
+            return {
+                "code": code,
+                "name": str(row.get("f58") or ""),
+                "price": price / 100,
+                "quote_timestamp": as_int(row.get("f124")) or None,
+            }
+
+        results = await asyncio.gather(*(fetch_one(code) for code in codes), return_exceptions=True)
+        stocks = [item for item in results if isinstance(item, dict)]
+        if codes and not stocks:
+            raise RuntimeError("持仓股票最新行情不可用")
+
+        now = shanghai_now()
+        timestamps = [as_int(item.get("quote_timestamp")) for item in stocks if item.get("quote_timestamp")]
+        quote_at: datetime | None = None
+        if timestamps:
+            try:
+                quote_at = datetime.fromtimestamp(max(timestamps), tz=ZoneInfo("Asia/Shanghai"))
+            except (OverflowError, OSError, ValueError):
+                quote_at = None
+        quote_age_seconds = (now - quote_at).total_seconds() if quote_at else None
+        return {
+            "stocks": stocks,
+            "total": len(stocks),
+            "source": "eastmoney",
+            "data_date": quote_at.date().isoformat() if quote_at else None,
+            "source_updated_at": quote_at.isoformat() if quote_at else None,
+            "is_realtime": bool(
+                quote_at
+                and quote_at.date() == now.date()
+                and quote_age_seconds is not None
+                and 0 <= quote_age_seconds <= 15 * 60
+                and is_a_share_market_session(now)
+            ),
+            "fetched_at": now.isoformat(),
+            "complete": len(stocks) == len(codes),
+        }
+
     @staticmethod
     def _is_special_treatment_stock(name: object) -> bool:
         normalized = str(name or "").upper()
@@ -995,6 +1130,7 @@ class EastMoneyDataCollector:
             "sector": str(item.get("f100") or "").strip(),
             "main_net_inflow": as_int(item.get("f62")),
             "main_net_inflow_pct": as_float(item.get("f184")),
+            "quote_timestamp": as_int(item.get("f124")) or None,
         }
 
     async def fetch_technical_screener(self, filters: dict | None = None) -> dict:

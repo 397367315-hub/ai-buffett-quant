@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     ftshare_mcp_url: str = "https://market.ft.tech/gateway/mcp"
     ftshare_mcp_timeout: float = 10.0
 
+    # 可视化量化策略模块。生产环境可将目录指向 Render 持久化磁盘；
+    # 未配置时使用仓库内的 JSON 数据目录，适合本地开发和单进程部署。
+    quant_data_dir: str = ""
+    quant_scan_cache_seconds: int = 300
+    quant_scan_max_technical_stocks: int = 1500
+    quant_backtest_max_stocks: int = 120
+
     # 登录账号配置
     admin_username: str = "admin"
     admin_password: str = "buffett2026"

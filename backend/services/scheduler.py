@@ -50,6 +50,33 @@ async def start_scheduler(data_collector=None, db_session=None):
         misfire_grace_time=60,
     )
 
+    async def quant_signal_scan():
+        """Run after each session opens without blocking ordinary API traffic."""
+        from services.data_collector import shanghai_now
+
+        if shanghai_now().weekday() >= 5:
+            return
+        try:
+            from quant.signals import quant_signal_service
+
+            job = await quant_signal_service.start_scan(force=False, scheduled_only=True)
+            print(f"[Scheduler] 量化信号扫描任务: {job.get('job_id')}")
+        except Exception as exc:
+            print(f"[Scheduler] 量化信号扫描失败: {type(exc).__name__}")
+
+    scheduler.add_job(
+        quant_signal_scan,
+        CronTrigger(hour=9, minute=32, day_of_week="mon-fri"),
+        id="quant_signal_morning", name="量化信号早盘扫描", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        quant_signal_scan,
+        CronTrigger(hour=13, minute=2, day_of_week="mon-fri"),
+        id="quant_signal_afternoon", name="量化信号午后扫描", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+
     if not scheduler.running:
         scheduler.start()
     print("[Scheduler] 定时任务已启动")

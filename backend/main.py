@@ -3,6 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from api.routes import router
+from api.quant_routes import router as quant_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -50,6 +51,7 @@ async def add_cors_header(request: Request, call_next):
 
 
 app.include_router(router)
+app.include_router(quant_router)
 
 
 @app.get("/")

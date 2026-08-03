@@ -9,3 +9,5 @@ AI巴菲特量化分析系统-完整交接文档.md
 
 # Local Netlify folder
 .netlify
+.playwright-cli/
+output/

@@ -1,0 +1,61 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { CircleDollarSign, History, Loader2, RefreshCw, RotateCcw, ShoppingCart, TrendingDown, TrendingUp } from 'lucide-react';
+import { apiFetch } from '@/lib/api';
+import type { PaperHolding, PaperPortfolio, TradeSignal } from '../types';
+
+function money(value: number) { return `¥${Number(value || 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`; }
+
+export default function PaperPanel({ draftSignal, onClearDraft }: { draftSignal: TradeSignal | null; onClearDraft: () => void }) {
+  const [portfolio, setPortfolio] = useState<PaperPortfolio | null>(null);
+  const [selectedCode, setSelectedCode] = useState('');
+  const [buyPrice, setBuyPrice] = useState(0);
+  const [buyShares, setBuyShares] = useState(100);
+  const [sellPrice, setSellPrice] = useState(0);
+  const [sellShares, setSellShares] = useState(100);
+  const [reason, setReason] = useState('手动卖出');
+  const [loading, setLoading] = useState(true);
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null);
+
+  const load = async (refresh = false) => {
+    try { const response = await apiFetch<{ data: PaperPortfolio }>(`/quant/paper/portfolio${refresh ? '?refresh=true' : ''}`); setPortfolio(response.data); } catch (caught) { setMessage({ text: caught instanceof Error ? caught.message : '模拟盘读取失败', error: true }); } finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (!draftSignal) return;
+    setSelectedCode(draftSignal.stock_code); setBuyPrice(Number(draftSignal.price || 0)); setBuyShares(100); setMessage({ text: `已带入 ${draftSignal.stock_name}，请确认价格和数量后提交。` });
+  }, [draftSignal]);
+  useEffect(() => {
+    const holding = portfolio?.holdings.find((item) => item.stock_code === selectedCode);
+    if (holding) { setSellPrice(holding.current_price); setSellShares(Math.min(100, holding.shares)); }
+  }, [portfolio, selectedCode]);
+
+  const buy = async () => {
+    if (!selectedCode || buyShares % 100 !== 0 || buyPrice <= 0) return setMessage({ text: '请输入有效的六位股票代码、价格和整手数量。', error: true });
+    setWorking(true); setMessage(null);
+    try { const response = await apiFetch<{ data: PaperPortfolio }>('/quant/paper/buy', { method: 'POST', body: JSON.stringify({ stock_code: selectedCode, stock_name: draftSignal?.stock_name || '', price: buyPrice, shares: buyShares, strategy_id: draftSignal?.strategy_id, signal_id: draftSignal?.signal_id }) }); setPortfolio(response.data); setMessage({ text: '模拟买入成功，已扣除佣金。' }); onClearDraft(); } catch (caught) { setMessage({ text: caught instanceof Error ? caught.message : '模拟买入失败', error: true }); } finally { setWorking(false); }
+  };
+  const sell = async () => {
+    if (!selectedCode || sellShares % 100 !== 0 || sellPrice <= 0) return setMessage({ text: '请输入有效的卖出价格和整手数量。', error: true });
+    setWorking(true); setMessage(null);
+    try { const response = await apiFetch<{ data: PaperPortfolio }>('/quant/paper/sell', { method: 'POST', body: JSON.stringify({ stock_code: selectedCode, price: sellPrice, shares: sellShares, reason }) }); setPortfolio(response.data); setMessage({ text: '模拟卖出成功，已扣除佣金和印花税。' }); } catch (caught) { setMessage({ text: caught instanceof Error ? caught.message : '模拟卖出失败', error: true }); } finally { setWorking(false); }
+  };
+  const reset = async () => { if (!window.confirm('确认清空量化模拟盘的持仓和交易记录吗？')) return; setWorking(true); try { const response = await apiFetch<{ data: PaperPortfolio }>('/quant/paper/reset', { method: 'POST', body: JSON.stringify({ initial_capital: portfolio?.account.initial_capital || 100000 }) }); setPortfolio(response.data); setMessage({ text: '模拟盘已重置。' }); } catch (caught) { setMessage({ text: caught instanceof Error ? caught.message : '重置失败', error: true }); } finally { setWorking(false); } };
+
+  if (loading || !portfolio) return <div className="flex items-center justify-center h-64 text-text-secondary"><Loader2 size={22} className="animate-spin mr-2" />正在读取模拟盘</div>;
+  const account = portfolio.account;
+  return <div className="space-y-4">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3"><div><h2 className="text-base font-bold text-text flex items-center gap-2"><CircleDollarSign size={17} className="text-warn" />量化模拟盘</h2><p className="text-xs text-text-secondary mt-1">独立于 AI 模拟炒股，不连接真实券商，不会产生真实委托。</p></div><div className="flex gap-2"><button type="button" onClick={() => load(true)} disabled={working} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-border rounded-md text-text-secondary hover:border-accent hover:text-text"><RefreshCw size={13} />刷新价格</button><button type="button" onClick={reset} disabled={working} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-down/50 rounded-md text-down hover:bg-[#26A69A22]"><RotateCcw size={13} />重置</button></div></div>
+    {message && <div className={`border rounded-md p-3 text-xs ${message.error ? 'border-down/50 bg-[#EF535022] text-down' : 'border-accent/50 bg-[#1F6FEB22] text-text'}`}>{message.text}</div>}
+    {portfolio.price_warning && <div className="border border-warn/50 bg-[#D2992212] rounded-md p-3 text-xs text-warn">{portfolio.price_warning}</div>}
+    <div className="grid grid-cols-2 md:grid-cols-4 border border-border rounded-md divide-x divide-y md:divide-y-0 divide-border"><div className="p-3"><div className="text-xs text-text-secondary">总资产</div><div className="font-mono text-base text-text mt-1">{money(account.total_value)}</div></div><div className="p-3"><div className="text-xs text-text-secondary">可用资金</div><div className="font-mono text-base text-text mt-1">{money(account.available_cash)}</div></div><div className="p-3"><div className="text-xs text-text-secondary">持仓市值</div><div className="font-mono text-base text-text mt-1">{money(account.total_value - account.available_cash)}</div></div><div className="p-3"><div className="text-xs text-text-secondary">累计收益</div><div className={`font-mono text-base mt-1 ${account.total_return_pct >= 0 ? 'text-up' : 'text-down'}`}>{account.total_return_pct >= 0 ? '+' : ''}{account.total_return_pct.toFixed(2)}%</div></div></div>
+
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4"><section className="border border-border rounded-md p-3"><h3 className="text-sm font-semibold text-text flex items-center gap-2 mb-3"><ShoppingCart size={15} className="text-up" />模拟买入</h3><div className="grid grid-cols-2 gap-2"><label className="text-xs text-text-secondary col-span-2">股票代码<input value={selectedCode} onChange={(event) => setSelectedCode(event.target.value)} placeholder="例如 600000" className="mt-1 w-full bg-bg border border-border rounded-md px-2 py-2 text-text font-mono" /></label><label className="text-xs text-text-secondary">成交价<input type="number" min="0" step="0.01" value={buyPrice || ''} onChange={(event) => setBuyPrice(Number(event.target.value))} className="mt-1 w-full bg-bg border border-border rounded-md px-2 py-2 text-text" /></label><label className="text-xs text-text-secondary">数量（整手）<input type="number" min="100" step="100" value={buyShares} onChange={(event) => setBuyShares(Number(event.target.value))} className="mt-1 w-full bg-bg border border-border rounded-md px-2 py-2 text-text" /></label></div><button type="button" onClick={buy} disabled={working} className="mt-3 inline-flex items-center gap-1.5 px-3 py-2 bg-up text-white text-xs rounded-md disabled:opacity-50"><TrendingUp size={14} />确认模拟买入</button></section>
+      <section className="border border-border rounded-md p-3"><h3 className="text-sm font-semibold text-text flex items-center gap-2 mb-3"><TrendingDown size={15} className="text-down" />模拟卖出</h3><div className="grid grid-cols-2 gap-2"><label className="text-xs text-text-secondary col-span-2">持仓股票<select value={selectedCode} onChange={(event) => setSelectedCode(event.target.value)} className="mt-1 w-full bg-bg border border-border rounded-md px-2 py-2 text-text"><option value="">选择持仓</option>{portfolio.holdings.map((holding) => <option key={holding.stock_code} value={holding.stock_code}>{holding.stock_name || holding.stock_code} · {holding.shares}股</option>)}</select></label><label className="text-xs text-text-secondary">成交价<input type="number" min="0" step="0.01" value={sellPrice || ''} onChange={(event) => setSellPrice(Number(event.target.value))} className="mt-1 w-full bg-bg border border-border rounded-md px-2 py-2 text-text" /></label><label className="text-xs text-text-secondary">数量（整手）<input type="number" min="100" step="100" value={sellShares} onChange={(event) => setSellShares(Number(event.target.value))} className="mt-1 w-full bg-bg border border-border rounded-md px-2 py-2 text-text" /></label><label className="text-xs text-text-secondary col-span-2">卖出原因<input value={reason} onChange={(event) => setReason(event.target.value)} className="mt-1 w-full bg-bg border border-border rounded-md px-2 py-2 text-text" /></label></div><button type="button" onClick={sell} disabled={working} className="mt-3 inline-flex items-center gap-1.5 px-3 py-2 bg-down text-white text-xs rounded-md disabled:opacity-50"><TrendingDown size={14} />确认模拟卖出</button></section></div>
+
+    <section className="border border-border rounded-md overflow-hidden"><div className="px-3 py-2 text-sm font-semibold text-text border-b border-border">当前持仓</div>{portfolio.holdings.length ? <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-xs"><thead className="bg-[#161B22] text-text-secondary"><tr><th className="text-left px-3 py-2">股票</th><th className="text-right px-3 py-2">持仓</th><th className="text-right px-3 py-2">成本</th><th className="text-right px-3 py-2">现价</th><th className="text-right px-3 py-2">市值</th><th className="text-right px-3 py-2">浮动收益</th></tr></thead><tbody>{portfolio.holdings.map((holding: PaperHolding) => <tr key={holding.stock_code} className="border-t border-border"><td className="px-3 py-2 text-text">{holding.stock_name || '未命名'} <span className="text-text-secondary font-mono ml-1">{holding.stock_code}</span></td><td className="px-3 py-2 text-right font-mono">{holding.shares}</td><td className="px-3 py-2 text-right font-mono">{holding.cost_per_share.toFixed(3)}</td><td className="px-3 py-2 text-right font-mono">{holding.current_price.toFixed(2)}</td><td className="px-3 py-2 text-right font-mono">{money(holding.market_value)}</td><td className={`px-3 py-2 text-right font-mono ${holding.profit_pct >= 0 ? 'text-up' : 'text-down'}`}>{holding.profit_pct >= 0 ? '+' : ''}{holding.profit_pct.toFixed(2)}%</td></tr>)}</tbody></table></div> : <div className="py-10 text-center text-sm text-text-secondary">暂无持仓，信号确认后可从信号看板带入。</div>}</section>
+    <section className="border border-border rounded-md overflow-hidden"><div className="px-3 py-2 text-sm font-semibold text-text flex items-center gap-2"><History size={15} />交易历史</div>{portfolio.history.length ? <div className="overflow-x-auto"><table className="w-full min-w-[680px] text-xs"><thead className="bg-[#161B22] text-text-secondary"><tr><th className="text-left px-3 py-2">时间</th><th className="text-left px-3 py-2">动作</th><th className="text-left px-3 py-2">股票</th><th className="text-right px-3 py-2">价格</th><th className="text-right px-3 py-2">数量</th><th className="text-right px-3 py-2">费用</th><th className="text-left px-3 py-2">说明</th></tr></thead><tbody>{portfolio.history.slice().reverse().slice(0, 100).map((trade) => <tr key={trade.id} className="border-t border-border"><td className="px-3 py-2 text-text-secondary">{new Date(trade.date).toLocaleString('zh-CN', { hour12: false })}</td><td className={`px-3 py-2 ${trade.action === 'buy' ? 'text-up' : 'text-down'}`}>{trade.action === 'buy' ? '买入' : '卖出'}</td><td className="px-3 py-2 text-text">{trade.stock_name || trade.stock_code}</td><td className="px-3 py-2 text-right font-mono">{trade.price.toFixed(2)}</td><td className="px-3 py-2 text-right font-mono">{trade.shares}</td><td className="px-3 py-2 text-right font-mono">{money(trade.commission + trade.tax)}</td><td className="px-3 py-2 text-text-secondary">{trade.reason}</td></tr>)}</tbody></table></div> : <div className="py-10 text-center text-sm text-text-secondary">暂无交易记录</div>}</section>
+  </div>;
+}

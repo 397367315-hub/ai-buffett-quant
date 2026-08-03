@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "account": {
+    "initial_capital": 100000.0,
+    "available_cash": 100000.0,
+    "total_value": 100000.0,
+    "total_return_pct": 0.0
+  },
+  "holdings": [],
+  "history": [],
+  "updated_at": null,
+  "price_source": "none",
+  "price_updated_at": null,
+  "price_is_realtime": false,
+  "price_warning": null
+}
