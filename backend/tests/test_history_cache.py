@@ -10,6 +10,7 @@ from sqlalchemy.exc import OperationalError
 
 from services.history_cache import HistoryCacheService, collector, engine
 from services.data_sync import DataSyncService, history_cache
+from models import ConceptFundFlowDaily
 
 
 class _Bind:
@@ -23,6 +24,18 @@ class _Session:
 
     def get_bind(self):
         return self._bind
+
+
+class _QueryResult:
+    def __init__(self, *, one_value=None, scalar_value=None):
+        self._one_value = one_value
+        self._scalar_value = scalar_value
+
+    def one(self):
+        return self._one_value
+
+    def scalar_one(self):
+        return self._scalar_value
 
 
 class HistoryCacheTests(unittest.TestCase):
@@ -60,6 +73,26 @@ class HistoryCacheTests(unittest.TestCase):
 
 
 class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_board_cache_stats_reports_latest_verified_snapshot(self):
+        service = HistoryCacheService()
+        session = type("StatsSession", (), {})()
+        latest_date = date(2026, 8, 3)
+        session.execute = AsyncMock(side_effect=[
+            _QueryResult(one_value=(1_000, date(2025, 8, 1), latest_date)),
+            _QueryResult(scalar_value=500),
+            _QueryResult(scalar_value=10),
+            _QueryResult(scalar_value=496),
+            _QueryResult(scalar_value=500),
+            _QueryResult(scalar_value=0),
+        ])
+
+        stats = await service._board_cache_stats(session, ConceptFundFlowDaily, "concept")
+
+        coverage = stats["coverage"]
+        self.assertEqual(coverage["latest_snapshot_date"], "2026-08-03")
+        self.assertEqual(coverage["latest_snapshot_boards"], 496)
+        self.assertEqual(coverage["today_snapshot_boards"], 496)
+
     async def test_current_concept_snapshot_uses_verified_stock_trade_date(self):
         service = HistoryCacheService()
         service._upsert = AsyncMock(side_effect=[1, 2])

@@ -963,10 +963,12 @@ class HistoryCacheService:
             select(func.count(func.distinct(model.trade_date)))
         )).scalar_one()
 
-        today = shanghai_now().date()
-        today_snapshot_boards = (await session.execute(
-            select(func.count(func.distinct(model.board_code))).where(model.trade_date == today)
-        )).scalar_one()
+        current_date = shanghai_now().date()
+        latest_snapshot_boards = 0
+        if last_date is not None:
+            latest_snapshot_boards = (await session.execute(
+                select(func.count(func.distinct(model.board_code))).where(model.trade_date == last_date)
+            )).scalar_one()
         directory_boards = (await session.execute(
             select(func.count()).select_from(MarketBoard).where(MarketBoard.board_type == board_type)
         )).scalar_one()
@@ -974,7 +976,7 @@ class HistoryCacheService:
         # At least 200 market sessions plus an earliest record one year back
         # is a deliberately conservative definition of a complete yearly
         # board history. Sparse rows must not be presented as full coverage.
-        year_cutoff = today - timedelta(days=365)
+        year_cutoff = current_date - timedelta(days=365)
         covered_boards = (
             select(model.board_code)
             .group_by(model.board_code)
@@ -993,7 +995,12 @@ class HistoryCacheService:
             "from": first_date.isoformat() if first_date else None,
             "to": last_date.isoformat() if last_date else None,
             "coverage": {
-                "today_snapshot_boards": today_snapshot_boards,
+                "latest_snapshot_boards": latest_snapshot_boards,
+                "latest_snapshot_date": last_date.isoformat() if last_date else None,
+                # Backward-compatible alias used by the existing dashboard.
+                # It now means the latest verified market snapshot, rather
+                # than the calendar date on a pre-market or holiday refresh.
+                "today_snapshot_boards": latest_snapshot_boards,
                 "directory_boards": directory_boards,
                 "year_history_boards": year_history_boards,
                 "year_history_complete": bool(directory_boards) and year_history_boards >= directory_boards,
