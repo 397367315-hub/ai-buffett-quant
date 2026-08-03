@@ -23,6 +23,7 @@ from services.quant_scorer import MarketRegime
 from services.research_protocol import research_protocol
 from services.data_collector import collector
 from services.a_stock_data import A_STOCK_DATA_SKILL, calculate_indicators
+from services.history_cache import history_cache
 from services.horizon_analysis import (
     HORIZON_CONFIG,
     VALID_HORIZONS,
@@ -135,6 +136,18 @@ class StockSelectionAgentService:
                 "amount": int(row.amount) if row.amount is not None else None,
             })
         return dict(histories)
+
+    async def _refresh_candidate_histories(
+        self,
+        candidates: list[dict],
+        *,
+        source: str,
+        data_date: str | None,
+    ) -> dict:
+        """Top up the short end of cached daily bars before technical scoring."""
+        if source != "eastmoney" or not data_date:
+            return {"status": "skipped", "expected_date": data_date, "failed": []}
+        return await history_cache.refresh_recent_stock_histories(candidates, data_date)
 
     @staticmethod
     def _rsi(closes: list[float], period: int = 14) -> float | None:
@@ -1084,6 +1097,11 @@ class StockSelectionAgentService:
         candidates.sort(key=self._preliminary_priority, reverse=True)
         analysis_limit = self._FULL_ANALYSIS_LIMIT if mode == "full" else self._QUICK_ANALYSIS_LIMIT
         candidates = candidates[:analysis_limit]
+        source_data_date = (
+            str(source_result.get("data_date") or "") or None
+            if not isinstance(source_result, Exception)
+            else None
+        )
         try:
             configured_announcement_limit = int(settings.macro_news_announcement_limit)
         except (TypeError, ValueError):
@@ -1092,8 +1110,12 @@ class StockSelectionAgentService:
         feature_fields = set(FINANCIAL_FIELDS | SHAREHOLDER_FIELDS | LOCKUP_FIELDS) | {
             "sector_rank", "sector_strength_score",
         }
-        histories_result, announcements_result, features_result = await asyncio.gather(
-            self._load_histories([stock["code"] for stock in candidates]),
+        history_refresh_result, announcements_result, features_result = await asyncio.gather(
+            self._refresh_candidate_histories(
+                candidates,
+                source=source_name,
+                data_date=source_data_date,
+            ),
             macro_policy_news_collector.get_stock_announcements(
                 [stock["code"] for stock in candidates],
                 max_stocks=announcement_limit,
@@ -1101,7 +1123,11 @@ class StockSelectionAgentService:
             stock_feature_service.enrich(candidates, feature_fields, full_market=False),
             return_exceptions=True,
         )
-        histories = {} if isinstance(histories_result, Exception) else histories_result
+        try:
+            histories = await self._load_histories([stock["code"] for stock in candidates])
+        except Exception as exc:
+            print(f"Stock selection history refresh load failed: {type(exc).__name__}")
+            histories = {}
         announcements_by_stock = {} if isinstance(announcements_result, Exception) else announcements_result
         if not isinstance(histories, dict):
             histories = {}
@@ -1109,24 +1135,44 @@ class StockSelectionAgentService:
             announcements_by_stock = {}
         feature_coverage = {"total": len(candidates)}
         feature_warnings: list[str] = []
+        if isinstance(history_refresh_result, Exception):
+            feature_warnings.append(f"近期日线缓存同步失败（{type(history_refresh_result).__name__}）")
+        elif isinstance(history_refresh_result, dict):
+            failed_histories = list(history_refresh_result.get("failed") or [])
+            if failed_histories:
+                expected_date = history_refresh_result.get("expected_date") or source_data_date or "最新交易日"
+                feature_warnings.append(
+                    f"{len(failed_histories)} 只候选近期日线未同步至 {expected_date}，相关技术结论已保守处理。"
+                )
         if isinstance(features_result, Exception):
             feature_warnings.append(f"财务与事件特征暂不可用（{type(features_result).__name__}）")
         elif isinstance(features_result, dict):
             candidates = list(features_result.get("stocks") or candidates)
             feature_coverage = features_result.get("coverage") or feature_coverage
-            feature_warnings = list(features_result.get("warnings") or [])
+            feature_warnings.extend(features_result.get("warnings") or [])
         announcement_coverage = sum(bool(items) for items in announcements_by_stock.values())
         now = shanghai_now()
-        # The FTShare fallback exposes a quote snapshot without a source
-        # timestamp, so it must not be presented as a verified live tick.
-        is_realtime = self._is_market_session() and source_name == "eastmoney"
+        # Source timestamps, rather than the server clock alone, decide
+        # whether a quote snapshot can be called real-time.
+        source_realtime = (
+            source_result.get("is_realtime")
+            if not isinstance(source_result, Exception)
+            else None
+        )
+        is_realtime = (
+            bool(source_realtime)
+            if source_realtime is not None
+            else self._is_market_session() and source_name == "eastmoney"
+        )
+        if source_name != "eastmoney":
+            is_realtime = False
         cached_dates = [
             row["date"]
             for history in histories.values()
             for row in history
             if row.get("date")
         ]
-        data_date = now.date().isoformat() if is_realtime else max(cached_dates, default=None)
+        data_date = source_data_date or (now.date().isoformat() if is_realtime else max(cached_dates, default=None))
         analyzed = [
             self._analyze_candidate(
                 stock,

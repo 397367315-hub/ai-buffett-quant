@@ -52,6 +52,8 @@ class HistoryCacheService:
     _BACKFILL_REQUEST_TIMEOUT_SECONDS = 25
     _BACKFILL_FETCH_CONCURRENCY = 6
     _BACKFILL_BATCH_SIZE = 12
+    _RECENT_STOCK_REFRESH_CONCURRENCY = 8
+    _RECENT_STOCK_REFRESH_DAYS = 45
     # Render's free managed Postgres can take longer than the old ten-second
     # retry window to recover a transient DNS resolution failure.
     _DATABASE_OPERATION_ATTEMPTS = 8
@@ -588,12 +590,201 @@ class HistoryCacheService:
                 })
         return await self._upsert(StockDailyBar, rows, ["stock_code", "trade_date"])
 
+    async def cache_current_stock_bars(self) -> dict:
+        """Persist one complete, timestamp-verified A-share daily snapshot.
+
+        The year-long backfill seeds the cache, but a completed backfill is
+        not a substitute for adding each new trading day.  Reusing the
+        code-sorted full-market quote snapshot keeps every stock on the same
+        source date without issuing thousands of per-symbol requests.
+        """
+        try:
+            snapshot = await collector.fetch_quant_market_snapshot(include_special=True)
+        except Exception as exc:
+            return {"status": "unavailable", "count": 0, "source": "eastmoney", "error": type(exc).__name__}
+
+        raw_date = snapshot.get("data_date")
+        try:
+            trade_date = _parse_date(str(raw_date))
+        except (TypeError, ValueError):
+            return {
+                "status": "unavailable",
+                "count": 0,
+                "source": str(snapshot.get("source") or "eastmoney"),
+                "error": "quote_timestamp_missing",
+            }
+
+        rows: list[dict] = []
+        for stock in snapshot.get("stocks") or []:
+            quote_at = collector._quote_timestamp_datetime(stock.get("quote_timestamp"))
+            if quote_at is None or quote_at.date() != trade_date:
+                continue
+            close_price = stock.get("price")
+            try:
+                close_price = float(close_price)
+            except (TypeError, ValueError):
+                continue
+            if close_price <= 0:
+                continue
+
+            previous_close = stock.get("previous_close")
+            try:
+                previous_close = float(previous_close)
+            except (TypeError, ValueError):
+                previous_close = None
+            change_amount = stock.get("change_amount")
+            if change_amount in (None, "", "-") and previous_close not in (None, 0):
+                change_amount = close_price - previous_close
+
+            code = str(stock.get("code") or "")
+            market = "SH" if code.startswith(("6", "9")) else "BJ" if code.startswith(("4", "8")) else "SZ"
+            rows.append({
+                "stock_code": code,
+                "stock_name": str(stock.get("name") or ""),
+                "market": market,
+                "trade_date": trade_date,
+                "open_price": stock.get("open"),
+                "close_price": close_price,
+                "high_price": stock.get("high"),
+                "low_price": stock.get("low"),
+                "volume": stock.get("volume"),
+                "amount": stock.get("amount"),
+                "amplitude": stock.get("amplitude"),
+                "change_pct": stock.get("change_pct"),
+                "change_amount": change_amount,
+                "turnover": stock.get("turnover"),
+                "source": str(snapshot.get("source") or "eastmoney"),
+                "updated_at": datetime.utcnow(),
+            })
+
+        if not rows:
+            return {
+                "status": "unavailable",
+                "count": 0,
+                "source": str(snapshot.get("source") or "eastmoney"),
+                "data_date": trade_date.isoformat(),
+                "error": "no_verified_quote_rows",
+            }
+
+        written = await self._upsert(StockDailyBar, rows, ["stock_code", "trade_date"])
+        total = len(snapshot.get("stocks") or [])
+        return {
+            "status": "success" if not total or len(rows) == total else "partial",
+            "count": written,
+            "verified_stocks": len(rows),
+            "total_stocks": total,
+            "source": str(snapshot.get("source") or "eastmoney"),
+            "data_date": trade_date.isoformat(),
+            "source_updated_at": snapshot.get("source_updated_at"),
+            "is_realtime": bool(snapshot.get("is_realtime")),
+        }
+
+    async def _latest_stock_bar_dates(self, stock_codes: list[str]) -> dict[str, date]:
+        if not stock_codes:
+            return {}
+
+        async def load_dates():
+            async with async_session() as session:
+                result = await session.execute(
+                    select(StockDailyBar.stock_code, func.max(StockDailyBar.trade_date))
+                    .where(StockDailyBar.stock_code.in_(stock_codes))
+                    .group_by(StockDailyBar.stock_code)
+                )
+                return {
+                    str(code): trade_date
+                    for code, trade_date in result.all()
+                    if trade_date is not None
+                }
+
+        return await self._with_database_retry(load_dates)
+
+    async def refresh_recent_stock_histories(
+        self,
+        stocks: list[dict],
+        expected_date: str | None,
+        days: int | None = None,
+    ) -> dict:
+        """Top up only stale selection candidates through the daily-bar source."""
+        try:
+            target_date = _parse_date(str(expected_date)) if expected_date else None
+        except (TypeError, ValueError):
+            target_date = None
+        if target_date is None:
+            return {"status": "skipped", "expected_date": None, "requested": 0, "refreshed": 0, "current": 0, "failed": []}
+
+        by_code: dict[str, dict] = {}
+        for stock in stocks:
+            try:
+                code = normalize_stock_code(stock.get("code"))
+            except ValueError:
+                continue
+            by_code.setdefault(code, dict(stock))
+        latest_dates = await self._latest_stock_bar_dates(list(by_code))
+        pending = [
+            stock for code, stock in by_code.items()
+            if latest_dates.get(code) is None or latest_dates[code] < target_date
+        ]
+        if not pending:
+            return {
+                "status": "current",
+                "expected_date": target_date.isoformat(),
+                "requested": len(by_code),
+                "refreshed": 0,
+                "current": len(by_code),
+                "failed": [],
+            }
+
+        refresh_days = min(max(int(days or self._RECENT_STOCK_REFRESH_DAYS), 5), 90)
+        semaphore = asyncio.Semaphore(self._RECENT_STOCK_REFRESH_CONCURRENCY)
+
+        async def fetch_one(stock: dict) -> tuple[dict, dict | None, str | None]:
+            code = stock["code"]
+            try:
+                async with semaphore:
+                    payload = await self._request_with_deadline(
+                        collector.fetch_stock_price_history(code, refresh_days)
+                    )
+                if not payload.get("history"):
+                    return stock, None, "empty_history"
+                return stock, payload, None
+            except Exception as exc:
+                return stock, None, type(exc).__name__
+
+        results = await asyncio.gather(*(fetch_one(stock) for stock in pending))
+        payloads = [(stock, payload) for stock, payload, error in results if payload is not None and error is None]
+        written = await self.cache_stock_price_histories(payloads)
+        refreshed_codes = {
+            str(payload.get("code") or stock.get("code"))
+            for stock, payload in payloads
+            if payload is not None
+        }
+        failed = [
+            str(stock.get("code") or "")
+            for stock, payload, error in results
+            if payload is None or error is not None
+        ]
+        return {
+            "status": "success" if not failed else "partial",
+            "expected_date": target_date.isoformat(),
+            "requested": len(by_code),
+            "refreshed": len(refreshed_codes),
+            "current": len(by_code) - len(pending),
+            "records_written": written,
+            "failed": failed,
+        }
+
     async def _cached_stock_codes(self, days: int) -> set[str]:
         cutoff = shanghai_now().date() - timedelta(days=max(days, 1))
+        recent_cutoff = shanghai_now().date() - timedelta(days=7)
 
         async def load_codes():
             async with async_session() as session:
-                statement = select(StockDailyBar.stock_code).where(StockDailyBar.trade_date >= cutoff).distinct()
+                statement = (
+                    select(StockDailyBar.stock_code)
+                    .group_by(StockDailyBar.stock_code)
+                    .having(func.min(StockDailyBar.trade_date) <= cutoff)
+                    .having(func.max(StockDailyBar.trade_date) >= recent_cutoff)
+                )
                 return set((await session.execute(statement)).scalars().all())
 
         codes = await self._with_database_retry(load_codes)

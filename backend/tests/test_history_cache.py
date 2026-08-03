@@ -3,6 +3,7 @@ import socket
 import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy.exc import OperationalError
@@ -58,6 +59,45 @@ class HistoryCacheTests(unittest.TestCase):
 
 
 class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_current_stock_snapshot_writes_only_timestamp_verified_rows(self):
+        service = HistoryCacheService()
+        quote_at = datetime(2026, 8, 3, 15, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+        stale_at = datetime(2026, 8, 2, 15, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
+        snapshot = {
+            "source": "eastmoney",
+            "data_date": "2026-08-03",
+            "source_updated_at": quote_at.isoformat(),
+            "is_realtime": False,
+            "complete": True,
+            "stocks": [
+                {
+                    "code": "600519", "name": "贵州茅台", "price": 120.0,
+                    "open": 118.0, "high": 121.0, "low": 117.5,
+                    "volume": 100_000, "amount": 12_000_000,
+                    "amplitude": 3.0, "change_pct": 1.7,
+                    "change_amount": 2.0, "turnover": 0.8,
+                    "quote_timestamp": int(quote_at.timestamp()),
+                },
+                {
+                    "code": "000001", "name": "平安银行", "price": 10.0,
+                    "quote_timestamp": int(stale_at.timestamp()),
+                },
+            ],
+        }
+        service._upsert = AsyncMock(return_value=1)
+
+        with patch.object(collector, "fetch_quant_market_snapshot", new_callable=AsyncMock, return_value=snapshot) as fetch:
+            result = await service.cache_current_stock_bars()
+
+        fetch.assert_awaited_once_with(include_special=True)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["data_date"], "2026-08-03")
+        self.assertEqual(result["verified_stocks"], 1)
+        rows = service._upsert.await_args.args[1]
+        self.assertEqual(rows[0]["stock_code"], "600519")
+        self.assertEqual(rows[0]["trade_date"].isoformat(), "2026-08-03")
+        self.assertEqual(rows[0]["volume"], 100_000)
+
     async def test_backfill_request_has_a_hard_deadline(self):
         service = HistoryCacheService()
         service._BACKFILL_REQUEST_TIMEOUT_SECONDS = 0.001

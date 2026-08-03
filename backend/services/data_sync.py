@@ -13,12 +13,18 @@ class DataSyncService:
 
     @staticmethod
     async def sync_market_snapshot() -> dict:
-        concept, industry, northbound = await asyncio.gather(
+        concept, industry, northbound, stock_bars = await asyncio.gather(
             history_cache.cache_current_concept_flow(),
             history_cache.cache_current_industry_flow(),
             history_cache.cache_current_northbound(),
+            history_cache.cache_current_stock_bars(),
         )
-        return {"concept": concept, "industry": industry, "northbound": northbound}
+        return {
+            "concept": concept,
+            "industry": industry,
+            "northbound": northbound,
+            "stock_bars": stock_bars,
+        }
 
     @staticmethod
     async def sync_daily_market_data() -> dict:

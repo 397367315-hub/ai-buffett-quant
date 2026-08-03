@@ -124,8 +124,8 @@ class EastMoneyDataCollector:
     }
     STOCK_SCREENER_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
     STOCK_SCREENER_FIELDS = (
-        "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f66,f69,"
-        "f72,f75,f100,f124,f184"
+        "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,"
+        "f20,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184"
     )
     SECTOR_COUNTS_CACHE_SECONDS = 3600
 
@@ -439,7 +439,7 @@ class EastMoneyDataCollector:
             "pn": str(page), "pz": str(page_size), "po": "0" if sort_field == "f12" else "1",
             "np": "1", "fltt": "2", "invt": "2",
             "fid": sort_field, "fs": f"b:{code}",
-            "fields": "f2,f3,f5,f6,f8,f9,f10,f12,f14,f15,f16,f20,f21,f23,f37,f45,f62,f184",
+            "fields": f"{self.STOCK_SCREENER_FIELDS},f21",
             "ut": EASTMONEY_UT,
         }
         try:
@@ -459,8 +459,10 @@ class EastMoneyDataCollector:
                 "name": item.get("f14", ""),
                 "price": as_float(item.get("f2")),
                 "change_pct": as_float(item.get("f3")),
-                "volume": as_int(item.get("f5")),
+                "change_amount": as_optional_float(item.get("f4")),
+                "volume": self._eastmoney_volume_in_shares(item.get("f5")),
                 "amount": as_int(item.get("f6")),
+                "amplitude": as_optional_float(item.get("f7")),
                 "turnover": as_float(item.get("f8")),
                 "pe": item.get("f9") if item.get("f9") not in (None, "-") else "",
                 "pb": item.get("f23") if item.get("f23") not in (None, "-") else "",
@@ -471,8 +473,11 @@ class EastMoneyDataCollector:
                 "volume_ratio": as_float(item.get("f10")),
                 "main_net_inflow": as_int(item.get("f62")),
                 "main_net_inflow_pct": as_float(item.get("f184")),
-                "high": as_float(item.get("f15")),
-                "low": as_float(item.get("f16")),
+                "open": as_optional_float(item.get("f17")),
+                "high": as_optional_float(item.get("f15")),
+                "low": as_optional_float(item.get("f16")),
+                "previous_close": as_optional_float(item.get("f18")),
+                "quote_timestamp": as_int(item.get("f124")) or None,
             })
         return {
             "total": as_int(payload.get("total")), "stocks": stocks,
@@ -535,6 +540,7 @@ class EastMoneyDataCollector:
             "board_code": code,
             "complete": complete,
             "source": "eastmoney",
+            **self._quote_snapshot_metadata(stocks),
         }
 
     async def fetch_board_flow_history(self, board_code: str, days: int = 365) -> dict:
@@ -842,6 +848,12 @@ class EastMoneyDataCollector:
             return None
         return int(volume if code.startswith(SCI_TECH_PREFIXES) else volume * 100)
 
+    @staticmethod
+    def _eastmoney_volume_in_shares(volume: object) -> int | None:
+        """Normalize EastMoney clist volume from lots into individual shares."""
+        lots = as_optional_float(volume)
+        return int(lots * 100) if lots is not None else None
+
     async def fetch_market_breadth(self) -> dict:
         """Return only verified market breadth data.
 
@@ -962,7 +974,42 @@ class EastMoneyDataCollector:
         data = await self.fetch_json(self.BASE_URL, params)
         return (data.get("data") or {}).get("diff") or []
 
-    async def fetch_quant_market_snapshot(self) -> dict:
+    @staticmethod
+    def _quote_timestamp_datetime(value: object) -> datetime | None:
+        timestamp = as_int(value)
+        if timestamp <= 0:
+            return None
+        # EastMoney's f124 is seconds today. Accept milliseconds defensively
+        # because the same field appears in both formats on some endpoints.
+        if timestamp >= 10_000_000_000:
+            timestamp //= 1000
+        try:
+            return datetime.fromtimestamp(timestamp, tz=ZoneInfo("Asia/Shanghai"))
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    @classmethod
+    def _quote_snapshot_metadata(cls, stocks: list[dict]) -> dict:
+        quote_times = [
+            cls._quote_timestamp_datetime(stock.get("quote_timestamp"))
+            for stock in stocks
+        ]
+        quote_at = max((item for item in quote_times if item is not None), default=None)
+        now = shanghai_now()
+        quote_age_seconds = (now - quote_at).total_seconds() if quote_at else None
+        return {
+            "data_date": quote_at.date().isoformat() if quote_at else None,
+            "source_updated_at": quote_at.isoformat() if quote_at else None,
+            "is_realtime": bool(
+                quote_at
+                and quote_at.date() == now.date()
+                and quote_age_seconds is not None
+                and 0 <= quote_age_seconds <= 15 * 60
+                and is_a_share_market_session(now)
+            ),
+        }
+
+    async def fetch_quant_market_snapshot(self, include_special: bool = False) -> dict:
         """Fetch a complete, code-sorted A-share quote snapshot for rule scans.
 
         Ranking endpoints only return market leaders and therefore cannot be
@@ -1005,7 +1052,9 @@ class EastMoneyDataCollector:
             for item in pages[page]:
                 raw_count += 1
                 stock = self._map_screener_stock(item)
-                if stock is None or self._is_special_treatment_stock(stock.get("name")):
+                if stock is None or (
+                    not include_special and self._is_special_treatment_stock(stock.get("name"))
+                ):
                     continue
                 by_code[stock["code"]] = stock
 
@@ -1014,31 +1063,14 @@ class EastMoneyDataCollector:
                 f"量化全市场行情不完整: expected={upstream_total}, received={raw_count}"
             )
         stocks = [by_code[code] for code in sorted(by_code)]
-        now = shanghai_now()
-        quote_timestamps = [as_int(item.get("quote_timestamp")) for item in stocks if item.get("quote_timestamp")]
-        quote_at: datetime | None = None
-        if quote_timestamps:
-            try:
-                quote_at = datetime.fromtimestamp(max(quote_timestamps), tz=ZoneInfo("Asia/Shanghai"))
-            except (OverflowError, OSError, ValueError):
-                quote_at = None
-        quote_age_seconds = (now - quote_at).total_seconds() if quote_at else None
-        is_realtime = bool(
-            quote_at
-            and quote_at.date() == now.date()
-            and quote_age_seconds is not None
-            and 0 <= quote_age_seconds <= 15 * 60
-            and is_a_share_market_session(now)
-        )
+        quote_metadata = self._quote_snapshot_metadata(stocks)
         return {
             "stocks": stocks,
             "total": len(stocks),
             "upstream_total": upstream_total,
             "source": "eastmoney",
-            "data_date": quote_at.date().isoformat() if quote_at else None,
-            "source_updated_at": quote_at.isoformat() if quote_at else None,
-            "is_realtime": is_realtime,
-            "fetched_at": now.isoformat(),
+            **quote_metadata,
+            "fetched_at": shanghai_now().isoformat(),
             "complete": True,
         }
 
@@ -1071,29 +1103,13 @@ class EastMoneyDataCollector:
         if codes and not stocks:
             raise RuntimeError("持仓股票最新行情不可用")
 
-        now = shanghai_now()
-        timestamps = [as_int(item.get("quote_timestamp")) for item in stocks if item.get("quote_timestamp")]
-        quote_at: datetime | None = None
-        if timestamps:
-            try:
-                quote_at = datetime.fromtimestamp(max(timestamps), tz=ZoneInfo("Asia/Shanghai"))
-            except (OverflowError, OSError, ValueError):
-                quote_at = None
-        quote_age_seconds = (now - quote_at).total_seconds() if quote_at else None
+        quote_metadata = self._quote_snapshot_metadata(stocks)
         return {
             "stocks": stocks,
             "total": len(stocks),
             "source": "eastmoney",
-            "data_date": quote_at.date().isoformat() if quote_at else None,
-            "source_updated_at": quote_at.isoformat() if quote_at else None,
-            "is_realtime": bool(
-                quote_at
-                and quote_at.date() == now.date()
-                and quote_age_seconds is not None
-                and 0 <= quote_age_seconds <= 15 * 60
-                and is_a_share_market_session(now)
-            ),
-            "fetched_at": now.isoformat(),
+            **quote_metadata,
+            "fetched_at": shanghai_now().isoformat(),
             "complete": len(stocks) == len(codes),
         }
 
@@ -1122,8 +1138,10 @@ class EastMoneyDataCollector:
             "name": str(item.get("f14") or ""),
             "price": price,
             "change_pct": as_float(item.get("f3")),
-            "volume": as_int(item.get("f5")),
+            "change_amount": as_optional_float(item.get("f4")),
+            "volume": EastMoneyDataCollector._eastmoney_volume_in_shares(item.get("f5")),
             "amount": as_int(item.get("f6")),
+            "amplitude": as_optional_float(item.get("f7")),
             "turnover": as_float(item.get("f8")),
             "pe": "" if pe is None else pe,
             "pb": item.get("f23") if item.get("f23") not in (None, "-") else "",
@@ -1143,6 +1161,10 @@ class EastMoneyDataCollector:
                 as_optional_float(item.get("f75"))
                 if item.get("f75") not in (None, "-") else None
             ),
+            "open": as_optional_float(item.get("f17")),
+            "high": as_optional_float(item.get("f15")),
+            "low": as_optional_float(item.get("f16")),
+            "previous_close": as_optional_float(item.get("f18")),
             "quote_timestamp": as_int(item.get("f124")) or None,
         }
 
@@ -1184,7 +1206,7 @@ class EastMoneyDataCollector:
             if criteria.get("exclude_special") and self._is_special_treatment_stock(stock["name"]):
                 continue
             results.append(stock)
-        return {"total": len(results), "stocks": results}
+        return {"total": len(results), "stocks": results, **self._quote_snapshot_metadata(results)}
 
     async def fetch_intelligent_selection_candidates(self, page_size: int = 180) -> dict:
         """Build a live candidate pool from capital flow, volume and momentum leaders.
@@ -1223,7 +1245,12 @@ class EastMoneyDataCollector:
 
         stocks = sorted(candidates.values(), key=priority, reverse=True)
         if stocks:
-            return {"total": len(stocks), "stocks": stocks, "source": "eastmoney"}
+            return {
+                "total": len(stocks),
+                "stocks": stocks,
+                "source": "eastmoney",
+                **self._quote_snapshot_metadata(stocks),
+            }
         return await self._fetch_ftshare_intelligent_selection_candidates(page_size)
 
     async def _fetch_ftshare_intelligent_selection_candidates(self, page_size: int) -> dict:

@@ -71,6 +71,8 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         service = StockSelectionAgentService()
         candidates = {
             "total": 2,
+            "data_date": "2026-08-03",
+            "is_realtime": False,
             "stocks": [
                 {
                     "code": "600519", "name": "贵州茅台", "price": 120.0,
@@ -104,6 +106,7 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
             "600519": _history(100),
             "000001": _history(10),
         })
+        service._refresh_candidate_histories = AsyncMock(return_value={"status": "current", "failed": []})
         regime = {"regime": "震荡市", "confidence": 0.7, "bias": "neutral"}
 
         announcements = {
@@ -137,6 +140,9 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
             result = await service.run(mode="full", risk_profile="balanced", top_n=3)
 
         self.assertTrue(result["available"])
+        self.assertEqual(result["data_date"], "2026-08-03")
+        self.assertFalse(result["is_realtime"])
+        self.assertEqual(service._refresh_candidate_histories.await_args.kwargs["data_date"], "2026-08-03")
         self.assertEqual(result["candidate_summary"]["live_candidates"], 2)
         self.assertEqual(result["candidate_summary"]["analyzed"], 2)
         self.assertEqual(result["candidate_summary"]["risk_excluded"], 1)

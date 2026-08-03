@@ -360,11 +360,12 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["fid"], "f10")
         self.assertEqual(
             captured["fields"],
-            "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184",
+            "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184",
         )
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["stocks"][0]["code"], "600519")
         self.assertEqual(result["stocks"][0]["sector"], "白酒")
+        self.assertEqual(result["stocks"][0]["volume"], 100_000_000)
         self.assertEqual(result["stocks"][0]["amount"], 20_000_000)
         self.assertEqual(result["stocks"][0]["large_net_inflow"], 80_000_000)
         self.assertEqual(result["stocks"][0]["large_order_inflow_pct"], 1.4)
