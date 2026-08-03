@@ -1,4 +1,4 @@
-"""Rule catalogue and deterministic evaluation for stock strategy filters."""
+"""Auditable rule catalogue and deterministic three-state evaluation."""
 
 from __future__ import annotations
 
@@ -6,26 +6,77 @@ import math
 from typing import Any
 
 
+def _meta(
+    label: str,
+    value_type: str,
+    unit: str,
+    operators: list[str],
+    default: Any,
+    *,
+    category: str,
+    source_group: str,
+    source: str,
+    historical_support: str,
+    note: str = "",
+    **extra: Any,
+) -> dict:
+    return {
+        "label": label,
+        "value_type": value_type,
+        "unit": unit,
+        "operators": operators,
+        "default": default,
+        "category": category,
+        "source_group": source_group,
+        "source": source,
+        "historical_support": historical_support,
+        "note": note,
+        **extra,
+    }
+
+
+NUMBER_OPERATORS = ["gt", "gte", "lt", "lte", "between"]
+
 RULE_CATALOG: dict[str, dict] = {
-    "turnover": {"label": "换手率", "value_type": "number", "unit": "%", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 3},
-    "vol_ratio": {"label": "量比", "value_type": "number", "unit": "", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 1.2},
-    "change_pct": {"label": "涨跌幅", "value_type": "number", "unit": "%", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 2},
-    "price": {"label": "最新价", "value_type": "number", "unit": "元", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 10},
-    "main_inflow": {"label": "主力净流入", "value_type": "number", "unit": "万元", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 0},
-    "pe_ttm": {"label": "PE(TTM)", "value_type": "number", "unit": "倍", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 30, "positive_only": True},
-    "pb": {"label": "PB", "value_type": "number", "unit": "倍", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 3, "positive_only": True},
-    "roe": {"label": "ROE", "value_type": "number", "unit": "%", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 8},
-    "market_cap": {"label": "总市值", "value_type": "number", "unit": "亿元", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 500},
-    "sector": {"label": "所属板块", "value_type": "multi-select", "unit": "", "operators": ["in", "not_in"], "default": []},
-    "above_ma": {"label": "站上均线", "value_type": "select", "unit": "", "operators": ["eq", "ne"], "default": "MA20", "options": ["MA5", "MA10", "MA20", "MA60"]},
-    "below_ma": {"label": "跌破均线", "value_type": "select", "unit": "", "operators": ["eq", "ne"], "default": "MA20", "options": ["MA5", "MA10", "MA20", "MA60"]},
-    "below_fib": {"label": "斐波那契支撑", "value_type": "select", "unit": "", "operators": ["lt", "lte", "gt", "gte"], "default": 0.618, "options": [0.382, 0.5, 0.618, 0.786]},
-    "rsi": {"label": "RSI(14)", "value_type": "number", "unit": "", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 30},
-    "macd": {"label": "MACD柱", "value_type": "number", "unit": "", "operators": ["gt", "gte", "lt", "lte", "between"], "default": 0},
-    "long_lower_shadow": {"label": "长下影线", "value_type": "boolean", "unit": "", "operators": ["eq", "ne"], "default": True},
+    "turnover": _meta("换手率", "number", "%", NUMBER_OPERATORS, 3, category="技术面", source_group="quote", source="行情快照/历史日线", historical_support="partial"),
+    "vol_ratio": _meta("量比", "number", "", NUMBER_OPERATORS, 1.2, category="技术面", source_group="quote", source="行情快照/成交量推导", historical_support="derived"),
+    "change_pct": _meta("涨跌幅", "number", "%", NUMBER_OPERATORS, 2, category="技术面", source_group="quote", source="行情快照/历史日线", historical_support="yes"),
+    "price": _meta("最新价", "number", "元", NUMBER_OPERATORS, 10, category="技术面", source_group="quote", source="行情快照/历史日线", historical_support="yes"),
+    "above_ma": _meta("站上均线", "select", "", ["eq", "ne"], "MA20", category="技术面", source_group="technical", source="缓存日线计算", historical_support="yes", options=["MA5", "MA10", "MA20", "MA60"]),
+    "below_ma": _meta("跌破均线", "select", "", ["eq", "ne"], "MA20", category="技术面", source_group="technical", source="缓存日线计算", historical_support="yes", options=["MA5", "MA10", "MA20", "MA60"]),
+    "rsi": _meta("RSI(14)", "number", "", NUMBER_OPERATORS, 30, category="技术面", source_group="technical", source="缓存日线计算", historical_support="yes"),
+    "macd": _meta("MACD柱", "number", "", NUMBER_OPERATORS, 0, category="技术面", source_group="technical", source="缓存日线计算", historical_support="yes"),
+    "macd_golden_cross": _meta("MACD金叉", "boolean", "", ["eq", "ne"], True, category="技术面", source_group="technical", source="缓存日线计算", historical_support="yes"),
+    "long_lower_shadow": _meta("长下影线", "boolean", "", ["eq", "ne"], True, category="技术面", source_group="technical", source="缓存日线计算", historical_support="yes"),
+
+    "main_inflow": _meta("主力净流入", "number", "万元", NUMBER_OPERATORS, 0, category="资金面", source_group="quote", source="东方财富资金流", historical_support="partial"),
+    "large_order_inflow_pct": _meta("大单净流入占比", "number", "%", NUMBER_OPERATORS, 3, category="资金面", source_group="quote", source="东方财富大单资金流", historical_support="no", note="仅使用大单口径，不用主力净流入占比替代。"),
+
+    "pe_ttm": _meta("PE(TTM)", "number", "倍", NUMBER_OPERATORS, 30, category="基本面", source_group="quote", source="行情快照", historical_support="no", positive_only=True),
+    "pb": _meta("PB", "number", "倍", NUMBER_OPERATORS, 3, category="基本面", source_group="quote", source="行情快照", historical_support="no", positive_only=True),
+    "roe": _meta("ROE", "number", "%", NUMBER_OPERATORS, 15, category="基本面", source_group="financial", source="东方财富财务主表", historical_support="current_disclosure_only"),
+    "gross_margin": _meta("毛利率", "number", "%", NUMBER_OPERATORS, 15, category="基本面", source_group="financial", source="东方财富财务主表", historical_support="current_disclosure_only"),
+    "revenue_growth": _meta("营收增速", "number", "%", NUMBER_OPERATORS, 0, category="基本面", source_group="financial", source="东方财富财务主表", historical_support="current_disclosure_only"),
+    "deducted_profit_growth": _meta("扣非净利润增速", "number", "%", NUMBER_OPERATORS, 0, category="基本面", source_group="financial", source="东方财富财务主表", historical_support="current_disclosure_only"),
+    "ocf_to_profit": _meta("经营现金流/净利润", "number", "", NUMBER_OPERATORS, 0.8, category="基本面", source_group="financial", source="东方财富财务主表", historical_support="current_disclosure_only"),
+    "debt_ratio": _meta("资产负债率", "number", "%", NUMBER_OPERATORS, 60, category="基本面", source_group="financial", source="东方财富财务主表", historical_support="current_disclosure_only", note="金融行业需使用更适合其资产负债结构的阈值。"),
+    "receivable_to_revenue": _meta("应收/营收比", "number", "%", NUMBER_OPERATORS, 30, category="基本面", source_group="financial", source="东方财富财务主表", historical_support="current_disclosure_only"),
+    "market_cap": _meta("总市值", "number", "亿元", NUMBER_OPERATORS, 500, category="基本面", source_group="quote", source="行情快照", historical_support="no"),
+    "is_profitable": _meta("排除亏损/ST", "boolean", "", ["eq", "ne"], True, category="排雷", source_group="financial", source="财务主表+证券简称", historical_support="current_disclosure_only"),
+
+    "below_fib": _meta("斐波那契支撑", "select", "", ["lt", "lte", "gt", "gte"], 0.618, category="估值面", source_group="technical", source="近60日日线计算", historical_support="yes", options=[0.382, 0.5, 0.618, 0.786]),
+    "sector": _meta("所属板块", "multi-select", "", ["in", "not_in"], [], category="市场面", source_group="quote", source="东方财富行业/板块成分", historical_support="no"),
+    "market_breadth": _meta("大盘涨跌比", "number", "", NUMBER_OPERATORS, 1, category="市场面", source_group="market", source="完整A股行情横截面推导", historical_support="current_snapshot_only", note="候选榜单不能代表全市场，只有完整快照时才执行。"),
+    "sector_strength": _meta("板块强度排名", "number", "名", ["lt", "lte", "between"], 5, category="市场面", source_group="market", source="行业涨幅、上涨家数与资金流综合排名", historical_support="current_snapshot_only"),
+
+    "no_lockup_expiry": _meta("距下次限售解禁", "number", "天", ["gt", "gte", "between"], 7, category="排雷", source_group="lockups", source="东方财富限售解禁表", historical_support="current_disclosure_only", note="无未来365日解禁记录时只声明大于365天，不推断更远日期。"),
+    "holder_concentration": _meta("股东户数变化", "number", "%", NUMBER_OPERATORS, 0, category="排雷", source_group="shareholders", source="东方财富股东户数表", historical_support="current_disclosure_only"),
+    "holder_decline_streak": _meta("股东户数连续下降", "number", "期", ["gt", "gte", "between"], 2, category="排雷", source_group="shareholders", source="东方财富股东户数表", historical_support="current_disclosure_only"),
 }
 
-TECHNICAL_RULE_TYPES = {"above_ma", "below_ma", "below_fib", "rsi", "macd", "long_lower_shadow"}
+TECHNICAL_RULE_TYPES = {
+    "above_ma", "below_ma", "below_fib", "rsi", "macd", "macd_golden_cross", "long_lower_shadow",
+}
 
 FIELD_MAP = {
     "turnover": "turnover",
@@ -33,13 +84,26 @@ FIELD_MAP = {
     "change_pct": "change_pct",
     "price": "price",
     "main_inflow": "main_inflow",
+    "large_order_inflow_pct": "large_order_inflow_pct",
     "pe_ttm": "pe_ttm",
     "pb": "pb",
     "roe": "roe",
+    "gross_margin": "gross_margin",
+    "revenue_growth": "revenue_growth",
+    "deducted_profit_growth": "deducted_profit_growth",
+    "ocf_to_profit": "ocf_to_profit",
+    "debt_ratio": "debt_ratio",
+    "receivable_to_revenue": "receivable_to_revenue",
     "market_cap": "market_cap",
     "rsi": "rsi",
     "macd": "macd",
+    "macd_golden_cross": "macd_golden_cross",
     "long_lower_shadow": "long_lower_shadow",
+    "market_breadth": "market_breadth",
+    "sector_strength": "sector_rank",
+    "no_lockup_expiry": "lockup_days",
+    "holder_concentration": "holder_change_pct",
+    "holder_decline_streak": "holder_decline_streak",
 }
 
 
@@ -140,6 +204,16 @@ def _rule_actual(rule: dict, stock: dict) -> tuple[Any, Any]:
     if rule_type == "below_fib":
         level = str(expected).replace(".", "_")
         return stock.get("price"), stock.get(f"fib_{level}")
+    if rule_type == "is_profitable":
+        explicit = stock.get("is_profitable_non_st")
+        if isinstance(explicit, bool):
+            return explicit, expected
+        name = str(stock.get("name") or "").upper()
+        profit = _number(stock.get("net_profit"))
+        pe = _number(stock.get("pe_ttm") if "pe_ttm" in stock else stock.get("pe"))
+        if profit is None and pe is None:
+            return None, expected
+        return bool("ST" not in name and "退" not in name and (profit > 0 if profit is not None else pe > 0)), expected
     return stock.get(FIELD_MAP[rule_type]), expected
 
 
@@ -155,38 +229,79 @@ def describe_rule(rule: dict) -> str:
     return f"{meta['label']} {operator} {value}{meta.get('unit', '')}".strip()
 
 
-def evaluate_rules(rules: list[dict], stock: dict, logic: str = "AND") -> tuple[bool, list[str], list[str]]:
+def evaluate_rule(rule: dict, stock: dict) -> dict:
+    label = describe_rule(rule)
+    try:
+        validate_rule(rule)
+        actual, expected = _rule_actual(rule, stock)
+        meta = RULE_CATALOG[rule["type"]]
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "type": str(rule.get("type") or ""), "label": label, "status": "invalid",
+            "actual": None, "expected": rule.get("value"), "reason": str(exc),
+        }
+    unavailable = actual is None or actual == []
+    if unavailable:
+        matched = False
+        status = "unavailable"
+        reason = "数据源未覆盖或当前时点字段缺失"
+    elif meta.get("positive_only") and (_number(actual) is None or float(actual) <= 0):
+        matched = False
+        status = "failed"
+        reason = "该指标必须为正数"
+    else:
+        matched = _compare(actual, rule["operator"], expected)
+        status = "passed" if matched else "failed"
+        reason = "满足规则" if matched else "未达到阈值"
+    feature_meta = (stock.get("_feature_meta") or {}).get(meta.get("source_group")) or {}
+    return {
+        "type": rule["type"],
+        "label": label,
+        "status": status,
+        "matched": matched,
+        "actual": actual,
+        "expected": expected,
+        "reason": reason,
+        "source": feature_meta.get("source") or meta.get("source"),
+        "report_date": feature_meta.get("report_date"),
+        "disclosed_at": feature_meta.get("disclosed_at"),
+        "as_of": feature_meta.get("as_of"),
+    }
+
+
+def evaluate_rules_detailed(rules: list[dict], stock: dict, logic: str = "AND") -> dict:
     if not rules:
-        return True, [], []
-    passed: list[str] = []
-    failed: list[str] = []
-    for rule in rules:
-        label = describe_rule(rule)
-        try:
-            validate_rule(rule)
-            actual, expected = _rule_actual(rule, stock)
-            meta = RULE_CATALOG[rule["type"]]
-            if meta.get("positive_only") and (_number(actual) is None or float(actual) <= 0):
-                matched = False
-            else:
-                matched = _compare(actual, rule["operator"], expected)
-        except (KeyError, TypeError, ValueError):
-            matched = False
-        (passed if matched else failed).append(label)
-    result = not failed if logic.upper() == "AND" else bool(passed)
-    return result, passed, failed
+        return {"matched": True, "passed": [], "failed": [], "unavailable": [], "details": []}
+    details = [evaluate_rule(rule, stock) for rule in rules]
+    passed = [item["label"] for item in details if item["status"] == "passed"]
+    failed = [item["label"] for item in details if item["status"] in {"failed", "invalid"}]
+    unavailable = [item["label"] for item in details if item["status"] == "unavailable"]
+    matched = not failed and not unavailable if logic.upper() == "AND" else bool(passed)
+    return {
+        "matched": matched,
+        "passed": passed,
+        "failed": failed,
+        "unavailable": unavailable,
+        "details": details,
+    }
+
+
+def evaluate_rules(rules: list[dict], stock: dict, logic: str = "AND") -> tuple[bool, list[str], list[str]]:
+    result = evaluate_rules_detailed(rules, stock, logic)
+    return result["matched"], result["passed"], result["failed"] + result["unavailable"]
 
 
 def static_group_can_match(group: dict, stock: dict) -> bool:
-    """Cheap prefilter where technical rules are treated as unresolved."""
+    """Cheap prefilter where history-derived technical rules are unresolved."""
     rules = group.get("rules") or []
     static_rules = [rule for rule in rules if rule.get("type") not in TECHNICAL_RULE_TYPES]
     has_technical = len(static_rules) != len(rules)
     if not rules:
         return True
+    result = evaluate_rules_detailed(static_rules, stock, group.get("logic", "AND"))
     if group.get("logic", "AND").upper() == "AND":
-        return evaluate_rules(static_rules, stock, "AND")[0]
-    return evaluate_rules(static_rules, stock, "OR")[0] or has_technical
+        return result["matched"]
+    return result["matched"] or has_technical
 
 
 def public_rule_catalog() -> list[dict]:

@@ -9,6 +9,15 @@ const operatorLabels: Record<RuleOperator, string> = {
   in: '属于', not_in: '不属于', between: '介于',
 };
 
+interface PreviewResult {
+  count: number;
+  warning?: string | null;
+  feature_coverage?: {
+    datasets?: Record<string, { label: string; covered?: number; total?: number; coverage_pct?: number; available?: boolean }>;
+    missing_policy?: string;
+  };
+}
+
 export const emptyStrategyDraft = (): StrategyDraft => ({
   name: '新建量化策略',
   active: true,
@@ -88,6 +97,14 @@ function RuleGroupEditor({ title, group, rules, sectors, onChange, allowEmpty = 
   logicLocked?: boolean;
 }) {
   const metaByType = useMemo(() => new Map(rules.map((item) => [item.type, item])), [rules]);
+  const categories = useMemo(() => {
+    const grouped = new Map<string, RuleMeta[]>();
+    rules.forEach((item) => {
+      const category = item.category || '其他';
+      grouped.set(category, [...(grouped.get(category) || []), item]);
+    });
+    return Array.from(grouped.entries());
+  }, [rules]);
   const updateRule = (index: number, patch: Partial<StrategyRule>) => {
     const next = group.rules.map((rule, ruleIndex) => ruleIndex === index ? { ...rule, ...patch } : rule);
     onChange({ ...group, rules: next });
@@ -111,12 +128,19 @@ function RuleGroupEditor({ title, group, rules, sectors, onChange, allowEmpty = 
                 const nextMeta = metaByType.get(event.target.value);
                 updateRule(index, { type: event.target.value, operator: (nextMeta?.operators[0] || 'gte') as RuleOperator, value: nextMeta?.default ?? 0 });
               }} className="min-w-0 bg-card border border-border rounded-md px-2 py-1.5 text-xs text-text">
-                {rules.map((option) => <option key={option.type} value={option.type}>{option.label}</option>)}
+                {categories.map(([category, options]) => (
+                  <optgroup key={category} label={category}>
+                    {options.map((option) => <option key={option.type} value={option.type}>{option.label}</option>)}
+                  </optgroup>
+                ))}
               </select>
               <select value={rule.operator} onChange={(event) => updateRule(index, { operator: event.target.value as RuleOperator })} className="min-w-0 bg-card border border-border rounded-md px-2 py-1.5 text-xs text-text">
                 {(meta?.operators || []).map((operator) => <option key={operator} value={operator}>{operatorLabels[operator]}</option>)}
               </select>
-              <div className="min-w-0"><RuleValue rule={rule} meta={meta} sectors={sectors} onChange={(value) => updateRule(index, { value })} /></div>
+              <div className="min-w-0">
+                <RuleValue rule={rule} meta={meta} sectors={sectors} onChange={(value) => updateRule(index, { value })} />
+                {meta?.source && <p className="mt-1 text-[10px] leading-4 text-text-secondary break-words">{meta.source}{meta.note ? ` · ${meta.note}` : ''}</p>}
+              </div>
               <button type="button" onClick={() => onChange({ ...group, rules: group.rules.filter((_, ruleIndex) => ruleIndex !== index) })} className="h-7 w-7 inline-flex items-center justify-center text-text-secondary hover:text-down hover:bg-[#EF535022] rounded-md" title="删除规则" aria-label="删除规则"><Trash2 size={14} /></button>
             </div>
           );
@@ -134,12 +158,12 @@ export default function StrategyBuilder({ strategy, templates, rules, sectors, o
   rules: RuleMeta[];
   sectors: SectorOption[];
   onSave: (draft: StrategyDraft, strategyId?: string) => Promise<void>;
-  onPreview: (draft: StrategyDraft) => Promise<{ count: number; warning?: string | null }>;
+  onPreview: (draft: StrategyDraft) => Promise<PreviewResult>;
   onBacktest: (strategyId: string) => void;
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<StrategyDraft>(() => toDraft(strategy));
-  const [preview, setPreview] = useState<{ count: number; warning?: string | null } | null>(null);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
   useEffect(() => { setDraft(toDraft(strategy)); setPreview(null); }, [strategy]);
@@ -196,7 +220,14 @@ export default function StrategyBuilder({ strategy, templates, rules, sectors, o
           </section>
         </aside>
       </div>
-      {preview && <div className="border border-accent/50 bg-[#1F6FEB22] rounded-md px-3 py-2 text-xs text-text flex flex-wrap items-center gap-x-4 gap-y-1"><span className="text-accent font-semibold">当前规则匹配 {preview.count} 只股票</span>{preview.warning && <span className="text-warn">{preview.warning}</span>}</div>}
+      {preview && <div className="border border-accent/50 bg-[#1F6FEB22] rounded-md px-3 py-2 text-xs text-text">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1"><span className="text-accent font-semibold">当前规则匹配 {preview.count} 只股票</span>{preview.warning && <span className="text-warn">{preview.warning}</span>}</div>
+        {preview.feature_coverage?.datasets && <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-text-secondary">
+          {Object.entries(preview.feature_coverage.datasets).map(([key, item]) => (
+            <span key={key}>{item.label}：{item.available != null ? (item.available ? '可用' : '不可用') : `${item.covered ?? 0}/${item.total ?? 0}`}</span>
+          ))}
+        </div>}
+      </div>}
     </div>
   );
 }

@@ -123,6 +123,7 @@ async def preview_strategy(payload: PreviewRequest):
             "count": len(signals), "signals": signals[:payload.limit],
             "scanned_stocks": result.get("scanned_stocks"), "warning": result.get("warning"),
             "technical_history_coverage": result.get("technical_history_coverage"),
+            "feature_coverage": result.get("feature_coverage"),
         },
     }
 

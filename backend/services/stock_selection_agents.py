@@ -23,6 +23,19 @@ from services.quant_scorer import MarketRegime
 from services.research_protocol import research_protocol
 from services.data_collector import collector
 from services.a_stock_data import A_STOCK_DATA_SKILL, calculate_indicators
+from services.horizon_analysis import (
+    HORIZON_CONFIG,
+    VALID_HORIZONS,
+    combined_agent_weights,
+    horizon_potential_analyzer,
+)
+from services.stock_features import (
+    FINANCIAL_FIELDS,
+    LOCKUP_FIELDS,
+    SHAREHOLDER_FIELDS,
+    stock_feature_service,
+)
+from quant.risk import assess_stock_risk
 
 
 VALID_SELECTION_MODES = {"quick", "full"}
@@ -82,7 +95,7 @@ def _normalise_sector(value: object) -> str:
 class StockSelectionAgentService:
     """Runs a visible research pipeline over verified real-time market data."""
 
-    _HISTORY_LOOKBACK_DAYS = 120
+    _HISTORY_LOOKBACK_DAYS = 420
     _QUICK_ANALYSIS_LIMIT = 45
     _FULL_ANALYSIS_LIMIT = 80
 
@@ -295,12 +308,21 @@ class StockSelectionAgentService:
         pe = _optional_number(stock.get("pe"))
         pb = _optional_number(stock.get("pb"))
         roe = _optional_number(stock.get("roe"))
+        gross_margin = _optional_number(stock.get("gross_margin"))
+        revenue_growth = _optional_number(stock.get("revenue_growth"))
+        deducted_growth = _optional_number(stock.get("deducted_profit_growth"))
+        ocf_to_profit = _optional_number(stock.get("ocf_to_profit"))
+        debt_ratio = _optional_number(stock.get("debt_ratio"))
+        receivable_ratio = _optional_number(stock.get("receivable_to_revenue"))
+        sector = _normalise_sector(stock.get("sector"))
+        is_financial_sector = any(term in sector for term in ("银行", "证券", "保险", "金融"))
         score = 50.0
         evidence: list[str] = []
         risks: list[str] = []
+        data_gaps: list[str] = []
 
         if pe is None:
-            evidence.append("PE未披露，估值判断采用中性权重")
+            data_gaps.append("PE(TTM)")
         elif pe <= 0:
             score -= 20
             risks.append("PE为负，当前盈利质量需重点核查")
@@ -318,12 +340,12 @@ class StockSelectionAgentService:
             risks.append(f"PE {pe:.1f}，估值压力较大")
 
         if roe is None:
-            evidence.append("ROE未披露，盈利能力结论有限")
+            data_gaps.append("ROE")
         elif roe >= 20:
-            score += 18
+            score += 12
             evidence.append(f"ROE {roe:.1f}%，盈利能力较强")
         elif roe >= 12:
-            score += 10
+            score += 7
             evidence.append(f"ROE {roe:.1f}%，盈利能力稳健")
         elif roe > 0:
             score -= 4
@@ -337,17 +359,89 @@ class StockSelectionAgentService:
         elif pb is not None and 0 < pb <= 2:
             score += 4
 
+        if gross_margin is None:
+            data_gaps.append("毛利率")
+        elif gross_margin >= 30:
+            score += 7
+            evidence.append(f"毛利率 {gross_margin:.1f}%")
+        elif gross_margin >= 15:
+            score += 3
+        else:
+            score -= 5
+            risks.append(f"毛利率 {gross_margin:.1f}%，盈利空间偏薄")
+
+        if revenue_growth is None:
+            data_gaps.append("营收增速")
+        elif revenue_growth > 10:
+            score += 6
+            evidence.append(f"营收同比增长 {revenue_growth:.1f}%")
+        elif revenue_growth < 0:
+            score -= 7
+            risks.append(f"营收同比下降 {abs(revenue_growth):.1f}%")
+
+        if deducted_growth is None:
+            data_gaps.append("扣非净利润增速")
+        elif deducted_growth > 10:
+            score += 7
+            evidence.append(f"扣非净利润同比增长 {deducted_growth:.1f}%")
+        elif deducted_growth < 0:
+            score -= 9
+            risks.append(f"扣非净利润同比下降 {abs(deducted_growth):.1f}%")
+
+        if ocf_to_profit is None:
+            data_gaps.append("经营现金流/净利润")
+        elif ocf_to_profit >= 1:
+            score += 8
+            evidence.append(f"经营现金流/净利润 {ocf_to_profit:.2f}")
+        elif ocf_to_profit >= 0.8:
+            score += 4
+        elif ocf_to_profit < 0:
+            score -= 12
+            risks.append(f"经营现金流/净利润 {ocf_to_profit:.2f}，现金流为负")
+        else:
+            score -= 5
+            risks.append(f"经营现金流/净利润 {ocf_to_profit:.2f}，低于0.8")
+
+        if debt_ratio is None:
+            data_gaps.append("资产负债率")
+        elif is_financial_sector:
+            evidence.append(f"资产负债率 {debt_ratio:.1f}%，金融行业不套用制造业阈值")
+        elif debt_ratio <= 50:
+            score += 4
+        elif debt_ratio > 70:
+            score -= 7
+            risks.append(f"资产负债率 {debt_ratio:.1f}%")
+
+        if receivable_ratio is None:
+            data_gaps.append("应收/营收比")
+        elif receivable_ratio <= 20:
+            score += 3
+        elif receivable_ratio > 50:
+            score -= 8
+            risks.append(f"应收/营收比 {receivable_ratio:.1f}%")
+
+        financial_meta = (stock.get("_feature_meta") or {}).get("financial") or {}
+        if financial_meta.get("status") != "available":
+            risks.append("财务主表未覆盖，本轮不对缺失指标打中性分")
+
         score = round(_clamp(score), 1)
         signal = "看多" if score >= 64 else "看空" if score <= 38 else "中性"
         return {
-            "agent": "基本面 Agent",
-            "skill": "PE、PB、ROE 质量与估值筛查",
+            "agent": "基本面与财务排雷 Agent",
+            "skill": "估值、盈利质量、现金流真实性、负债与应收排雷",
             "score": score,
             "signal": signal,
             "summary": evidence[0] if evidence else "基本面指标未形成明显优势",
             "evidence": evidence,
             "risks": risks,
-            "metrics": {"pe": pe, "pb": pb, "roe": roe},
+            "metrics": {
+                "pe": pe, "pb": pb, "roe": roe, "gross_margin": gross_margin,
+                "revenue_growth": revenue_growth, "deducted_profit_growth": deducted_growth,
+                "ocf_to_profit": ocf_to_profit, "debt_ratio": debt_ratio,
+                "receivable_to_revenue": receivable_ratio,
+            },
+            "data_gaps": data_gaps,
+            "source": financial_meta,
         }
 
     def _capital_flow_agent(self, stock: dict) -> dict:
@@ -410,7 +504,13 @@ class StockSelectionAgentService:
             },
         }
 
-    def _risk_agent(self, stock: dict, history: list[dict], profile: str) -> dict:
+    def _risk_agent(
+        self,
+        stock: dict,
+        history: list[dict],
+        profile: str,
+        announcements: list[dict] | None = None,
+    ) -> dict:
         price = as_float(stock.get("price"))
         closes = [as_float(row.get("close")) for row in history if as_float(row.get("close")) > 0]
         if price > 0 and (not closes or abs(closes[-1] - price) > 0.0001):
@@ -442,19 +542,29 @@ class StockSelectionAgentService:
             score -= 10
             risks.append("单日振幅过大，避免以情绪价追入")
 
+        structural = assess_stock_risk(stock, announcements)
+        score = score * 0.65 + structural["score"] * 0.35
+        if structural["hard_blocked"]:
+            score = min(score, 20.0)
+        evidence.extend(structural["evidence"][:3])
+        risks.extend(structural["hard_blocks"])
+        risks.extend(structural["warnings"][:3])
+        if structural["missing"]:
+            risks.append("排雷数据缺口：" + "、".join(structural["missing"][:4]))
         score = round(_clamp(score), 1)
-        risk_level = "低" if score >= 72 else "中" if score >= 48 else "高"
+        risk_level = "高" if structural["hard_blocked"] else "低" if score >= 72 else "中" if score >= 48 else "高"
         config = PROFILE_CONFIG[profile]
         stop_loss_pct = _clamp(config["stop_loss"] + max(volatility - 2, 0) / 100, 0.04, 0.12)
         position_cap = max(5, config["position_cap"] - (10 if risk_level == "高" else 5 if risk_level == "中" else 0))
         return {
             "agent": "风险控制 Agent",
-            "skill": "波动率、回撤、止损与研究仓位上限",
+            "skill": "波动率、回撤、财务排雷、解禁、股东户数与公告否决",
             "score": score,
             "signal": "通过" if score >= 60 else "需调整" if score >= 40 else "高风险",
             "summary": evidence[0] if evidence else (risks[0] if risks else "风险水平中性"),
             "evidence": evidence,
             "risks": risks,
+            "structural_risk": structural,
             "plan": {
                 "risk_level": risk_level,
                 "daily_volatility_pct": round(volatility, 2),
@@ -565,8 +675,9 @@ class StockSelectionAgentService:
         regime: dict,
         quality: dict,
         strategy_audit: dict,
+        horizon: str,
     ) -> dict:
-        weights = PROFILE_CONFIG[profile]["weights"]
+        weights = combined_agent_weights(PROFILE_CONFIG[profile]["weights"], horizon)
         weighted_agents = [
             (technical["score"], weights["technical"]),
             (fundamental["score"], weights["fundamental"]),
@@ -588,6 +699,9 @@ class StockSelectionAgentService:
             composite = min(composite, 57.0)
         elif strategy_audit.get("overall_risk") == "高":
             composite = min(composite, 64.0)
+        hard_blocked = bool((risk.get("structural_risk") or {}).get("hard_blocked"))
+        if hard_blocked:
+            composite = min(composite, 35.0)
         composite = round(_clamp(composite), 1)
 
         bull_points = [
@@ -617,9 +731,13 @@ class StockSelectionAgentService:
             confidence = min(confidence, 68.0)
         elif quality.get("grade") == "不足":
             confidence = min(confidence, 45.0)
+        if hard_blocked:
+            confidence = min(confidence, 40.0)
         confidence = min(confidence, max(35.0, credibility))
 
-        if quality.get("grade") == "不足" or strategy_audit.get("blockers"):
+        if hard_blocked:
+            verdict = "风险否决"
+        elif quality.get("grade") == "不足" or strategy_audit.get("blockers"):
             verdict = "证据不足"
         elif strategy_audit.get("overall_risk") == "高":
             verdict = "待审计修复"
@@ -645,9 +763,11 @@ class StockSelectionAgentService:
             "verdict": verdict,
             "confidence": confidence,
             "summary": (
-                f"{regime.get('regime', '震荡市')}环境下，决定性因素为{decisive_factor}；"
+                f"{HORIZON_CONFIG[horizon]['label']}窗口、{regime.get('regime', '震荡市')}环境下，决定性因素为{decisive_factor}；"
                 f"数据质量{quality.get('grade', '不足')}，审计可信度{credibility:.0f}分。"
             ),
+            "horizon": horizon,
+            "weights": {key: round(value, 4) for key, value in weights.items()},
             "debate": {
                 "bull_score": bull_score,
                 "bear_score": bear_score,
@@ -674,6 +794,7 @@ class StockSelectionAgentService:
         is_realtime: bool,
         data_date: str | None,
         updated_at: str,
+        horizon: str,
     ) -> dict:
         news = self._news_policy_agent(stock, news_context, announcements)
         quality = research_protocol.data_quality(
@@ -688,6 +809,7 @@ class StockSelectionAgentService:
             is_realtime=is_realtime,
             source=source,
             data_quality=quality["grade"],
+            holding_days=HORIZON_CONFIG[horizon]["trading_days"],
         )
         timeline = research_protocol.time_audit(
             stock,
@@ -700,7 +822,7 @@ class StockSelectionAgentService:
         technical = self._technical_agent(stock, history)
         fundamental = self._fundamental_agent(stock)
         capital = self._capital_flow_agent(stock)
-        risk = self._risk_agent(stock, history, profile)
+        risk = self._risk_agent(stock, history, profile, announcements)
         execution = research_protocol.execution_plan(stock, risk["plan"], quality)
         strategy_audit = research_protocol.strategy_audit(
             stock,
@@ -710,6 +832,7 @@ class StockSelectionAgentService:
             execution=execution,
             source=source,
             is_realtime=is_realtime,
+            holding_days=HORIZON_CONFIG[horizon]["trading_days"],
         )
         risk["plan"].update({
             "data_quality": quality["grade"],
@@ -733,6 +856,26 @@ class StockSelectionAgentService:
         }
         supervisor = self._supervisor_agent(
             stock, technical, fundamental, capital, risk, news, profile, regime, quality, strategy_audit,
+            horizon,
+        )
+        agents = {
+            "technical": technical,
+            "fundamental": fundamental,
+            "capital": capital,
+            "risk": risk,
+            "news": news,
+            "audit": audit_agent,
+            "supervisor": supervisor,
+        }
+        horizon_outlook = horizon_potential_analyzer.assess(
+            stock,
+            history,
+            agents,
+            regime,
+            quality,
+            risk.get("structural_risk") or {},
+            horizon,
+            supervisor.get("weights") or {},
         )
         return {
             "code": stock["code"],
@@ -744,9 +887,12 @@ class StockSelectionAgentService:
             "amount": as_int(stock.get("amount")),
             "market_cap": as_int(stock.get("market_cap")),
             "selection_sources": stock.get("selection_sources") or [],
-            "score": supervisor["score"],
-            "verdict": supervisor["verdict"],
-            "confidence": supervisor["confidence"],
+            "score": horizon_outlook["potential_score"],
+            "base_score": supervisor["score"],
+            "verdict": horizon_outlook["judgement"],
+            "confidence": horizon_outlook["confidence"],
+            "horizon_outlook": horizon_outlook,
+            "feature_sources": stock.get("_feature_meta") or {},
             "research": {
                 "hypothesis_card": hypothesis,
                 "data_contract": A_STOCK_DATA_SKILL,
@@ -761,15 +907,7 @@ class StockSelectionAgentService:
                     "failure_recording": "审计风险和证据不足项会随本次运行记录保存，不允许仅保留成功结论。",
                 },
             },
-            "agents": {
-                "technical": technical,
-                "fundamental": fundamental,
-                "capital": capital,
-                "risk": risk,
-                "news": news,
-                "audit": audit_agent,
-                "supervisor": supervisor,
-            },
+            "agents": agents,
         }
 
     @staticmethod
@@ -780,6 +918,7 @@ class StockSelectionAgentService:
         news_context: dict,
         announcement_coverage: int,
         source_name: str,
+        horizon: str,
         *,
         research_ready: bool = False,
     ) -> list[dict]:
@@ -822,7 +961,7 @@ class StockSelectionAgentService:
                 "name": "数据时间审计 Agent",
                 "skill": "事件、可用、计算、交易四时间检查",
                 "status": "completed" if research_ready else "waiting",
-                "summary": "基本面披露日期缺失或同日成交假设会被标记为风险。",
+                "summary": "财务、股东户数和解禁均核验披露日期；缺失项不会按零处理。",
             },
             {
                 "id": "market",
@@ -860,6 +999,16 @@ class StockSelectionAgentService:
                 "summary": "不接受漂亮曲线作为证据，逐项检查未来函数、偏差、成本和容量。",
             },
             {
+                "id": "horizon",
+                "name": "周期潜力 Agent",
+                "skill": "5/10/20日动态权重与近一年相似形态验证",
+                "status": "completed" if research_ready else "waiting",
+                "summary": (
+                    f"本轮观察窗口为{HORIZON_CONFIG[horizon]['label']}"
+                    f"（{HORIZON_CONFIG[horizon]['trading_days']}个交易日），历史样本不足会降低置信度。"
+                ),
+            },
+            {
                 "id": "news",
                 "name": "宏观政策与公告 Agent",
                 "skill": "国际经济、国内发展政策、公司公告与行业匹配",
@@ -875,11 +1024,14 @@ class StockSelectionAgentService:
         top_n: int = 5,
         sector: str | None = None,
         sector_code: str | None = None,
+        horizon: str = "week",
     ) -> dict:
         if mode not in VALID_SELECTION_MODES:
             raise ValueError("mode 必须是 quick 或 full")
         if risk_profile not in VALID_RISK_PROFILES:
             raise ValueError("risk_profile 必须是 conservative、balanced 或 aggressive")
+        if horizon not in VALID_HORIZONS:
+            raise ValueError("horizon 必须是 week、half_month 或 month")
         top_n = min(max(int(top_n), 3), 10)
         sector_filter = _normalise_sector(sector)
         sector_board_code = normalize_board_code(sector_code) if sector_code else ""
@@ -937,12 +1089,16 @@ class StockSelectionAgentService:
         except (TypeError, ValueError):
             configured_announcement_limit = 48
         announcement_limit = min(len(candidates), max(0, min(configured_announcement_limit, 64)))
-        histories_result, announcements_result = await asyncio.gather(
+        feature_fields = set(FINANCIAL_FIELDS | SHAREHOLDER_FIELDS | LOCKUP_FIELDS) | {
+            "sector_rank", "sector_strength_score",
+        }
+        histories_result, announcements_result, features_result = await asyncio.gather(
             self._load_histories([stock["code"] for stock in candidates]),
             macro_policy_news_collector.get_stock_announcements(
                 [stock["code"] for stock in candidates],
                 max_stocks=announcement_limit,
             ),
+            stock_feature_service.enrich(candidates, feature_fields, full_market=False),
             return_exceptions=True,
         )
         histories = {} if isinstance(histories_result, Exception) else histories_result
@@ -951,6 +1107,14 @@ class StockSelectionAgentService:
             histories = {}
         if not isinstance(announcements_by_stock, dict):
             announcements_by_stock = {}
+        feature_coverage = {"total": len(candidates)}
+        feature_warnings: list[str] = []
+        if isinstance(features_result, Exception):
+            feature_warnings.append(f"财务与事件特征暂不可用（{type(features_result).__name__}）")
+        elif isinstance(features_result, dict):
+            candidates = list(features_result.get("stocks") or candidates)
+            feature_coverage = features_result.get("coverage") or feature_coverage
+            feature_warnings = list(features_result.get("warnings") or [])
         announcement_coverage = sum(bool(items) for items in announcements_by_stock.values())
         now = shanghai_now()
         # The FTShare fallback exposes a quote snapshot without a source
@@ -975,6 +1139,7 @@ class StockSelectionAgentService:
                 is_realtime=is_realtime,
                 data_date=data_date,
                 updated_at=now.isoformat(),
+                horizon=horizon,
             )
             for stock in candidates
         ]
@@ -998,6 +1163,7 @@ class StockSelectionAgentService:
         }
         pipeline = self._pipeline_status(
             len(analyzed), regime, is_realtime, news_context, announcement_coverage, source_name,
+            horizon,
             research_ready=bool(analyzed),
         )
 
@@ -1016,27 +1182,50 @@ class StockSelectionAgentService:
                 "mode": mode,
                 "risk_profile": risk_profile,
                 "risk_profile_label": PROFILE_CONFIG[risk_profile]["label"],
+                "research_horizon": {"id": horizon, **HORIZON_CONFIG[horizon]},
                 "market_regime": regime,
                 "candidate_summary": {
                     "live_candidates": filtered_candidate_count,
                     "market_candidates": market_candidate_count,
                     "analyzed": 0,
                     "selected": 0,
+                    "risk_excluded": 0,
                 },
                 "sector_filter": sector_metadata,
                 "data_contract": A_STOCK_DATA_SKILL,
                 "macro_policy": macro_policy,
+                "feature_coverage": feature_coverage,
+                "feature_warnings": feature_warnings,
                 "agent_pipeline": pipeline,
                 "recommendations": [],
                 "message": empty_message,
                 "disclaimer": "结果仅供研究与学习参考，不构成任何投资建议。",
             }
 
-        recommendations = analyzed[:top_n]
+        eligible = [
+            item for item in analyzed
+            if not bool(
+                (((item.get("agents") or {}).get("risk") or {}).get("structural_risk") or {}).get("hard_blocked")
+            )
+        ]
+        risk_excluded_count = len(analyzed) - len(eligible)
+        recommendations = eligible[:top_n]
         for index, recommendation in enumerate(recommendations, start=1):
             recommendation["rank"] = index
+        selection_available = bool(recommendations)
+        if not selection_available:
+            selection_message = "本轮候选全部触发不可抵消的风险否决条件，系统未生成潜力股推荐。"
+        else:
+            selection_message = (
+                f"按{HORIZON_CONFIG[horizon]['label']}窗口调整因子权重，并以近一年相似形态做低权重校验；"
+                "随后经过数据时间、真实成本和独立证伪约束。"
+                if pipeline[-1]["status"] == "completed"
+                else f"按{HORIZON_CONFIG[horizon]['label']}窗口完成量化交叉验证；宏观政策与公告源当前不可用，本轮未计入评分。"
+            )
+            if risk_excluded_count:
+                selection_message += f"另有 {risk_excluded_count} 只候选因硬性风险被排除。"
         return {
-            "available": True,
+            "available": selection_available,
             "source": source_name,
             "is_realtime": is_realtime,
             "data_date": data_date,
@@ -1044,23 +1233,23 @@ class StockSelectionAgentService:
             "mode": mode,
             "risk_profile": risk_profile,
             "risk_profile_label": PROFILE_CONFIG[risk_profile]["label"],
+            "research_horizon": {"id": horizon, **HORIZON_CONFIG[horizon]},
             "market_regime": regime,
             "candidate_summary": {
                 "live_candidates": filtered_candidate_count,
                 "market_candidates": market_candidate_count,
                 "analyzed": len(analyzed),
                 "selected": len(recommendations),
+                "risk_excluded": risk_excluded_count,
             },
             "sector_filter": sector_metadata,
             "data_contract": A_STOCK_DATA_SKILL,
             "macro_policy": macro_policy,
+            "feature_coverage": feature_coverage,
+            "feature_warnings": feature_warnings,
             "agent_pipeline": pipeline,
             "recommendations": recommendations,
-            "message": (
-                "排序先由量化 Agent 交叉验证，再经过数据时间审计、真实成本和独立证伪约束；宏观政策与公告仅在可核验时以低权重纳入评分。"
-                if pipeline[-1]["status"] == "completed"
-                else "排序先由量化 Agent 交叉验证，再经过数据时间审计、真实成本和独立证伪约束；宏观政策与公告源当前不可用，本轮未计入评分。"
-            ),
+            "message": selection_message,
             "disclaimer": "结果仅供研究与学习参考，不构成任何投资建议。市场行情和指标会随盘中数据变化。",
         }
 

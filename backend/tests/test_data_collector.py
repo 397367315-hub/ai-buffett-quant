@@ -341,7 +341,9 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
                             "f2": 25.6, "f3": 3.2, "f5": 1_000_000, "f6": 20_000_000,
                             "f8": 4.1, "f9": 18.5, "f10": 2.4, "f12": "600519",
                             "f14": "贵州茅台", "f20": 100_000_000, "f23": 6.0,
-                            "f37": 22.1, "f62": 300_000_000, "f100": "白酒", "f184": 5.5,
+                            "f37": 22.1, "f62": 300_000_000, "f66": 120_000_000,
+                            "f69": 2.1, "f72": 80_000_000, "f75": 1.4,
+                            "f100": "白酒", "f184": 5.5,
                         },
                     ]
                 }
@@ -356,11 +358,16 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["po"], "1")
         self.assertEqual(captured["fid"], "f10")
-        self.assertEqual(captured["fields"], "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f124,f184")
+        self.assertEqual(
+            captured["fields"],
+            "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184",
+        )
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["stocks"][0]["code"], "600519")
         self.assertEqual(result["stocks"][0]["sector"], "白酒")
         self.assertEqual(result["stocks"][0]["amount"], 20_000_000)
+        self.assertEqual(result["stocks"][0]["large_net_inflow"], 80_000_000)
+        self.assertEqual(result["stocks"][0]["large_order_inflow_pct"], 1.4)
 
     async def test_stock_history_uses_ftshare_only_after_primary_source_fails(self):
         collector = EastMoneyDataCollector()

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import uuid
 
-from quant.rules import evaluate_rules, validate_group
+from quant.report import build_rule_audit
+from quant.risk import assess_stock_risk
+from quant.rules import evaluate_rules_detailed, validate_group
 from quant.schemas import StrategyCreate, StrategyUpdate
 from quant.storage import quant_store
 from services.data_collector import shanghai_now
@@ -89,18 +91,21 @@ def delete_strategy(strategy_id: str) -> bool:
 def match_stock(strategy: dict, stock: dict) -> dict | None:
     filter_group = strategy.get("filter") or {"logic": "AND", "rules": []}
     entry_group = strategy.get("entry") or {"logic": "AND", "rules": []}
-    filter_match, filter_passed, filter_failed = evaluate_rules(
+    filter_result = evaluate_rules_detailed(
         filter_group.get("rules") or [], stock, filter_group.get("logic", "AND")
     )
-    if not filter_match:
+    if not filter_result["matched"]:
         return None
-    entry_match, entry_passed, entry_failed = evaluate_rules(
+    entry_result = evaluate_rules_detailed(
         entry_group.get("rules") or [], stock, entry_group.get("logic", "AND")
     )
-    if not entry_match:
+    if not entry_result["matched"]:
         return None
     total = len(filter_group.get("rules") or []) + len(entry_group.get("rules") or [])
-    passed = filter_passed + entry_passed
+    passed = filter_result["passed"] + entry_result["passed"]
+    risk = assess_stock_risk(stock)
+    if risk["hard_blocked"]:
+        return None
     return {
         "strategy_id": strategy["id"],
         "strategy_name": strategy["name"],
@@ -113,9 +118,30 @@ def match_stock(strategy: dict, stock: dict) -> dict | None:
         "turnover": stock.get("turnover"),
         "pe_ttm": stock.get("pe_ttm"),
         "main_inflow": stock.get("main_inflow"),
+        "large_order_inflow_pct": stock.get("large_order_inflow_pct"),
         "vol_ratio": stock.get("vol_ratio"),
+        "roe": stock.get("roe"),
+        "gross_margin": stock.get("gross_margin"),
+        "revenue_growth": stock.get("revenue_growth"),
+        "deducted_profit_growth": stock.get("deducted_profit_growth"),
+        "ocf_to_profit": stock.get("ocf_to_profit"),
+        "debt_ratio": stock.get("debt_ratio"),
+        "receivable_to_revenue": stock.get("receivable_to_revenue"),
+        "sector_rank": stock.get("sector_rank"),
+        "market_breadth": stock.get("market_breadth"),
+        "lockup_days": stock.get("lockup_days"),
+        "holder_change_pct": stock.get("holder_change_pct"),
         "sector": stock.get("sector", ""),
         "matched_rules": passed,
-        "unmatched_rules": filter_failed + entry_failed,
+        "unmatched_rules": filter_result["failed"] + entry_result["failed"],
+        "unavailable_rules": filter_result["unavailable"] + entry_result["unavailable"],
+        "rule_audit": build_rule_audit(filter_result, entry_result),
+        "feature_sources": stock.get("_feature_meta") or {},
+        "risk_flags": {
+            "level": risk["risk_level"],
+            "hard_blocks": risk["hard_blocks"],
+            "warnings": risk["warnings"],
+            "missing": risk["missing"],
+        },
         "generated_at": shanghai_now().isoformat(),
     }

@@ -44,7 +44,29 @@ def _macro_context() -> dict:
     }
 
 
+async def _passthrough_features(stocks, fields=None, **kwargs):
+    del fields, kwargs
+    return {
+        "stocks": [dict(stock) for stock in stocks],
+        "coverage": {
+            "total": len(stocks), "financial": 0, "shareholders": 0,
+            "lockups": 0, "sector_strength": 0, "market_breadth": False,
+        },
+        "warnings": ["测试未提供高级特征"],
+        "source_updated_at": None,
+    }
+
+
 class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.feature_enrich = AsyncMock(side_effect=_passthrough_features)
+        patcher = patch(
+            "services.stock_selection_agents.stock_feature_service.enrich",
+            new=self.feature_enrich,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def test_pipeline_ranks_source_backed_candidate_and_exposes_agent_trace(self):
         service = StockSelectionAgentService()
         candidates = {
@@ -55,6 +77,7 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
                     "change_pct": 2.5, "turnover": 4.0, "pe": 18.0, "pb": 5.0,
                     "roe": 21.0, "volume_ratio": 2.0, "market_cap": 100_000_000_000,
                     "main_net_inflow": 800_000_000, "main_net_inflow_pct": 6.0,
+                    "net_profit": 10_000_000, "lockup_days": 100,
                     "sector": "白酒",
                     "selection_sources": ["fund_flow", "volume", "momentum"],
                 },
@@ -63,6 +86,7 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
                     "change_pct": -1.0, "turnover": 2.0, "pe": -8.0, "pb": 0.6,
                     "roe": -1.0, "volume_ratio": 0.8, "market_cap": 100_000_000_000,
                     "main_net_inflow": -500_000_000, "main_net_inflow_pct": -6.0,
+                    "net_profit": -10_000_000, "lockup_days": 100,
                     "sector": "银行",
                     "selection_sources": ["fund_flow"],
                 },
@@ -115,6 +139,8 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["available"])
         self.assertEqual(result["candidate_summary"]["live_candidates"], 2)
         self.assertEqual(result["candidate_summary"]["analyzed"], 2)
+        self.assertEqual(result["candidate_summary"]["risk_excluded"], 1)
+        self.assertEqual(len(result["recommendations"]), 1)
         self.assertEqual(result["recommendations"][0]["code"], "600519")
         self.assertEqual(result["recommendations"][0]["sector"], "白酒")
         self.assertIn("technical", result["recommendations"][0]["agents"])

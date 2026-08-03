@@ -13,9 +13,11 @@ from models import StockDailyBar
 from quant.engine import get_strategy, list_strategies, match_stock
 from quant.indicators import enrich_with_indicators, normalize_snapshot_stock
 from quant.jobs import create_job, get_job, latest_running_job, spawn, update_job
+from quant.report import build_feature_coverage_report
 from quant.rules import TECHNICAL_RULE_TYPES, static_group_can_match
 from quant.storage import quant_store
 from services.data_collector import collector, shanghai_now
+from services.stock_features import required_feature_fields, stock_feature_service
 
 
 def _uses_technical_rules(strategy: dict) -> bool:
@@ -211,6 +213,35 @@ class QuantSignalService:
         snapshot, stale, warning = await self._market_snapshot(force)
         contexts = [normalize_snapshot_stock(item) for item in snapshot.get("stocks") or []]
         await self._annotate_board_codes(contexts, strategies)
+        # Every live signal is subject to the same non-compensating profit and
+        # near-term lock-up checks, even when a custom strategy omits them.
+        feature_fields = required_feature_fields(strategies) | {
+            "net_profit", "is_profitable_non_st", "lockup_days", "lockup_ratio_pct",
+        }
+        feature_coverage: dict = {"total": len(contexts)}
+        feature_warnings: list[str] = []
+        feature_updated_at: str | None = None
+        if feature_fields:
+            if job_id:
+                update_job(
+                    "scan", job_id, phase="feature_data", progress=18,
+                    message="正在合并财务披露、股东户数、解禁与市场环境",
+                )
+            try:
+                feature_result = await stock_feature_service.enrich(
+                    contexts,
+                    feature_fields,
+                    full_market=bool(snapshot.get("complete")),
+                )
+                contexts = feature_result["stocks"]
+                feature_coverage = feature_result.get("coverage") or feature_coverage
+                feature_warnings = feature_result.get("warnings") or []
+                feature_updated_at = feature_result.get("source_updated_at")
+            except Exception as exc:
+                feature_warnings.append(f"高级特征合并失败，相关规则按数据不足处理（{type(exc).__name__}）")
+        if feature_warnings:
+            extra = "；".join(feature_warnings)
+            warning = f"{warning}；{extra}" if warning else extra
         if job_id:
             update_job(
                 "scan", job_id, phase="static_filter", progress=25,
@@ -275,6 +306,10 @@ class QuantSignalService:
             "technical_history_coverage": sum(len(bars.get(item["code"], [])) >= 60 for item in candidate_values),
             "technical_truncated": technical_truncated,
             "strategy_count": len(strategies),
+            "feature_updated_at": feature_updated_at,
+            "feature_coverage": build_feature_coverage_report(
+                feature_coverage, feature_fields, feature_warnings,
+            ),
             "signals": signals,
         }
         if persist:

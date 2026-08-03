@@ -22,6 +22,7 @@ from quant.storage import quant_store
 from services.data_collector import collector, shanghai_now
 from services.history_cache import history_cache
 from services.research_protocol import ResearchProtocol
+from services.stock_features import required_feature_fields, stock_feature_service
 
 
 COMMISSION_RATE = ResearchProtocol.COMMISSION_RATE
@@ -65,7 +66,12 @@ def _has_rule(strategy: dict, types: set[str]) -> bool:
 def _snapshot_rule_types(strategy: dict) -> list[str]:
     # Those fields are not stored with a historical disclosure timestamp in
     # StockDailyBar. They remain visible but are flagged in the audit report.
-    types = {"pe_ttm", "pb", "roe", "market_cap", "sector"}
+    types = {
+        "pe_ttm", "pb", "roe", "market_cap", "sector", "large_order_inflow_pct",
+        "gross_margin", "revenue_growth", "deducted_profit_growth", "ocf_to_profit",
+        "debt_ratio", "receivable_to_revenue", "is_profitable", "market_breadth",
+        "sector_strength", "no_lockup_expiry", "holder_concentration", "holder_decline_streak",
+    }
     return sorted({rule["type"] for rule in _all_rules(strategy) if rule.get("type") in types})
 
 
@@ -504,6 +510,23 @@ class StrategyBacktestService:
         if end > shanghai_now().date():
             raise ValueError("回测结束日期不能晚于当前日期")
         snapshot, warnings = await self._snapshot(job_id)
+        feature_fields = required_feature_fields([strategy])
+        if feature_fields:
+            if job_id:
+                update_job(
+                    "backtest", job_id, phase="feature_data", progress=11,
+                    message="正在读取当前已披露财务与事件特征",
+                )
+            try:
+                feature_result = await stock_feature_service.enrich(
+                    snapshot,
+                    feature_fields,
+                    full_market=len(snapshot) >= 4000,
+                )
+                snapshot = feature_result["stocks"]
+                warnings.extend(feature_result.get("warnings") or [])
+            except Exception as exc:
+                warnings.append(f"高级特征不可用，相关候选会按数据不足排除（{type(exc).__name__}）。")
         candidates, truncated = self._candidate_pool(strategy, snapshot)
         if not candidates:
             raise ValueError("当前股票池没有满足策略静态筛选条件的股票；请检查规则或等待行情快照恢复。")

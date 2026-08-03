@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 from quant.backtest import StrategyBacktestService, _history_is_sufficient
 from quant.engine import create_strategy, match_stock, update_strategy
 from quant.portfolio import paper_portfolio
-from quant.rules import evaluate_rules
+from quant.rules import evaluate_rules, evaluate_rules_detailed
 from quant.schemas import PaperBuyRequest, PaperSellRequest, StrategyCreate
 from quant.signals import QuantSignalService
 from quant.storage import QuantJsonStore
@@ -49,6 +49,33 @@ class QuantModuleTests(unittest.TestCase):
             [{"type": "sector", "operator": "not_in", "value": ["电力"]}], {"sectors": []}
         )
         self.assertFalse(matched)
+
+    def test_missing_rule_field_is_unavailable_instead_of_zero_or_passed(self):
+        result = evaluate_rules_detailed(
+            [{"type": "gross_margin", "operator": "gte", "value": 20}],
+            {"code": "600000", "gross_margin": None},
+        )
+
+        self.assertFalse(result["matched"])
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(len(result["unavailable"]), 1)
+        self.assertEqual(result["details"][0]["status"], "unavailable")
+
+    def test_non_compensating_risk_block_suppresses_quant_signal(self):
+        strategy = {
+            "id": "risk_block", "name": "风险否决测试",
+            "filter": {"logic": "AND", "rules": []},
+            "entry": {"logic": "AND", "rules": [
+                {"type": "change_pct", "operator": "gte", "value": 1},
+            ]},
+        }
+
+        signal = match_stock(strategy, {
+            "code": "600001", "name": "测试股份", "price": 10,
+            "change_pct": 5, "net_profit": -1,
+        })
+
+        self.assertIsNone(signal)
 
     def test_history_coverage_checks_requested_period_not_only_row_count(self):
         start = date(2025, 1, 1)
@@ -142,6 +169,14 @@ class QuantSignalSchedulingTests(unittest.IsolatedAsyncioTestCase):
         }
         with patch("quant.signals.list_strategies", return_value=strategies), patch.object(
             service, "_market_snapshot", new=AsyncMock(return_value=(snapshot, False, None))
+        ), patch(
+            "quant.signals.stock_feature_service.enrich",
+            new=AsyncMock(return_value={
+                "stocks": snapshot["stocks"],
+                "coverage": {"total": 1},
+                "warnings": [],
+                "source_updated_at": None,
+            }),
         ):
             result = await service.scan(scheduled_only=True, persist=False)
 

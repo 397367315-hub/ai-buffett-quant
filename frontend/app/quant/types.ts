@@ -50,6 +50,10 @@ export interface RuleMeta {
   operators: RuleOperator[];
   default: number | string | boolean | string[];
   options?: Array<number | string>;
+  category?: string;
+  source?: string;
+  historical_support?: string;
+  note?: string;
 }
 
 export interface SectorOption {
@@ -82,6 +86,17 @@ export interface TradeSignal {
   sector?: string;
   matched_rules: string[];
   unmatched_rules: string[];
+  unavailable_rules?: string[];
+  rule_audit?: {
+    counts: Record<string, number>;
+    complete: boolean;
+  };
+  risk_flags?: {
+    level: string;
+    hard_blocks: string[];
+    warnings: string[];
+    missing: string[];
+  };
   generated_at: string;
 }
 
@@ -98,6 +113,19 @@ export interface SignalSnapshot {
   technical_history_coverage?: number;
   technical_truncated?: boolean;
   strategy_count?: number;
+  feature_updated_at?: string | null;
+  feature_coverage?: {
+    requested_fields: string[];
+    datasets: Record<string, {
+      label: string;
+      covered?: number;
+      total?: number;
+      coverage_pct?: number;
+      available?: boolean;
+    }>;
+    warnings: string[];
+    missing_policy: string;
+  };
   signals: TradeSignal[];
 }
 

@@ -44,10 +44,12 @@ class ResearchProtocol:
         is_realtime: bool,
         source: str,
         data_quality: str,
+        holding_days: int | None = None,
     ) -> dict:
         """Return a falsifiable hypothesis instead of a directional promise."""
         name = stock.get("name") or stock.get("code") or "候选标的"
         timing = "盘中快照" if is_realtime else "最近交易日缓存"
+        target_holding_days = max(1, int(holding_days or cls.HOLDING_DAYS))
         return {
             "observation": f"{name}进入{timing}候选池，价格、成交活跃度和资金方向至少有一项形成可研究信号。",
             "mechanism": "趋势延续、资金参与和流动性可能在短持有期内共同解释相对收益，但行业贝塔、市场状态和估值暴露也可能是替代解释。",
@@ -69,7 +71,7 @@ class ResearchProtocol:
                 "timeline_rule": "禁止用T日收盘价计算信号后按T日收盘价成交",
             },
             "prediction_target": {
-                "holding_period": f"T+1开盘买入，持有{cls.HOLDING_DAYS}个交易日",
+                "holding_period": f"T+1开盘买入，观察{target_holding_days}个交易日",
                 "return_calc": "净收益 = T+1开盘至持有期结束收盘的价格收益 - 双边佣金 - 卖出印花税 - 滑点 - 估计冲击成本",
             },
             "baselines": [
@@ -135,6 +137,26 @@ class ResearchProtocol:
         else:
             missing.append("估值与盈利字段")
 
+        advanced_keys = (
+            "gross_margin", "revenue_growth", "deducted_profit_growth",
+            "ocf_to_profit", "debt_ratio", "receivable_to_revenue",
+        )
+        advanced_count = sum(_number(stock.get(key)) is not None for key in advanced_keys)
+        if advanced_count >= 4:
+            score += 10
+            financial_meta = (stock.get("_feature_meta") or {}).get("financial") or {}
+            evidence.append(
+                f"财务排雷字段{advanced_count}项，披露日{financial_meta.get('disclosed_at') or '未提供'}"
+            )
+        elif advanced_count:
+            score += 4
+            missing.append(f"完整财务排雷字段（当前{advanced_count}/6项）")
+        else:
+            missing.append("财务三表排雷字段")
+
+        financial_meta = (stock.get("_feature_meta") or {}).get("financial") or {}
+        financial_verified = financial_meta.get("status") == "available"
+
         if str(stock.get("sector") or "").strip():
             score += 10
             evidence.append("行业标签有效")
@@ -152,6 +174,11 @@ class ResearchProtocol:
         else:
             missing.append("可验证的行情时间戳")
 
+        if not financial_verified:
+            # Quote-level PE/PB/ROE cannot prove that the financial exclusion
+            # checks were actually covered by a disclosed report.
+            score = min(score, 70.0)
+        score = min(score, 100.0)
         if score >= 75:
             grade, multiplier = "充分", 1.0
         elif score >= 50:
@@ -184,6 +211,9 @@ class ResearchProtocol:
         is_realtime: bool,
     ) -> dict:
         """Audit event, availability, calculation and earliest-trade times."""
+        feature_meta = stock.get("_feature_meta") or {}
+        financial_meta = feature_meta.get("financial") or {}
+        financial_available = financial_meta.get("status") == "available"
         fields = [
             {
                 "field_name": "行情与成交字段",
@@ -207,15 +237,32 @@ class ResearchProtocol:
             },
             {
                 "field_name": "基本面字段",
-                "event_time": "报告期未提供",
-                "data_available_time": "披露日期未随行情返回",
+                "event_time": financial_meta.get("report_date") or "报告期未提供",
+                "data_available_time": financial_meta.get("disclosed_at") or "披露日期未提供",
                 "signal_calc_time": updated_at if is_realtime else "T日收盘后",
                 "earliest_trade_time": "下一交易时段开盘（T+1）",
-                "timeline_valid": False,
-                "leakage_risk": "中",
-                "notes": "基本面字段可用于当前研究快照，但不能直接用于历史回测。",
+                "timeline_valid": financial_available,
+                "leakage_risk": "低" if financial_available else "中",
+                "notes": (
+                    "仅采用不晚于本次研究日期的披露；历史回测仍需逐日点时财务库。"
+                    if financial_available
+                    else "基本面字段可用于当前研究快照，但披露时间不足，不能用于严格历史回测。"
+                ),
             },
         ]
+        for group, label in (("shareholders", "股东户数"), ("lockups", "限售解禁")):
+            meta = feature_meta.get(group) or {}
+            available = meta.get("status") == "available"
+            fields.append({
+                "field_name": label,
+                "event_time": meta.get("report_date") or meta.get("next_event_date") or meta.get("as_of") or "未提供",
+                "data_available_time": (meta.get("disclosed_at") or updated_at) if available else "未提供",
+                "signal_calc_time": updated_at,
+                "earliest_trade_time": "下一交易时段开盘（T+1）",
+                "timeline_valid": available,
+                "leakage_risk": "低" if available else "中",
+                "notes": "按已披露数据评估，未披露内容不作推断。" if available else f"{label}数据源未覆盖，本轮不计分。",
+            })
         red_flags = [
             f"{field['field_name']}存在未来信息风险"
             for field in fields
@@ -301,8 +348,10 @@ class ResearchProtocol:
         execution: dict,
         source: str,
         is_realtime: bool,
+        holding_days: int | None = None,
     ) -> dict:
         """Run the independent ten-category falsification checklist."""
+        target_holding_days = max(1, int(holding_days or cls.HOLDING_DAYS))
         findings: list[dict] = []
 
         def add(category: str, level: str, evidence: str, experiment: str, fix: str) -> None:
@@ -326,8 +375,8 @@ class ResearchProtocol:
             "时间重叠",
             "中",
             "当前选股快照不是样本外回测，尚未验证标签窗口之间的重叠影响。",
-            "按持有期设置隔离区，使用滚动样本外窗口复测。",
-            "回测使用固定5日持有和非重叠再平衡。",
+            f"按{target_holding_days}日持有期设置隔离区，使用滚动样本外窗口复测。",
+            f"回测使用固定{target_holding_days}日持有和非重叠再平衡。",
         )
         add(
             "幸存者偏差",

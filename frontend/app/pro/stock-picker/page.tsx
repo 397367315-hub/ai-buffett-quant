@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import {
   AlertTriangle,
   BrainCircuit,
+  CalendarRange,
   CheckCircle2,
   ChevronRight,
   Clock3,
@@ -25,6 +26,7 @@ import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
 
 type SelectionMode = 'quick' | 'full';
 type RiskProfile = 'conservative' | 'balanced' | 'aggressive';
+type ResearchHorizon = 'week' | 'half_month' | 'month';
 
 interface PipelineAgent {
   id: string;
@@ -188,6 +190,37 @@ interface Recommendation {
   score: number;
   verdict: string;
   confidence: number;
+  base_score?: number;
+  horizon_outlook: {
+    horizon: ResearchHorizon;
+    label: string;
+    trading_days: number;
+    potential_score: number;
+    judgement: string;
+    confidence: number;
+    volatility_range_pct: number | null;
+    factor_contributions: Array<{
+      factor: string;
+      score: number;
+      weight_pct: number;
+      contribution: number;
+    }>;
+    historical_analogue: {
+      available: boolean;
+      sample_count: number;
+      positive_rate_pct?: number;
+      median_return_pct?: number;
+      lower_quartile_pct?: number;
+      upper_quartile_pct?: number;
+      reason?: string;
+      method?: string;
+      limitation?: string;
+    };
+    validation_conditions: string[];
+    invalidation_conditions: string[];
+    basis: string;
+    disclaimer: string;
+  };
   agents: {
     technical: AgentReport;
     fundamental: AgentReport;
@@ -209,6 +242,11 @@ interface SelectionResult {
   mode: SelectionMode;
   risk_profile: RiskProfile;
   risk_profile_label: string;
+  research_horizon: {
+    id: ResearchHorizon;
+    label: string;
+    trading_days: number;
+  };
   market_regime: {
     regime: string;
     confidence: number;
@@ -221,6 +259,7 @@ interface SelectionResult {
     market_candidates?: number;
     analyzed: number;
     selected: number;
+    risk_excluded?: number;
   };
   sector_filter?: {
     value: string;
@@ -253,6 +292,14 @@ interface SelectionResult {
   disclaimer: string;
   run_id?: number | null;
   trace_available?: boolean;
+  feature_coverage?: {
+    total?: number;
+    financial?: number;
+    shareholders?: number;
+    lockups?: number;
+    sector_strength?: number;
+  };
+  feature_warnings?: string[];
 }
 
 const modes: Array<{ id: SelectionMode; label: string; detail: string }> = [
@@ -266,12 +313,18 @@ const profiles: Array<{ id: RiskProfile; label: string }> = [
   { id: 'aggressive', label: '进取' },
 ];
 
+const horizons: Array<{ id: ResearchHorizon; label: string; detail: string }> = [
+  { id: 'week', label: '一周', detail: '5日' },
+  { id: 'half_month', label: '半个月', detail: '10日' },
+  { id: 'month', label: '一个月', detail: '20日' },
+];
+
 const analysisStages = [
   { threshold: 0, label: '读取实时行情与候选池' },
-  { threshold: 20, label: '计算技术、资金与基本面' },
+  { threshold: 20, label: '计算技术、资金与财务排雷' },
   { threshold: 40, label: '分析宏观政策与公司公告' },
   { threshold: 62, label: '执行风险、成本与偏差审计' },
-  { threshold: 82, label: '汇总 Agent 裁决' },
+  { threshold: 82, label: '验证周期潜力并汇总裁决' },
 ];
 
 const statusClass: Record<PipelineAgent['status'], string> = {
@@ -282,8 +335,9 @@ const statusClass: Record<PipelineAgent['status'], string> = {
 };
 
 function verdictClass(verdict: string): string {
-  if (verdict === '优先研究') return 'bg-[#26A69A22] text-down border-[#26A69A44]';
-  if (verdict === '持续跟踪') return 'bg-[#58A6FF22] text-accent border-[#58A6FF44]';
+  if (verdict === '优先研究' || verdict === '潜力较高') return 'bg-[#26A69A22] text-down border-[#26A69A44]';
+  if (verdict === '持续跟踪' || verdict === '中性偏强') return 'bg-[#58A6FF22] text-accent border-[#58A6FF44]';
+  if (verdict === '风险否决' || verdict === '潜力偏低') return 'bg-[#EF535022] text-up border-[#EF535044]';
   return 'bg-[#D2992222] text-warn border-[#D2992244]';
 }
 
@@ -349,6 +403,7 @@ function moneyValue(value: number | null | undefined): string {
 export default function StockPickerPage() {
   const [mode, setMode] = useState<SelectionMode>('quick');
   const [riskProfile, setRiskProfile] = useState<RiskProfile>('balanced');
+  const [horizon, setHorizon] = useState<ResearchHorizon>('week');
   const [topN, setTopN] = useState(5);
   const [sector, setSector] = useState('');
   const [sectors, setSectors] = useState<SectorOption[]>([]);
@@ -411,6 +466,7 @@ export default function StockPickerPage() {
         body: JSON.stringify({
           mode,
           risk_profile: riskProfile,
+          horizon,
           top_n: topN,
           sector: selectedSector?.name,
           sector_code: selectedSector?.code || undefined,
@@ -473,7 +529,7 @@ export default function StockPickerPage() {
 
       <section className="border border-border bg-card rounded-lg p-4 mb-6">
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-4 items-end">
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_auto_auto_auto] gap-4 items-end">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_auto_auto_auto_auto] gap-4 items-end">
             <div>
               <div className="text-xs text-text-secondary mb-1.5">运行模式</div>
               <div className="grid grid-cols-2 gap-1 rounded-md bg-[#0D1117] p-1" role="group" aria-label="运行模式">
@@ -501,6 +557,22 @@ export default function StockPickerPage() {
                     className={`px-3 py-2 text-sm rounded transition-colors ${riskProfile === item.id ? 'bg-[#1F6FEB33] text-accent' : 'text-text-secondary hover:text-text'}`}
                   >
                     {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-text-secondary mb-1.5">研究周期</div>
+              <div className="grid grid-cols-3 rounded-md bg-[#0D1117] p-1" role="group" aria-label="未来潜力研究周期">
+                {horizons.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setHorizon(item.id)}
+                    className={`min-w-16 px-2 py-1.5 rounded transition-colors ${horizon === item.id ? 'bg-[#1F6FEB33] text-accent' : 'text-text-secondary hover:text-text'}`}
+                  >
+                    <span className="block text-xs font-medium whitespace-nowrap">{item.label}</span>
+                    <span className="block text-[10px] mt-0.5">{item.detail}</span>
                   </button>
                 ))}
               </div>
@@ -603,7 +675,7 @@ export default function StockPickerPage() {
       {!loading && result && (
         <>
           <section className="mb-6 border-b border-border pb-5">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">市场环境</div>
                 <div className="mt-1 text-lg font-bold text-text">{result.market_regime.regime}</div>
@@ -619,15 +691,26 @@ export default function StockPickerPage() {
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">完成研究</div>
                 <div className="mt-1 text-lg font-mono font-bold text-text">{result.candidate_summary.analyzed}</div>
-                <div className="text-xs text-text-secondary mt-1">保留分项证据</div>
+                <div className="text-xs text-text-secondary mt-1">财务覆盖 {result.feature_coverage?.financial ?? 0}/{result.feature_coverage?.total ?? result.candidate_summary.analyzed}{result.candidate_summary.risk_excluded ? ` · 风险排除 ${result.candidate_summary.risk_excluded}` : ''}</div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">风险框架</div>
                 <div className="mt-1 text-lg font-bold text-text">{result.risk_profile_label}</div>
                 <div className="text-xs text-text-secondary mt-1">研究仓位有上限</div>
               </div>
+              <div className="border border-border bg-card rounded-lg p-3 col-span-2 md:col-span-1">
+                <div className="text-xs text-text-secondary">潜力窗口</div>
+                <div className="mt-1 text-lg font-bold text-text">{result.research_horizon.label}</div>
+                <div className="text-xs text-text-secondary mt-1">{result.research_horizon.trading_days} 个交易日</div>
+              </div>
             </div>
           </section>
+
+          {Boolean(result.feature_warnings?.length) && (
+            <section className="mb-6 border-l-2 border-warn pl-3 text-xs text-warn leading-5">
+              {result.feature_warnings?.map((item) => <p key={item}>{item}</p>)}
+            </section>
+          )}
 
           <section className="mb-6">
             <div className="flex items-center gap-2 mb-3">
@@ -673,7 +756,7 @@ export default function StockPickerPage() {
                           <th className="w-[40%] sm:w-auto text-left px-2 sm:px-4 py-3 font-medium">排名 / 标的</th>
                           <th className="w-[17%] sm:w-auto text-right px-1 sm:px-3 py-3 font-medium whitespace-nowrap">现价</th>
                           <th className="w-[17%] sm:w-auto text-right px-1 sm:px-3 py-3 font-medium whitespace-nowrap">涨跌幅</th>
-                          <th className="w-[16%] sm:w-auto text-right px-1 sm:px-3 py-3 font-medium whitespace-nowrap">综合分</th>
+                          <th className="w-[16%] sm:w-auto text-right px-1 sm:px-3 py-3 font-medium whitespace-nowrap">潜力分</th>
                           <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">技术</th>
                           <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">资金</th>
                           <th className="hidden sm:table-cell text-right px-3 py-3 font-medium">政策</th>
@@ -730,6 +813,64 @@ export default function StockPickerPage() {
                     </div>
                     <span className={`border rounded px-2.5 py-1 text-sm ${verdictClass(selected.verdict)}`}>{selected.verdict}</span>
                   </div>
+
+                  <section className="border-y border-border py-4 mb-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-text flex items-center gap-2">
+                          <CalendarRange size={16} className="text-accent" />
+                          {selected.horizon_outlook.label}潜力判断
+                        </h3>
+                        <p className="text-xs text-text-secondary mt-1 leading-5">{selected.horizon_outlook.basis}</p>
+                      </div>
+                      <span className={`border rounded px-2 py-1 text-xs ${verdictClass(selected.horizon_outlook.judgement)}`}>
+                        {selected.horizon_outlook.judgement}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-3 mt-4">
+                      <div><div className="text-xs text-text-secondary">潜力分</div><div className={`mt-1 font-mono text-lg font-bold ${scoreClass(selected.horizon_outlook.potential_score)}`}>{selected.horizon_outlook.potential_score.toFixed(1)}</div></div>
+                      <div><div className="text-xs text-text-secondary">结论置信度</div><div className="mt-1 font-mono text-lg font-bold text-text">{selected.horizon_outlook.confidence.toFixed(0)}%</div></div>
+                      <div><div className="text-xs text-text-secondary">观察周期</div><div className="mt-1 font-mono text-lg font-bold text-text">{selected.horizon_outlook.trading_days}日</div></div>
+                      <div><div className="text-xs text-text-secondary">历史波动区间</div><div className="mt-1 font-mono text-lg font-bold text-text">{selected.horizon_outlook.volatility_range_pct == null ? '--' : `±${selected.horizon_outlook.volatility_range_pct.toFixed(2)}%`}</div></div>
+                    </div>
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 mt-4 pt-4 border-t border-border">
+                      <div>
+                        <div className="text-xs font-medium text-text mb-2">周期权重依据</div>
+                        <div className="space-y-2">
+                          {selected.horizon_outlook.factor_contributions.map((factor) => (
+                            <div key={factor.factor} className="grid grid-cols-[minmax(88px,1fr)_minmax(100px,2fr)_46px] gap-2 items-center text-xs">
+                              <span className="text-text-secondary truncate" title={factor.factor}>{factor.factor}</span>
+                              <div className="h-1.5 bg-[#0D1117] overflow-hidden rounded">
+                                <div className={`h-full ${factor.contribution >= 0 ? 'bg-down' : 'bg-up'}`} style={{ width: `${Math.max(4, Math.min(100, factor.weight_pct))}%` }} />
+                              </div>
+                              <span className={`font-mono text-right ${factor.contribution >= 0 ? 'text-down' : 'text-up'}`}>{factor.contribution >= 0 ? '+' : ''}{factor.contribution.toFixed(1)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-text mb-2">近一年相似形态</div>
+                        {selected.horizon_outlook.historical_analogue.available ? (
+                          <div>
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                              <div><span className="text-text-secondary">样本</span><span className="block font-mono text-text mt-1">{selected.horizon_outlook.historical_analogue.sample_count}</span></div>
+                              <div><span className="text-text-secondary">上涨比例</span><span className="block font-mono text-text mt-1">{metricValue(selected.horizon_outlook.historical_analogue.positive_rate_pct, 1)}%</span></div>
+                              <div><span className="text-text-secondary">中位收益</span><span className="block font-mono text-text mt-1">{metricValue(selected.horizon_outlook.historical_analogue.median_return_pct)}%</span></div>
+                              <div><span className="text-text-secondary">四分位区间</span><span className="block font-mono text-text mt-1">{metricValue(selected.horizon_outlook.historical_analogue.lower_quartile_pct)}% ~ {metricValue(selected.horizon_outlook.historical_analogue.upper_quartile_pct)}%</span></div>
+                            </div>
+                            <p className="text-xs text-text-secondary leading-5 mt-3">{selected.horizon_outlook.historical_analogue.limitation}</p>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-warn leading-5">{selected.horizon_outlook.historical_analogue.reason || '相似历史样本不足，本项不参与加分。'}</p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-4 pt-4 border-t border-border">
+                      <div><div className="text-xs font-medium text-down mb-2">继续成立条件</div><div className="space-y-1">{selected.horizon_outlook.validation_conditions.map((item) => <p key={item} className="text-xs text-text-secondary leading-5">{item}</p>)}</div></div>
+                      <div><div className="text-xs font-medium text-up mb-2">失效与否决条件</div><div className="space-y-1">{selected.horizon_outlook.invalidation_conditions.map((item) => <p key={item} className="text-xs text-text-secondary leading-5">{item}</p>)}</div></div>
+                    </div>
+                    <p className="text-xs text-text-secondary mt-4 pt-3 border-t border-border">{selected.horizon_outlook.disclaimer}</p>
+                  </section>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3 mb-5">
                     {agentPanels.map(({ key, icon: Icon }) => {

@@ -123,7 +123,10 @@ class EastMoneyDataCollector:
         "Accept": HEADERS["Accept"],
     }
     STOCK_SCREENER_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
-    STOCK_SCREENER_FIELDS = "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f100,f124,f184"
+    STOCK_SCREENER_FIELDS = (
+        "f2,f3,f5,f6,f8,f9,f10,f12,f14,f20,f23,f37,f62,f66,f69,"
+        "f72,f75,f100,f124,f184"
+    )
     SECTOR_COUNTS_CACHE_SECONDS = 3600
 
     def __init__(self):
@@ -1130,6 +1133,16 @@ class EastMoneyDataCollector:
             "sector": str(item.get("f100") or "").strip(),
             "main_net_inflow": as_int(item.get("f62")),
             "main_net_inflow_pct": as_float(item.get("f184")),
+            "super_large_net_inflow": as_int(item.get("f66")),
+            "super_large_net_inflow_pct": (
+                as_optional_float(item.get("f69"))
+                if item.get("f69") not in (None, "-") else None
+            ),
+            "large_net_inflow": as_int(item.get("f72")),
+            "large_order_inflow_pct": (
+                as_optional_float(item.get("f75"))
+                if item.get("f75") not in (None, "-") else None
+            ),
             "quote_timestamp": as_int(item.get("f124")) or None,
         }
 

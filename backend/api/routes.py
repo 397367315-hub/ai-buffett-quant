@@ -24,6 +24,7 @@ from services.stock_selection_agents import (
     VALID_SELECTION_MODES,
     stock_selection_agents,
 )
+from services.horizon_analysis import VALID_HORIZONS
 from models import (
     KnowledgeTerm, LearningCase, ConceptBoard,
     ConceptFundFlowDaily, IndustryFundFlowDaily, MarketFundFlowDaily, AIChatHistory, MarketBoard,
@@ -1161,6 +1162,7 @@ async def run_stock_selection(request: dict | None = None):
     payload = request or {}
     mode = str(payload.get("mode", "quick")).strip().lower()
     risk_profile = str(payload.get("risk_profile", "balanced")).strip().lower()
+    horizon = str(payload.get("horizon", "week")).strip().lower()
     try:
         top_n = int(payload.get("top_n", 5))
     except (TypeError, ValueError) as exc:
@@ -1170,6 +1172,8 @@ async def run_stock_selection(request: dict | None = None):
         raise HTTPException(status_code=422, detail="mode 仅支持 quick 或 full")
     if risk_profile not in VALID_RISK_PROFILES:
         raise HTTPException(status_code=422, detail="risk_profile 仅支持 conservative、balanced 或 aggressive")
+    if horizon not in VALID_HORIZONS:
+        raise HTTPException(status_code=422, detail="horizon 仅支持 week、half_month 或 month")
     if not 3 <= top_n <= 10:
         raise HTTPException(status_code=422, detail="top_n 必须在 3 到 10 之间")
     raw_sector = payload.get("sector")
@@ -1194,6 +1198,7 @@ async def run_stock_selection(request: dict | None = None):
         top_n=top_n,
         sector=sector,
         sector_code=sector_code,
+        horizon=horizon,
     )
     run_id = await _store_stock_selection_run(result)
     result["run_id"] = run_id

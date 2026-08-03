@@ -102,7 +102,13 @@ export default function QuantPage() {
   };
 
   const previewStrategy = async (draft: StrategyDraft) => {
-    const response = await apiFetch<{ data: { count: number; warning?: string | null } }>('/quant/preview', { method: 'POST', body: JSON.stringify({ strategy: draft, limit: 20 }) });
+    const response = await apiFetch<{
+      data: {
+        count: number;
+        warning?: string | null;
+        feature_coverage?: SignalSnapshot['feature_coverage'];
+      };
+    }>('/quant/preview', { method: 'POST', body: JSON.stringify({ strategy: draft, limit: 20 }) });
     return response.data;
   };
 

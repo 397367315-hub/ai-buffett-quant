@@ -35,6 +35,7 @@ def normalize_snapshot_stock(stock: dict) -> dict:
         # EastMoney returns yuan; visual rules use 100 million yuan and 10k yuan.
         "market_cap": (number(stock.get("market_cap")) or 0) / 1e8 if number(stock.get("market_cap")) is not None else None,
         "main_inflow": (number(stock.get("main_net_inflow")) or 0) / 1e4 if number(stock.get("main_net_inflow")) is not None else None,
+        "large_order_inflow_pct": number(stock.get("large_order_inflow_pct")),
         "sector": sector,
         "sectors": list(dict.fromkeys(sectors)),
     }
@@ -94,9 +95,19 @@ def enrich_with_indicators(stock: dict, bars: list[dict]) -> dict:
         slow = _ema(closes, 26)
         dif = [left - right for left, right in zip(fast, slow)]
         signal = _ema(dif, 9)
+        result["macd_diff"] = dif[-1]
+        result["macd_dea"] = signal[-1]
+        result["macd_diff_prev"] = dif[-2]
+        result["macd_dea_prev"] = signal[-2]
         result["macd"] = (dif[-1] - signal[-1]) * 2
+        result["macd_golden_cross"] = bool(dif[-1] > signal[-1] and dif[-2] <= signal[-2])
     else:
+        result["macd_diff"] = None
+        result["macd_dea"] = None
+        result["macd_diff_prev"] = None
+        result["macd_dea_prev"] = None
         result["macd"] = None
+        result["macd_golden_cross"] = None
 
     trailing = valid[-60:]
     highs = [item["high"] for item in trailing if item["high"] is not None]
