@@ -16,9 +16,11 @@ async def lifespan(app: FastAPI):
     await init_db()
     from seed_data import seed
     from services.history_cache import history_cache
+    from services.ai_robot import ai_robot_service
     from services.scheduler import scheduler, start_scheduler
     await seed()
     await history_cache.resume_incomplete_runs()
+    await ai_robot_service.resume_incomplete_runs()
     await start_scheduler(collector)
     yield
     if scheduler.running:

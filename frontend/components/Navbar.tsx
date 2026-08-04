@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit, LineChart, Bookmark } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -15,6 +15,12 @@ const proSubItems = [
   { href: '/pro/potential', label: '潜力股分析', icon: Sparkles },
   { href: '/pro/stock-picker', label: '智能选股', icon: BrainCircuit },
   { href: '/pro/personal', label: '个人投资池', icon: Bookmark },
+  { href: '/pro/robot', label: 'AI机器人池', icon: Bot },
+  { href: '/pro/portfolio', label: '仓位管理', icon: PieChart },
+  { href: '/pro/attribution', label: '业绩归因', icon: ChartNoAxesCombined },
+  { href: '/pro/macro', label: '宏观看板', icon: Globe2 },
+  { href: '/pro/reports', label: '财报日历', icon: CalendarDays },
+  { href: '/pro/research', label: '研究与错误', icon: NotebookPen },
   { href: '/quant', label: '量化策略', icon: LineChart },
   { href: '/pro/rotation', label: '板块轮动', icon: TrendingUp },
   { href: '/pro/flow-observer', label: '资金流观察', icon: Activity },

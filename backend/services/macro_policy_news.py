@@ -111,6 +111,7 @@ class MacroPolicyNewsCollector:
     def __init__(self) -> None:
         self._context_cache: tuple[float, dict] | None = None
         self._announcement_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._announcement_status_cache: dict[str, tuple[float, dict]] = {}
         self._context_lock = asyncio.Lock()
 
     @staticmethod
@@ -357,6 +358,7 @@ class MacroPolicyNewsCollector:
             "s_node": "0",
         }
         eastmoney_failed = False
+        source_status = {"available": False, "source": "none", "error": None}
         try:
             payload = await collector.fetch_json(
                 EASTMONEY_ANNOUNCEMENT_URL,
@@ -388,10 +390,12 @@ class MacroPolicyNewsCollector:
                     "impact": "neutral",
                 })
             announcements.sort(key=lambda item: item.get("published_at") or "", reverse=True)
+            source_status = {"available": True, "source": "eastmoney", "error": None}
         except Exception as exc:
             print(f"Announcement fetch failed for {stock_code}: {type(exc).__name__}")
             announcements = []
             eastmoney_failed = True
+            source_status = {"available": False, "source": "eastmoney", "error": type(exc).__name__}
 
         if eastmoney_failed:
             try:
@@ -411,9 +415,12 @@ class MacroPolicyNewsCollector:
                         "impact": "neutral",
                     })
                 announcements.sort(key=lambda item: item.get("published_at") or "", reverse=True)
+                source_status = {"available": True, "source": "ftshare_mcp", "error": None}
             except Exception as exc:
                 print(f"FTShare announcement fallback failed for {stock_code}: {type(exc).__name__}")
+                source_status = {"available": False, "source": "none", "error": type(exc).__name__}
         self._announcement_cache[stock_code] = (now, announcements)
+        self._announcement_status_cache[stock_code] = (now, source_status)
         return announcements
 
     async def get_stock_announcements(self, stock_codes: list[str], max_stocks: int) -> dict[str, list[dict]]:
@@ -435,6 +442,28 @@ class MacroPolicyNewsCollector:
             for pair in pairs
             if not isinstance(pair, Exception)
             for code, announcements in [pair]
+        }
+
+    async def get_stock_announcements_audit(self, stock_codes: list[str], max_stocks: int) -> dict:
+        """Return records and source availability so an empty result is unambiguous."""
+        announcements = await self.get_stock_announcements(stock_codes, max_stocks)
+        now = time.monotonic()
+        status = {}
+        for code in announcements:
+            cached = self._announcement_status_cache.get(code)
+            if cached and now - cached[0] < self._ANNOUNCEMENT_CACHE_SECONDS:
+                status[code] = dict(cached[1])
+            else:
+                status[code] = {
+                    "available": False,
+                    "source": "none",
+                    "error": "SourceStatusMissing",
+                }
+        return {
+            "announcements": announcements,
+            "status": status,
+            "requested": min(len(list(dict.fromkeys(stock_codes))), max(0, max_stocks)),
+            "covered": sum(bool(item.get("available")) for item in status.values()),
         }
 
     @staticmethod

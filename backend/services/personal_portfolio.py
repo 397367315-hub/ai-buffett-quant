@@ -12,6 +12,7 @@ from database import async_session
 from models import PersonalInvestmentLog, PersonalPoolItem, PersonalSystemConfig, StockDailyBar
 from services.a_stock_data import calculate_indicators
 from services.data_collector import collector, normalize_stock_code, shanghai_now
+from services.quote_cache import quote_snapshot_service
 
 
 POOL_DEFINITIONS: dict[str, dict[str, Any]] = {
@@ -324,7 +325,7 @@ class PersonalPortfolioService:
         quote_payload: dict[str, Any] = {}
         if codes:
             try:
-                quote_payload = await collector.fetch_stock_quotes(codes)
+                quote_payload = await quote_snapshot_service.fetch(codes, async_session)
                 quotes = {str(item["code"]): item for item in quote_payload.get("stocks") or []}
             except Exception as exc:
                 quote_error = type(exc).__name__
@@ -339,6 +340,8 @@ class PersonalPortfolioService:
             "is_realtime": bool(quote_payload.get("is_realtime")),
             "fetched_at": quote_payload.get("fetched_at") or shanghai_now().isoformat(),
             "complete": bool(codes) and len(quotes) == len(codes),
+            "cache_used": bool(quote_payload.get("cache_used")),
+            "stale": bool(quote_payload.get("stale")),
             "error": quote_error,
         }
 

@@ -37,6 +37,8 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
             patch.object(routes.collector, "fetch_limit_down_pool", new=AsyncMock(return_value={"stocks": [], "total": 2, "trade_date": "2026-07-30"})),
             patch.object(routes.collector, "fetch_market_breadth", new=AsyncMock(return_value={})),
             patch.object(routes.collector, "fetch_market_turnover", new=AsyncMock(return_value={"sh_index": 3804.69, "data_date": "2026-07-30"})),
+            patch.object(routes, "_read_json_snapshot", new=AsyncMock(return_value=None)),
+            patch.object(routes, "_write_json_snapshot", new=AsyncMock()),
         ):
             response = await routes.get_market_overview()
 

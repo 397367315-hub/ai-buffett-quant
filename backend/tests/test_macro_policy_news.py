@@ -65,6 +65,23 @@ class MacroPolicyNewsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(announcements[0]["source"], "FTShare MCP 公告")
         self.assertEqual(announcements[0]["published_at"], "2026-07-29")
         self.assertIn("a" * 64, announcements[0]["url"])
+        self.assertTrue(collector._announcement_status_cache["600519"][1]["available"])
+        self.assertEqual(collector._announcement_status_cache["600519"][1]["source"], "ftshare_mcp")
+
+    async def test_failed_announcement_sources_are_not_treated_as_no_negative_news(self):
+        collector = MacroPolicyNewsCollector()
+        with patch(
+            "services.macro_policy_news.collector.fetch_json",
+            new=AsyncMock(side_effect=RuntimeError("proxy unavailable")),
+        ), patch(
+            "services.macro_policy_news.ftshare_mcp_client.get_stock_announcements",
+            new=AsyncMock(side_effect=RuntimeError("fallback unavailable")),
+        ):
+            result = await collector.get_stock_announcements_audit(["600519"], max_stocks=1)
+
+        self.assertEqual(result["announcements"], {"600519": []})
+        self.assertFalse(result["status"]["600519"]["available"])
+        self.assertEqual(result["covered"], 0)
 
     def test_recent_check_uses_shanghai_calendar_date(self):
         collector = MacroPolicyNewsCollector()

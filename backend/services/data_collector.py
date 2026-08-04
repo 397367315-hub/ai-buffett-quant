@@ -44,7 +44,7 @@ def is_a_share_market_session(moment: datetime | None = None) -> bool:
     if current.weekday() >= 5:
         return False
     minute = current.hour * 60 + current.minute
-    return 9 * 60 + 15 <= minute <= 11 * 60 + 30 or 13 * 60 <= minute <= 15 * 60 + 30
+    return 9 * 60 + 15 <= minute <= 11 * 60 + 30 or 13 * 60 <= minute <= 15 * 60
 
 
 def as_float(value: object, default: float = 0.0) -> float:
@@ -1090,7 +1090,7 @@ class EastMoneyDataCollector:
                 "https://push2.eastmoney.com/api/qt/stock/get",
                 {
                     "secid": stock_secid(code),
-                    "fields": "f2,f3,f4,f8,f9,f18,f20,f23,f43,f44,f45,f47,f48,f57,f58,f100,f124,f169,f170",
+                    "fields": "f2,f3,f4,f8,f9,f10,f18,f20,f23,f43,f44,f45,f47,f48,f57,f58,f100,f124,f169,f170",
                     "ut": EASTMONEY_UT,
                 },
             )
@@ -1121,6 +1121,7 @@ class EastMoneyDataCollector:
                 "volume": as_int(row.get("f47")) if row.get("f47") is not None else None,
                 "amount": as_int(row.get("f48")) if row.get("f48") is not None else None,
                 "turnover": as_optional_float(row.get("f8")),
+                "volume_ratio": as_optional_float(row.get("f10")),
                 "pe": as_optional_float(row.get("f9")),
                 "pb": as_optional_float(row.get("f23")),
                 "market_cap": as_int(row.get("f20")) if row.get("f20") is not None else None,
@@ -1141,6 +1142,139 @@ class EastMoneyDataCollector:
             **quote_metadata,
             "fetched_at": shanghai_now().isoformat(),
             "complete": len(stocks) == len(codes),
+        }
+
+    async def fetch_stock_minute_trends(self, stock_code: str, days: int = 1) -> dict:
+        """Fetch source-native one-minute bars used by live intraday decisions."""
+        code = normalize_stock_code(stock_code)
+        requested_days = min(max(int(days), 1), 5)
+        data = await self.fetch_json(
+            f"{self.HISTORY_BASE_URL}/api/qt/stock/trends2/get",
+            {
+                "secid": stock_secid(code),
+                "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+                "ndays": str(requested_days),
+                "iscr": "0",
+                "iscca": "0",
+                "ut": EASTMONEY_UT,
+            },
+        )
+        payload = data.get("data") or {}
+        bars = []
+        for line in payload.get("trends") or []:
+            values = str(line).split(",")
+            if len(values) < 8:
+                continue
+            try:
+                bar_time = datetime.fromisoformat(values[0])
+            except ValueError:
+                continue
+            bars.append({
+                "stock_code": code,
+                "stock_name": str(payload.get("name") or ""),
+                "bar_time": bar_time.isoformat(timespec="minutes"),
+                "interval_minutes": 1,
+                "open": as_optional_float(values[1]),
+                "close": as_optional_float(values[2]),
+                "high": as_optional_float(values[3]),
+                "low": as_optional_float(values[4]),
+                "volume": self._eastmoney_volume_in_shares(values[5]),
+                "amount": as_int(values[6]),
+                "average": as_optional_float(values[7]),
+            })
+        bars.sort(key=lambda item: item["bar_time"])
+        now = shanghai_now()
+        latest_text = bars[-1]["bar_time"] if bars else None
+        latest = datetime.fromisoformat(latest_text).replace(tzinfo=now.tzinfo) if latest_text else None
+        age_seconds = (now - latest).total_seconds() if latest else None
+        return {
+            "stock_code": code,
+            "stock_name": str(payload.get("name") or ""),
+            "pre_close": as_optional_float(payload.get("preClose")),
+            "bars": bars,
+            "bar_count": len(bars),
+            "source": "eastmoney",
+            "data_date": latest.date().isoformat() if latest else None,
+            "latest_bar_at": latest_text,
+            "is_realtime": bool(
+                latest
+                and latest.date() == now.date()
+                and age_seconds is not None
+                and 0 <= age_seconds <= 10 * 60
+                and is_a_share_market_session(now)
+            ),
+            "complete": bool(bars),
+            "fetched_at": now.isoformat(),
+        }
+
+    async def fetch_stock_minute_history(
+        self,
+        stock_code: str,
+        *,
+        interval_minutes: int = 5,
+        limit: int = 1536,
+    ) -> dict:
+        """Fetch the provider's available minute window without claiming full history."""
+        code = normalize_stock_code(stock_code)
+        interval = int(interval_minutes)
+        if interval not in {1, 5, 15, 30, 60}:
+            raise ValueError("分钟周期仅支持 1、5、15、30、60")
+        requested_limit = min(max(int(limit), 1), 1536)
+        data = await self.fetch_json(
+            f"{self.HISTORY_BASE_URL}/api/qt/stock/kline/get",
+            {
+                "secid": stock_secid(code),
+                "klt": str(interval),
+                "fqt": "1",
+                "lmt": str(requested_limit),
+                "end": "20500101",
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                "ut": EASTMONEY_UT,
+            },
+        )
+        payload = data.get("data") or {}
+        bars = []
+        for line in payload.get("klines") or []:
+            values = str(line).split(",")
+            if len(values) < 7:
+                continue
+            try:
+                bar_time = datetime.fromisoformat(values[0])
+            except ValueError:
+                continue
+            bars.append({
+                "stock_code": code,
+                "stock_name": str(payload.get("name") or ""),
+                "bar_time": bar_time.isoformat(timespec="minutes"),
+                "interval_minutes": interval,
+                "open": as_optional_float(values[1]),
+                "close": as_optional_float(values[2]),
+                "high": as_optional_float(values[3]),
+                "low": as_optional_float(values[4]),
+                "volume": self._eastmoney_volume_in_shares(values[5]),
+                "amount": as_int(values[6]),
+                "average": None,
+            })
+        bars.sort(key=lambda item: item["bar_time"])
+        upstream_total = as_int(payload.get("dktotal"))
+        return {
+            "stock_code": code,
+            "stock_name": str(payload.get("name") or ""),
+            "bars": bars,
+            "bar_count": len(bars),
+            "upstream_total": upstream_total,
+            "coverage_start": bars[0]["bar_time"] if bars else None,
+            "coverage_end": bars[-1]["bar_time"] if bars else None,
+            "source": "eastmoney",
+            "complete_history": bool(bars) and (not upstream_total or len(bars) >= upstream_total),
+            "warning": (
+                None
+                if bars and (not upstream_total or len(bars) >= upstream_total)
+                else "公开源只返回有限分钟窗口，不能据此宣称全历史精确回测"
+            ),
+            "fetched_at": shanghai_now().isoformat(),
         }
 
     @staticmethod

@@ -195,6 +195,93 @@ class StockDailyBar(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class StockMinuteBar(Base):
+    """Minute bars captured for intraday strategy evidence and forward audit."""
+
+    __tablename__ = "stock_minute_bars"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "bar_time", "interval_minutes", name="uq_stock_minute_bar"),
+        Index("idx_stock_minute_bars_code_time", "stock_code", "bar_time"),
+        Index("idx_stock_minute_bars_time", "bar_time"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    bar_time = Column(DateTime, nullable=False)
+    interval_minutes = Column(Integer, nullable=False, default=1)
+    open_price = Column(Float)
+    close_price = Column(Float)
+    high_price = Column(Float)
+    low_price = Column(Float)
+    volume = Column(BigInteger)
+    amount = Column(BigInteger)
+    average_price = Column(Float)
+    source = Column(String(30), nullable=False, default="eastmoney")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class OvernightStrategyRun(Base):
+    """One auditable preliminary, entry, or exit pass of the overnight strategy."""
+
+    __tablename__ = "overnight_strategy_runs"
+    __table_args__ = (
+        Index("idx_overnight_runs_stage_created", "stage", "created_at"),
+        Index("idx_overnight_runs_status", "status", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stage = Column(String(20), nullable=False)
+    trigger = Column(String(20), nullable=False, default="manual")
+    status = Column(String(20), nullable=False, default="queued")
+    progress = Column(Integer, nullable=False, default=0)
+    message = Column(String(300))
+    data_date = Column(Date)
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    scanned_count = Column(Integer, nullable=False, default=0)
+    prefiltered_count = Column(Integer, nullable=False, default=0)
+    qualified_count = Column(Integer, nullable=False, default=0)
+    candidates = Column(JSON)
+    data_quality = Column(JSON)
+    error = Column(Text)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OvernightPosition(Base):
+    """A 100-share paper position created only from a fully verified entry pass."""
+
+    __tablename__ = "overnight_positions"
+    __table_args__ = (
+        UniqueConstraint("entry_run_id", "stock_code", name="uq_overnight_position_run_code"),
+        Index("idx_overnight_positions_status_entry", "status", "entry_at"),
+        Index("idx_overnight_positions_code", "stock_code", "entry_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entry_run_id = Column(Integer, ForeignKey("overnight_strategy_runs.id"), nullable=False)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100), nullable=False)
+    sector = Column(String(100))
+    status = Column(String(20), nullable=False, default="open")
+    shares = Column(Integer, nullable=False, default=100)
+    signal_at = Column(DateTime, nullable=False)
+    entry_at = Column(DateTime, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    previous_close = Column(Float)
+    reference_capital = Column(Float, nullable=False, default=1_000_000.0)
+    allocated_pct = Column(Float)
+    exit_at = Column(DateTime)
+    exit_price = Column(Float)
+    exit_reason = Column(String(300))
+    pnl = Column(Float)
+    pnl_pct = Column(Float)
+    audit = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class CacheBackfillRun(Base):
     """持久化记录回补进度，前端和运维接口可查询。"""
 
@@ -358,4 +445,104 @@ class PersonalInvestmentLog(Base):
     pre_check = Column(JSON)
     violations = Column(JSON)
     reflection = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AIRobotRun(Base):
+    """One auditable refresh of the independent AI-managed stock pool."""
+
+    __tablename__ = "ai_robot_runs"
+    __table_args__ = (
+        Index("idx_ai_robot_runs_pool_created", "pool_type", "created_at"),
+        Index("idx_ai_robot_runs_status", "status", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pool_type = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="queued")
+    trigger = Column(String(20), nullable=False, default="manual")
+    progress = Column(Integer, nullable=False, default=0)
+    message = Column(String(300))
+    config_snapshot = Column(JSON)
+    summary = Column(JSON)
+    error = Column(Text)
+    source_data_date = Column(Date)
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    picks = relationship("AIRobotPick", back_populates="run", cascade="all, delete-orphan")
+
+
+class AIRobotPick(Base):
+    """A source-backed recommendation stored as part of a robot run snapshot."""
+
+    __tablename__ = "ai_robot_picks"
+    __table_args__ = (
+        UniqueConstraint("run_id", "code", name="uq_ai_robot_pick_run_code"),
+        Index("idx_ai_robot_picks_pool_code", "pool_type", "code"),
+        Index("idx_ai_robot_picks_sector", "run_id", "sector_key"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey("ai_robot_runs.id", ondelete="CASCADE"), nullable=False)
+    pool_type = Column(String(20), nullable=False)
+    sector_key = Column(String(40), nullable=False)
+    sector_label = Column(String(100), nullable=False)
+    board_code = Column(String(20))
+    code = Column(String(10), nullable=False)
+    name = Column(String(100), nullable=False)
+    selected_price = Column(Float)
+    selected_on = Column(Date)
+    simulated_shares = Column(Integer, nullable=False, default=100)
+    score = Column(Float)
+    confidence = Column(Float)
+    verdict = Column(String(60))
+    state = Column(String(20), nullable=False, default="new")
+    criteria = Column(JSON)
+    evidence = Column(JSON)
+    recommendation = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    run = relationship("AIRobotRun", back_populates="picks")
+
+
+class PersonalResearchNote(Base):
+    """The latest structured research memo for one personal-pool stock."""
+
+    __tablename__ = "personal_research_notes"
+    __table_args__ = (Index("idx_personal_research_notes_updated", "updated_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(10), nullable=False, unique=True)
+    name = Column(String(100), nullable=False)
+    first_researched_at = Column(Date)
+    why_follow = Column(Text)
+    competitive_advantage = Column(Text)
+    risks = Column(Text)
+    key_metrics = Column(JSON)
+    latest_view = Column(Text)
+    tags = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PersonalErrorPattern(Base):
+    """One recorded investing mistake used to detect repeated behaviour."""
+
+    __tablename__ = "personal_error_patterns"
+    __table_args__ = (
+        Index("idx_personal_error_patterns_type", "error_type", "occurred_on"),
+        Index("idx_personal_error_patterns_code", "code", "occurred_on"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    occurred_on = Column(Date, nullable=False, default=date.today)
+    error_type = Column(String(100), nullable=False)
+    code = Column(String(10))
+    name = Column(String(100))
+    lesson = Column(Text, nullable=False)
+    prevention = Column(Text, nullable=False)
+    context = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)

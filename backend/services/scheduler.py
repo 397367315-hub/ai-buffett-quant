@@ -1,5 +1,6 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
 
@@ -19,6 +20,107 @@ async def resume_incomplete_backfills() -> list[int]:
         return []
 
 
+async def refresh_ai_robot_short():
+    from services.ai_robot import ai_robot_service
+
+    try:
+        return await ai_robot_service.refresh("short", trigger="schedule", background=False)
+    except Exception as exc:
+        print(f"[Scheduler] AI机器人短期池刷新失败: {type(exc).__name__}")
+        return None
+
+
+async def refresh_ai_robot_long():
+    from services.ai_robot import ai_robot_service
+
+    try:
+        return await ai_robot_service.refresh("long", trigger="schedule", background=False)
+    except Exception as exc:
+        print(f"[Scheduler] AI机器人长期池刷新失败: {type(exc).__name__}")
+        return None
+
+
+async def check_ai_robot_anomalies():
+    from services.ai_robot import ai_robot_service
+
+    try:
+        alerts = await ai_robot_service.check_anomalies()
+        if alerts:
+            print(f"[Scheduler] AI机器人池异常提醒: {len(alerts)} 条")
+        return alerts
+    except Exception as exc:
+        print(f"[Scheduler] AI机器人池异常检查失败: {type(exc).__name__}")
+        return []
+
+
+async def snapshot_ai_robot_performance():
+    from services.ai_robot import ai_robot_service
+
+    try:
+        return await ai_robot_service.record_performance_snapshot()
+    except Exception as exc:
+        print(f"[Scheduler] AI机器人组合统计失败: {type(exc).__name__}")
+        return None
+
+
+async def refresh_personal_report_calendar():
+    from services.report_calendar import report_calendar_service
+
+    try:
+        return await report_calendar_service.refresh_snapshot()
+    except Exception as exc:
+        print(f"[Scheduler] 财报日历刷新失败: {type(exc).__name__}")
+        return None
+
+
+async def run_overnight_preliminary_scan():
+    from services.overnight_strategy import overnight_strategy_service
+
+    try:
+        return await overnight_strategy_service.start(
+            "preliminary", trigger="schedule", background=False,
+        )
+    except Exception as exc:
+        print(f"[Scheduler] 一夜持股14:30预扫描失败: {type(exc).__name__}")
+        return None
+
+
+async def run_overnight_entry_scan():
+    from services.overnight_strategy import overnight_strategy_service
+
+    try:
+        return await overnight_strategy_service.start(
+            "entry", trigger="schedule", background=False,
+        )
+    except Exception as exc:
+        print(f"[Scheduler] 一夜持股尾盘复核失败: {type(exc).__name__}")
+        return None
+
+
+async def monitor_overnight_exits():
+    from services.overnight_strategy import overnight_strategy_service
+
+    try:
+        return await overnight_strategy_service.start(
+            "exit", trigger="schedule", background=False,
+        )
+    except Exception as exc:
+        print(f"[Scheduler] 一夜持股早盘退出检查失败: {type(exc).__name__}")
+        return None
+
+
+async def force_overnight_exits():
+    from services.overnight_strategy import overnight_strategy_service
+
+    try:
+        return await overnight_strategy_service.start(
+            "force_exit", trigger="schedule", background=False,
+        )
+    except Exception as exc:
+        print(f"[Scheduler] 一夜持股10:00强制退出失败: {type(exc).__name__}")
+        return None
+
+
 async def start_scheduler(data_collector=None, db_session=None):
     from apscheduler.triggers.cron import CronTrigger
     from services.data_sync import data_sync
@@ -27,6 +129,10 @@ async def start_scheduler(data_collector=None, db_session=None):
         print(f"[Scheduler] 开始盘后数据采集: {datetime.now()}")
         try:
             result = await data_sync.sync_market_snapshot()
+            from api.routes import get_market_overview
+            from services.ai_robot import ai_robot_service
+            await get_market_overview()
+            await ai_robot_service.warm_market_cache()
             print(f"[Scheduler] 数据采集完成: {result}")
         except Exception as e:
             print(f"[Scheduler] 数据采集失败: {e}")
@@ -37,6 +143,25 @@ async def start_scheduler(data_collector=None, db_session=None):
         id="daily_collection",
         name="每日盘后数据采集",
         replace_existing=True,
+    )
+    scheduler.add_job(
+        daily_data_collection,
+        "date",
+        run_date=datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(seconds=20),
+        id="startup_cache_recovery",
+        name="服务启动后缓存恢复",
+        replace_existing=True,
+        misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        daily_data_collection,
+        CronTrigger(hour=11, minute=35, day_of_week="mon-fri"),
+        id="midday_collection",
+        name="午间行情快照采集",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=600,
     )
     scheduler.add_job(
         resume_incomplete_backfills,
@@ -70,10 +195,65 @@ async def start_scheduler(data_collector=None, db_session=None):
         id="quant_signal_morning", name="量化信号早盘扫描", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
+
+    scheduler.add_job(
+        refresh_ai_robot_short,
+        CronTrigger(hour=21, minute=0, day_of_week="sun"),
+        id="ai_robot_short_weekly", name="AI机器人短期池周刷新", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=1800,
+    )
+    scheduler.add_job(
+        refresh_ai_robot_long,
+        CronTrigger(hour=21, minute=0, day="1-7", day_of_week="sun"),
+        id="ai_robot_long_monthly", name="AI机器人长期池月刷新", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=1800,
+    )
+    scheduler.add_job(
+        check_ai_robot_anomalies,
+        CronTrigger(hour=9, minute=15, day_of_week="mon-fri"),
+        id="ai_robot_anomaly_check", name="AI机器人池盘前异常检查", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=900,
+    )
+    scheduler.add_job(
+        snapshot_ai_robot_performance,
+        CronTrigger(hour=15, minute=10, day_of_week="mon-fri"),
+        id="ai_robot_performance_close", name="AI机器人池盘后统计", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=900,
+    )
+    scheduler.add_job(
+        refresh_personal_report_calendar,
+        CronTrigger(hour=8, minute=20, day_of_week="mon-fri"),
+        id="personal_report_calendar", name="个人池财报日历刷新", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=1800,
+    )
     scheduler.add_job(
         quant_signal_scan,
         CronTrigger(hour=13, minute=2, day_of_week="mon-fri"),
         id="quant_signal_afternoon", name="量化信号午后扫描", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        run_overnight_preliminary_scan,
+        CronTrigger(hour=14, minute=30, day_of_week="mon-fri"),
+        id="overnight_preliminary_scan", name="一夜持股14:30预扫描", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        run_overnight_entry_scan,
+        CronTrigger(hour=14, minute=50, day_of_week="mon-fri"),
+        id="overnight_entry_scan", name="一夜持股14:50入场复核", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        monitor_overnight_exits,
+        CronTrigger(hour=9, minute="31,40,50", day_of_week="mon-fri"),
+        id="overnight_exit_monitor", name="一夜持股早盘退出监控", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        force_overnight_exits,
+        CronTrigger(hour=10, minute=0, day_of_week="mon-fri"),
+        id="overnight_force_exit", name="一夜持股10:00强制退出", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
 

@@ -410,6 +410,11 @@ export default function StockPickerPage() {
   const [sectors, setSectors] = useState<SectorOption[]>([]);
   const [sectorsLoading, setSectorsLoading] = useState(true);
   const [coveredStockCount, setCoveredStockCount] = useState<number | null>(null);
+  const [sectorDirectory, setSectorDirectory] = useState<{
+    cacheUsed: boolean;
+    stale: boolean;
+    refreshedAt: string | null;
+  }>({ cacheUsed: false, stale: false, refreshedAt: null });
   const [result, setResult] = useState<SelectionResult | null>(null);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -424,11 +429,23 @@ export default function StockPickerPage() {
       try {
         const res = await apiFetch<{
           code: number;
-          data: { sectors: SectorOption[]; covered_stock_count?: number | null; coverage_complete?: boolean };
+          data: {
+            sectors: SectorOption[];
+            covered_stock_count?: number | null;
+            coverage_complete?: boolean;
+            directory_cache_used?: boolean;
+            directory_stale?: boolean;
+            classification_refreshed_at?: string | null;
+          };
         }>('/stock-selection/sectors');
         if (active) {
           setSectors(res.data.sectors || []);
           setCoveredStockCount(res.data.coverage_complete ? (res.data.covered_stock_count ?? null) : null);
+          setSectorDirectory({
+            cacheUsed: Boolean(res.data.directory_cache_used),
+            stale: Boolean(res.data.directory_stale),
+            refreshedAt: res.data.classification_refreshed_at || null,
+          });
         }
       } catch (err) {
         console.error('Failed to load stock-selection sectors:', err);
@@ -596,9 +613,11 @@ export default function StockPickerPage() {
               <span className="block text-xs text-text-secondary mt-1">
                 {sectorsLoading
                   ? '正在加载全市场行业'
+                  : sectorDirectory.cacheUsed
+                    ? `${sectors.length}个行业 · ${sectorDirectory.stale ? '最近有效目录' : '缓存目录'}${sectorDirectory.refreshedAt ? ` · ${sectorDirectory.refreshedAt.slice(0, 10)}` : ''}`
                   : coveredStockCount != null
                     ? `${sectors.length}个行业 · 覆盖${coveredStockCount.toLocaleString('zh-CN')}只股票`
-                    : `${sectors.length}个行业 · 实时目录`}
+                    : `${sectors.length}个行业 · 本次目录`}
               </span>
             </label>
             <label className="block">

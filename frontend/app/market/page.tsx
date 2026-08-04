@@ -14,11 +14,11 @@ interface HotSector {
 
 interface MarketOverview {
   market_index: {
-    sh_index: number;
-    sh_change: number;
-    sh_change_pct: number;
-    sh_volume: number;
-    sh_amount: number;
+    sh_index: number | null;
+    sh_change: number | null;
+    sh_change_pct: number | null;
+    sh_volume: number | null;
+    sh_amount: number | null;
   };
   north_bound: {
     latest_deal_amount: number | null;
@@ -34,6 +34,12 @@ interface MarketOverview {
     limit_down: number | null;
   };
   hot_sectors: HotSector[];
+  source?: string;
+  data_date?: string | null;
+  source_updated_at?: string | null;
+  snapshot_saved_at?: string | null;
+  is_realtime?: boolean;
+  cache_used?: boolean;
 }
 
 interface OverviewResponse {
@@ -45,7 +51,9 @@ function generatePlainSummary(data: MarketOverview): string[] {
   const sentences: string[] = [];
   const shChange = data.market_index.sh_change_pct;
 
-  if (shChange > 0.5) {
+  if (shChange == null) {
+    sentences.push('当前有效快照没有返回上证指数涨跌幅，系统保留为空，不根据指数点位推算。');
+  } else if (shChange > 0.5) {
     sentences.push(
       `上证指数今天上涨 ${shChange.toFixed(2)}%，大盘整体偏强。`
     );
@@ -74,6 +82,42 @@ function generatePlainSummary(data: MarketOverview): string[] {
   return sentences;
 }
 
+function finiteNumber(value: unknown): number | null {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeOverview(input: any): MarketOverview {
+  const marketIndex = input?.market_index || {};
+  const northBound = input?.north_bound || {};
+  const fundFlow = input?.fund_flow || {};
+  const limitBoard = input?.limit_board || {};
+  return {
+    ...input,
+    market_index: {
+      sh_index: finiteNumber(marketIndex.sh_index),
+      sh_change: finiteNumber(marketIndex.sh_change),
+      sh_change_pct: finiteNumber(marketIndex.sh_change_pct),
+      sh_volume: finiteNumber(marketIndex.sh_volume),
+      sh_amount: finiteNumber(marketIndex.sh_amount),
+    },
+    north_bound: {
+      latest_deal_amount: finiteNumber(northBound.latest_deal_amount),
+      latest_inflow: finiteNumber(northBound.latest_inflow),
+      net_inflow_available: Boolean(northBound.net_inflow_available),
+    },
+    fund_flow: {
+      top_inflow: Array.isArray(fundFlow.top_inflow) ? fundFlow.top_inflow : [],
+      top_outflow: Array.isArray(fundFlow.top_outflow) ? fundFlow.top_outflow : [],
+    },
+    limit_board: {
+      limit_up: finiteNumber(limitBoard.limit_up),
+      limit_down: finiteNumber(limitBoard.limit_down),
+    },
+    hot_sectors: Array.isArray(input?.hot_sectors) ? input.hot_sectors : [],
+  };
+}
+
 export default function MarketOverviewPage() {
   const [data, setData] = useState<MarketOverview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -86,8 +130,8 @@ export default function MarketOverviewPage() {
     try {
       const res = await apiFetch<OverviewResponse>('/market/overview');
       if (res.code === 0 && res.data) {
-        const d = res.data;
-        const hasMarketData = d.market_index && d.market_index.sh_index > 0;
+        const d = normalizeOverview(res.data);
+        const hasMarketData = d.market_index.sh_index != null && d.market_index.sh_index > 0;
         setData(d);
         setIsEmpty(!hasMarketData);
         setError(null);
@@ -132,8 +176,8 @@ export default function MarketOverviewPage() {
       <div className="flex items-center justify-center h-96">
         <div className="text-text-secondary text-center">
           <Loader2 size={32} className="animate-spin mx-auto mb-3 text-accent" />
-          <div className="text-base">正在获取今日市场数据...</div>
-          <div className="text-xs mt-1 text-text-secondary/70">请在交易时段查看，数据每 60 秒自动刷新</div>
+          <div className="text-base">正在读取市场行情...</div>
+          <div className="text-xs mt-1 text-text-secondary/70">盘中读取实时源，休市读取最近有效缓存</div>
         </div>
       </div>
     );
@@ -162,12 +206,12 @@ export default function MarketOverviewPage() {
       <div className="max-w-4xl mx-auto px-4 py-12">
         <div className="bg-card border border-border rounded-xl p-8 text-center">
           <Clock size={48} className="mx-auto mb-4 text-text-secondary" />
-          <h2 className="text-lg font-bold text-text mb-2">当前非交易时段或数据暂未更新</h2>
+          <h2 className="text-lg font-bold text-text mb-2">尚无可用市场快照</h2>
           <p className="text-text-secondary mb-1">
             A股交易时间为每周一至周五的上午 9:30-11:30、下午 13:00-15:00。
           </p>
           <p className="text-text-secondary text-sm">
-            请在工作日交易时段回来查看，数据将每 60 秒自动刷新。
+            系统会在午间和收盘后自动缓存；首次缓存建立前暂不展示推测数据。
           </p>
         </div>
       </div>
@@ -183,9 +227,14 @@ export default function MarketOverviewPage() {
         <div>
           <h1 className="text-2xl font-bold text-text flex items-center gap-2">
             <Activity size={22} className="text-accent" />
-            今日速览
+            市场速览
         </h1>
-        <p className="text-text-secondary text-sm mt-1">一眼看懂今天 A 股发生了什么，数据每 60 秒自动刷新</p>
+        <p className="text-text-secondary text-sm mt-1">盘中实时更新，休市自动延用最近交易日已核验快照</p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-text-secondary">
+          <span className={data.is_realtime ? 'text-up' : 'text-warn'}>{data.is_realtime ? '盘中实时行情' : '最近交易日缓存（非实时）'}</span>
+          <span>数据日期：<b className="font-mono font-normal text-text">{data.data_date || '--'}</b></span>
+          <span>来源：{data.source || '--'}</span>
+        </div>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -194,7 +243,7 @@ export default function MarketOverviewPage() {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent text-white rounded-md hover:opacity-90 disabled:opacity-50"
           >
             <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? '同步中...' : '刷新实时数据'}
+            {syncing ? '同步中...' : '同步最新数据'}
           </button>
           {cacheStats && (
             <span className="max-w-full text-xs text-text-secondary text-right">
@@ -217,9 +266,9 @@ export default function MarketOverviewPage() {
           <div className="text-2xl font-mono font-bold text-text mb-1">
             {(market_index.sh_index ?? 0).toFixed(2)}
           </div>
-          <div className={`flex items-center gap-1 text-sm font-medium ${getChangeColor(market_index.sh_change_pct)}`}>
-            {market_index.sh_change_pct >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-            {market_index.sh_change_pct >= 0 ? '+' : ''}{(market_index.sh_change_pct ?? 0).toFixed(2)}%
+          <div className={`flex items-center gap-1 text-sm font-medium ${getChangeColor(market_index.sh_change_pct ?? 0)}`}>
+            {(market_index.sh_change_pct ?? 0) >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+            {market_index.sh_change_pct == null ? '--' : `${market_index.sh_change_pct >= 0 ? '+' : ''}${market_index.sh_change_pct.toFixed(2)}%`}
             {market_index.sh_change != null && (
               <span className="text-text-secondary text-xs ml-1">
                 {market_index.sh_change >= 0 ? '+' : ''}{market_index.sh_change.toFixed(2)} 点

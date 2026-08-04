@@ -29,7 +29,7 @@ from services.horizon_analysis import VALID_HORIZONS
 from models import (
     KnowledgeTerm, LearningCase, ConceptBoard,
     ConceptFundFlowDaily, IndustryFundFlowDaily, MarketFundFlowDaily, AIChatHistory, MarketBoard,
-    MarketDataCache, StockSelectionRun,
+    MarketDataCache, PersonalSystemConfig, StockSelectionRun,
 )
 from database import async_session
 from services.history_cache import history_cache
@@ -85,6 +85,70 @@ async def _fetch_market_component(name: str, awaitable, fallback):
     except Exception as exc:
         print(f"Market component failed: {name}: {type(exc).__name__}")
     return fallback
+
+
+async def _latest_cached_trade_date(model) -> date | None:
+    async with async_session() as session:
+        return (await session.execute(select(func.max(model.trade_date)))).scalar_one_or_none()
+
+
+async def _read_json_snapshot(key: str) -> dict | None:
+    try:
+        async with async_session() as session:
+            row = await session.get(MarketDataCache, key)
+        return dict(row.payload) if row and isinstance(row.payload, dict) else None
+    except Exception:
+        return None
+
+
+async def _write_json_snapshot(key: str, payload: dict) -> None:
+    try:
+        async with async_session() as session:
+            row = await session.get(MarketDataCache, key)
+            snapshot = {**payload, "snapshot_saved_at": shanghai_now().isoformat()}
+            if row is None:
+                session.add(MarketDataCache(key=key, payload=snapshot))
+            else:
+                row.payload = snapshot
+            await session.commit()
+    except Exception:
+        pass
+
+
+def _normalize_market_overview_payload(payload: dict) -> dict:
+    """Keep cached and live market-overview responses on one stable contract."""
+    market_index = payload.get("market_index")
+    north_bound = payload.get("north_bound")
+    fund_flow = payload.get("fund_flow")
+    limit_board = payload.get("limit_board")
+    return {
+        **payload,
+        "market_index": {
+            "sh_index": None,
+            "sh_change": None,
+            "sh_change_pct": None,
+            "sh_volume": None,
+            "sh_amount": None,
+            **(market_index if isinstance(market_index, dict) else {}),
+        },
+        "north_bound": {
+            "latest_deal_amount": None,
+            "latest_inflow": None,
+            "net_inflow_available": False,
+            **(north_bound if isinstance(north_bound, dict) else {}),
+        },
+        "fund_flow": {
+            "top_inflow": [],
+            "top_outflow": [],
+            **(fund_flow if isinstance(fund_flow, dict) else {}),
+        },
+        "limit_board": {
+            "limit_up": None,
+            "limit_down": None,
+            **(limit_board if isinstance(limit_board, dict) else {}),
+        },
+        "hot_sectors": payload.get("hot_sectors") if isinstance(payload.get("hot_sectors"), list) else [],
+    }
 
 
 def _flow_ranking(item: dict, rank: int) -> dict:
@@ -452,7 +516,10 @@ async def get_concept_rank(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    if target != today:
+    if target == today and not is_a_share_market_session(shanghai_now()):
+        target = await _latest_cached_trade_date(ConceptFundFlowDaily) or target
+
+    if target != today or not is_a_share_market_session(shanghai_now()):
         result = await _concept_history_rankings(target, limit, ascending=order == "asc")
         coverage = await _concept_snapshot_coverage(target)
         return {
@@ -505,6 +572,21 @@ async def get_industry_rank(
     order: str = Query("desc"),
     limit: int = Query(20, ge=1, le=100),
 ):
+    if not is_a_share_market_session(shanghai_now()):
+        latest = await _latest_cached_trade_date(IndustryFundFlowDaily)
+        if latest:
+            snapshot = await _historical_flow_observer("industry", latest, min(limit, 100))
+            records = [*snapshot.get("inflows", []), *snapshot.get("outflows", [])]
+            field = "main_net_inflow" if sort == "main_net_inflow" else sort
+            records.sort(key=lambda item: item.get(field) or 0, reverse=order != "asc")
+            return {
+                "code": 0,
+                "data": {
+                    "trade_date": latest.isoformat(),
+                    "rankings": records[:limit],
+                    **_market_metadata(available=bool(records), data_date=latest.isoformat(), is_realtime=False, source="cache"),
+                },
+            }
     sort_order = 1 if order == "asc" else 0
     data = await collector.fetch_industry_flow(
         sort_field=FLOW_SORT_FIELDS.get(sort, "f62"), sort_order=sort_order, page_size=limit
@@ -1000,15 +1082,21 @@ async def get_flow_observer(
     normalized_type = board_type.strip().lower()
     if normalized_type not in {"industry", "concept"}:
         raise HTTPException(status_code=422, detail="board_type 仅支持 industry 或 concept")
+    now = shanghai_now()
     if target_date:
         try:
             requested_date = date.fromisoformat(target_date)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="date 必须是 YYYY-MM-DD") from exc
-        if requested_date > shanghai_now().date():
+        if requested_date > now.date():
             raise HTTPException(status_code=422, detail="不能查询未来交易日")
-        if requested_date < shanghai_now().date():
+        if requested_date < now.date():
             return {"code": 0, "data": await _historical_flow_observer(normalized_type, requested_date, limit)}
+    if not is_a_share_market_session(now):
+        model = IndustryFundFlowDaily if normalized_type == "industry" else ConceptFundFlowDaily
+        latest = await _latest_cached_trade_date(model)
+        if latest:
+            return {"code": 0, "data": await _historical_flow_observer(normalized_type, latest, limit)}
     return {"code": 0, "data": await _realtime_flow_observer(normalized_type, limit)}
 
 
@@ -1085,17 +1173,20 @@ async def get_stock_selection_sectors():
     cache_key = "stock_selection_sector_directory_v1"
     seed_sectors: list[dict] = []
     classification_refreshed_at: str | None = None
+    directory_stale = False
     try:
         async with async_session() as session:
             cache_row = await session.get(MarketDataCache, cache_key)
+            if cache_row is None:
+                cache_row = await session.get(PersonalSystemConfig, cache_key)
         payload = cache_row.payload if cache_row and isinstance(cache_row.payload, dict) else {}
         raw_refreshed_at = payload.get("classification_refreshed_at")
         refreshed_at = datetime.fromisoformat(raw_refreshed_at) if raw_refreshed_at else None
-        if refreshed_at and datetime.utcnow() - refreshed_at <= timedelta(hours=24):
-            cached_sectors = payload.get("sectors")
-            if isinstance(cached_sectors, list):
-                seed_sectors = [item for item in cached_sectors if isinstance(item, dict)]
-                classification_refreshed_at = raw_refreshed_at
+        cached_sectors = payload.get("sectors")
+        if isinstance(cached_sectors, list):
+            seed_sectors = [item for item in cached_sectors if isinstance(item, dict)]
+            classification_refreshed_at = raw_refreshed_at
+            directory_stale = not refreshed_at or datetime.utcnow() - refreshed_at > timedelta(hours=24)
     except Exception as exc:
         print(f"Sector directory cache load failed: {type(exc).__name__}")
 
@@ -1135,6 +1226,7 @@ async def get_stock_selection_sectors():
             "mapped_sector_count": sum(bool(item.get("code")) for item in sectors),
             "classification_refreshed_at": classification_refreshed_at,
             "directory_cache_used": bool(seed_sectors),
+            "directory_stale": directory_stale,
             **_quote_metadata(available=bool(sectors)),
         },
     }
@@ -1285,9 +1377,9 @@ async def get_market_overview():
     available = bool(turnover or concept_inflow or concept_outflow or breadth or limit_up_available or limit_down_available)
     data_date = turnover.get("data_date") or latest_north.get("date")
 
-    return {
+    response = {
         "code": 0,
-        "data": {
+        "data": _normalize_market_overview_payload({
             "update_time": shanghai_now().isoformat(),
             "market_index": turnover,
             "north_bound": {
@@ -1315,8 +1407,34 @@ async def get_market_overview():
                 "market_turnover": bool(turnover),
             },
             **_quote_metadata(available=available, data_date=data_date if available else None),
-        },
+        }),
     }
+    cache_key = "market_overview_v1"
+    source_status = response["data"]["source_status"]
+    turnover_complete = all(
+        key in turnover
+        for key in ("sh_index", "sh_change", "sh_change_pct", "sh_amount")
+    )
+    cacheable = (
+        source_status["concept_inflow"]
+        and source_status["concept_outflow"]
+        and turnover_complete
+    )
+    if cacheable:
+        await _write_json_snapshot(cache_key, response["data"])
+        return response
+    cached = await _read_json_snapshot(cache_key)
+    if cached:
+        cached = _normalize_market_overview_payload(cached)
+        cached.update({
+            "update_time": shanghai_now().isoformat(),
+            "available": True,
+            "source": "cache",
+            "is_realtime": False,
+            "cache_used": True,
+        })
+        return {"code": 0, "data": cached}
+    return response
 
 
 @router.get("/flow/concept/history")
@@ -1479,6 +1597,10 @@ async def get_concept_summary(
         "year": (today - timedelta(days=365), today),
     }
     start, end = range_map.get(range, (today, today))
+    if range == "today" and not is_a_share_market_session(shanghai_now()):
+        latest = await _latest_cached_trade_date(ConceptFundFlowDaily)
+        if latest:
+            start = end = latest
 
     if board_code:
         try:
@@ -1486,7 +1608,7 @@ async def get_concept_summary(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
 
-    # 今日只读取实时行情；其余范围只读取已经验证并入库的数据。
+    # 交易时段读取实时行情；收盘后“今日”回读最近交易日快照。
     if range == "today" and is_a_share_market_session(shanghai_now()):
         result = await _realtime_concept_extremes()
         if result:

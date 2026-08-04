@@ -87,7 +87,7 @@ def enrich_with_indicators(stock: dict, bars: list[dict]) -> dict:
     if not valid:
         return result
     closes = [item["close"] for item in valid]
-    for period in (5, 10, 20, 60):
+    for period in (5, 10, 20, 30, 60):
         result[f"ma{period}"] = sum(closes[-period:]) / period if len(closes) >= period else None
     result["rsi"] = _rsi(closes)
     if len(closes) >= 35:

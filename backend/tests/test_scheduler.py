@@ -34,6 +34,37 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recovery_call.kwargs["coalesce"])
         self.assertEqual(recovery_call.kwargs["max_instances"], 1)
 
+    async def test_scheduler_registers_market_snapshots_and_personal_automation(self):
+        fake_scheduler = MagicMock()
+        fake_scheduler.running = True
+
+        with patch.object(scheduler_module, "scheduler", fake_scheduler):
+            await scheduler_module.start_scheduler()
+
+        calls = {call.kwargs["id"]: call for call in fake_scheduler.add_job.call_args_list}
+        expected = {
+            "startup_cache_recovery",
+            "midday_collection",
+            "daily_collection",
+            "ai_robot_short_weekly",
+            "ai_robot_long_monthly",
+            "ai_robot_anomaly_check",
+            "ai_robot_performance_close",
+            "personal_report_calendar",
+            "overnight_preliminary_scan",
+            "overnight_entry_scan",
+            "overnight_exit_monitor",
+            "overnight_force_exit",
+        }
+        self.assertTrue(expected.issubset(calls))
+        self.assertIs(calls["ai_robot_short_weekly"].args[0], scheduler_module.refresh_ai_robot_short)
+        self.assertIs(calls["ai_robot_long_monthly"].args[0], scheduler_module.refresh_ai_robot_long)
+        self.assertIs(calls["personal_report_calendar"].args[0], scheduler_module.refresh_personal_report_calendar)
+        self.assertIs(calls["overnight_preliminary_scan"].args[0], scheduler_module.run_overnight_preliminary_scan)
+        self.assertIs(calls["overnight_entry_scan"].args[0], scheduler_module.run_overnight_entry_scan)
+        self.assertIs(calls["overnight_exit_monitor"].args[0], scheduler_module.monitor_overnight_exits)
+        self.assertIs(calls["overnight_force_exit"].args[0], scheduler_module.force_overnight_exits)
+
 
 if __name__ == "__main__":
     unittest.main()

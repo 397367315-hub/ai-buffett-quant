@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiFetch, getChangeColor } from '@/lib/api';
+import PersonalWorkspaceNav from '@/components/PersonalWorkspaceNav';
 
 type PoolKey = 'core' | 'watchlist' | 'leaders' | 'etf' | 'blacklist';
 type SortKey = 'default' | 'change' | 'pnl' | 'code';
@@ -443,6 +444,7 @@ export default function PersonalPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-5 md:py-6">
+      <PersonalWorkspaceNav />
       <header className="flex flex-wrap items-start justify-between gap-4 mb-5">
         <div>
           <h1 className="text-xl md:text-2xl font-bold text-text flex items-center gap-2"><Bookmark size={22} className="text-accent" />个人投资工作台</h1>

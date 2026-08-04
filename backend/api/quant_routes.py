@@ -23,6 +23,9 @@ from quant.signals import quant_signal_service
 from quant.storage import quant_store
 from quant.templates import list_templates
 from services.data_collector import collector
+from database import async_session
+from services.quote_cache import quote_snapshot_service
+from services.overnight_strategy import overnight_strategy_service
 
 
 router = APIRouter(prefix="/api/v1/quant", tags=["量化策略"])
@@ -157,6 +160,32 @@ async def get_signal_history(limit: int = Query(20, ge=1, le=100)):
     return {"code": 0, "data": quant_signal_service.get_history(limit)}
 
 
+@router.get("/overnight")
+async def get_overnight_strategy_dashboard():
+    return {"code": 0, "data": await overnight_strategy_service.dashboard()}
+
+
+@router.post("/overnight/runs", status_code=status.HTTP_202_ACCEPTED)
+async def start_overnight_strategy_run(request: dict):
+    stage = str((request or {}).get("stage") or "preliminary").strip().lower()
+    requested_trigger = str((request or {}).get("trigger") or "manual").strip().lower()
+    trigger = "github_schedule" if requested_trigger == "github_schedule" else "manual"
+    try:
+        result = await overnight_strategy_service.start(stage, trigger=trigger, background=True)
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    return {"code": 0, "data": result, "message": "一夜持股策略任务已提交"}
+
+
+@router.get("/overnight/runs/{run_id}")
+async def get_overnight_strategy_run(run_id: int):
+    try:
+        result = await overnight_strategy_service.get_run(run_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"code": 0, "data": {"run": result}}
+
+
 @router.post("/backtest/{strategy_id}", status_code=status.HTTP_202_ACCEPTED)
 async def start_backtest(strategy_id: str, payload: BacktestRequest):
     try:
@@ -196,7 +225,7 @@ async def get_paper_portfolio(refresh: bool = False):
     codes = [item["stock_code"] for item in portfolio["holdings"]]
     warning = None
     try:
-        snapshot = await collector.fetch_stock_quotes(codes)
+        snapshot = await quote_snapshot_service.fetch(codes, async_session)
         if not snapshot.get("complete"):
             warning = "部分持仓最新行情不可用，未更新的股票保留上次价格"
     except Exception:

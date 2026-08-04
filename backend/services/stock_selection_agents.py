@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from config import settings
 from database import async_session
-from models import StockDailyBar
+from models import MarketDataCache, StockDailyBar
 from services.data_collector import as_float, as_int, is_a_share_market_session, normalize_board_code, shanghai_now
 from services.macro_policy_news import macro_policy_news_collector
 from services.quant_scorer import MarketRegime
@@ -99,6 +99,48 @@ class StockSelectionAgentService:
     _HISTORY_LOOKBACK_DAYS = 420
     _QUICK_ANALYSIS_LIMIT = 45
     _FULL_ANALYSIS_LIMIT = 80
+
+    @staticmethod
+    async def _candidate_snapshot(cache_key: str, fetcher) -> dict:
+        """Persist verified candidates and reuse them when an upstream is unavailable."""
+        cached: dict = {}
+        try:
+            async with async_session() as session:
+                row = await session.get(MarketDataCache, cache_key)
+            if row and isinstance(row.payload, dict):
+                cached = dict(row.payload)
+        except Exception:
+            cached = {}
+
+        source_failed = False
+        try:
+            result = await fetcher
+        except Exception:
+            result = {}
+            source_failed = True
+        if isinstance(result, dict) and result.get("stocks"):
+            if result.get("data_date"):
+                payload = {**result, "cached_at": shanghai_now().isoformat()}
+                try:
+                    async with async_session() as session:
+                        row = await session.get(MarketDataCache, cache_key)
+                        if row is None:
+                            session.add(MarketDataCache(key=cache_key, payload=payload))
+                        else:
+                            row.payload = payload
+                        await session.commit()
+                except Exception:
+                    pass
+            return result
+        if cached.get("stocks") and (source_failed or result.get("error")):
+            return {
+                **cached,
+                "source": "cache",
+                "is_realtime": False,
+                "source_updated_at": cached.get("source_updated_at") or cached.get("cached_at"),
+                "cache_used": True,
+            }
+        return result if isinstance(result, dict) else {}
 
     @staticmethod
     def _is_market_session() -> bool:
@@ -1051,10 +1093,11 @@ class StockSelectionAgentService:
         if sector_board_code and not sector_filter:
             raise ValueError("sector_code 必须与行业名称一起提交")
 
-        source_awaitable = (
+        source_awaitable = self._candidate_snapshot(
+            f"stock_selection_candidates_v1:{sector_board_code or 'market'}",
             collector.fetch_all_board_stocks(sector_board_code, sector_name=sector_filter)
             if sector_board_code
-            else collector.fetch_intelligent_selection_candidates()
+            else collector.fetch_intelligent_selection_candidates(),
         )
 
         source_result, regime_result, macro_result = await asyncio.gather(
