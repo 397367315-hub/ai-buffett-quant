@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     quant_scan_cache_seconds: int = 300
     quant_scan_max_technical_stocks: int = 1500
     quant_backtest_max_stocks: int = 120
+    personal_positions_json: str = ""
 
     # 登录账号配置
     admin_username: str = "admin"

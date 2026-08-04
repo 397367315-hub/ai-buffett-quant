@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
 import { Filter, Search, TrendingUp, HelpCircle } from 'lucide-react';
+import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 
 interface ScreenerStock {
   code: string;
@@ -174,6 +175,7 @@ export default function ScreenerPage() {
                     <th className="text-right px-3 py-3 font-medium hidden md:table-cell">量比</th>
                     <th className="text-right px-3 py-3 font-medium">主力净流入</th>
                     <th className="text-right px-3 py-3 font-medium hidden lg:table-cell">市值</th>
+                    <th className="text-right px-3 py-3 font-medium">个人池</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -209,6 +211,15 @@ export default function ScreenerPage() {
                       </td>
                       <td className="px-3 py-2.5 text-right text-text-secondary hidden lg:table-cell">
                         {(parseFloat(s.market_cap || '0') / 1e8).toFixed(0)}亿
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <AddToPersonalPoolButton
+                          code={s.code}
+                          name={s.name}
+                          thesis={`技术筛选：涨幅 ${s.change_pct || '--'}%，换手率 ${s.turnover || '--'}%，量比 ${s.volume_ratio || '--'}，主力净流入 ${(parseFloat(s.main_net_inflow || '0') / 1e8).toFixed(2)}亿；筛选条件为涨幅不低于 ${minChange}%，PE 不高于 ${maxPe}，换手率不低于 ${minTurnover}%`}
+                          source="technical_screener"
+                          compact
+                        />
                       </td>
                     </tr>
                   ))}

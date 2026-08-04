@@ -16,6 +16,7 @@ from services.data_collector import (
     normalize_stock_code,
     shanghai_now,
 )
+from services.admin_auth import create_admin_token
 from config import settings
 from services.ai_service import ai_service
 from services.ai_prompts import BEGINNER_SYSTEM_PROMPT, PROFESSIONAL_SYSTEM_PROMPT, DAILY_REPORT_PROMPT_TEMPLATE
@@ -424,7 +425,14 @@ async def auth_login(request: dict):
     password = request.get("password", "")
 
     if username == settings.admin_username and password == settings.admin_password:
-        return {"code": 0, "data": {"token": "authenticated", "username": username, "role": "admin"}}
+        return {
+            "code": 0,
+            "data": {
+                "token": create_admin_token(username),
+                "username": username,
+                "role": "admin",
+            },
+        }
     return {"code": 401, "message": "账号或密码错误"}
 
 

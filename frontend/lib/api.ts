@@ -1,10 +1,18 @@
+import { clearAuthSession, readAuthSession } from '@/lib/authSession';
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}/api/v1${path}`;
+  const headers = new Headers(options?.headers);
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const session = readAuthSession();
+  if (session && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${session.token}`);
+  }
   const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
     ...options,
+    headers,
   });
   let payload: any = null;
   try {
@@ -13,6 +21,12 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
     // Non-JSON proxy failures still receive the HTTP status below.
   }
   if (!res.ok) {
+    if (res.status === 401) {
+      clearAuthSession();
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.assign('/login');
+      }
+    }
     const detail = typeof payload?.detail === 'string'
       ? payload.detail
       : Array.isArray(payload?.detail)

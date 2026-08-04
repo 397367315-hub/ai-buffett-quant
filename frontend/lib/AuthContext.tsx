@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { clearAuthSession, readAuthSession, writeAuthSession } from '@/lib/authSession';
 
 interface AuthContextType {
   isLoggedIn: boolean;
@@ -18,7 +19,6 @@ const AuthContext = createContext<AuthContextType>({
   logout: () => {},
 });
 
-const SESSION_KEY = 'stockflow_session';
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -27,15 +27,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [username, setUsername] = useState('');
 
   useEffect(() => {
-    const session = localStorage.getItem(SESSION_KEY);
+    const session = readAuthSession();
     if (session) {
-      try {
-        const { username: u } = JSON.parse(session);
-        setUsername(u);
-        setIsLoggedIn(true);
-      } catch {
-        localStorage.removeItem(SESSION_KEY);
-      }
+      setUsername(session.username);
+      setIsLoggedIn(true);
     }
     setIsAuthReady(true);
   }, []);
@@ -49,9 +44,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       const data = await res.json();
 
-      if (data.code === 0) {
-        localStorage.setItem(SESSION_KEY, JSON.stringify({ username: user }));
-        setUsername(user);
+      if (data.code === 0 && typeof data.data?.token === 'string') {
+        const authenticatedUsername = data.data.username || user;
+        writeAuthSession({ username: authenticatedUsername, token: data.data.token });
+        setUsername(authenticatedUsername);
         setIsLoggedIn(true);
         return true;
       }
@@ -62,7 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    localStorage.removeItem(SESSION_KEY);
+    clearAuthSession();
     setUsername('');
     setIsLoggedIn(false);
   };

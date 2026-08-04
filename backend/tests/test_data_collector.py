@@ -127,6 +127,23 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["secid"] for call in calls], ["1.600000", "0.000001"])
         self.assertTrue(snapshot["complete"])
 
+    async def test_small_quote_refresh_supports_shanghai_and_shenzhen_etfs(self):
+        collector = EastMoneyDataCollector()
+        calls = []
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            calls.append(dict(params))
+            code = str(params["secid"]).split(".")[-1]
+            return {"data": {"f43": 1000, "f57": code, "f58": f"ETF{code}", "f170": 125, "f124": 0}}
+
+        collector.fetch_json = fake_fetch_json
+        snapshot = await collector.fetch_stock_quotes(["510300", "159992"])
+
+        self.assertEqual([call["secid"] for call in calls], ["1.510300", "0.159992"])
+        self.assertEqual([item["price"] for item in snapshot["stocks"]], [10.0, 10.0])
+        self.assertEqual([item["change_pct"] for item in snapshot["stocks"]], [1.25, 1.25])
+
     def test_stock_code_exchange_qualifiers_must_match_the_code(self):
         self.assertEqual(normalize_stock_code("SH600519"), "600519")
         self.assertEqual(normalize_stock_code("000001.SZ"), "000001")

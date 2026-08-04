@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
 import { Search, Sparkles, TrendingUp, AlertTriangle, BarChart3, Layers } from 'lucide-react';
+import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 
 interface BoardInfo {
   code: string;
@@ -297,6 +298,7 @@ export default function PotentialStocksPage() {
                       <th className="text-right px-3 py-3 font-medium hidden lg:table-cell">量比</th>
                       <th className="text-right px-3 py-3 font-medium">主力净流入</th>
                       <th className="text-right px-3 py-3 font-medium hidden xl:table-cell">市值</th>
+                      <th className="text-right px-3 py-3 font-medium">个人池</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -339,11 +341,14 @@ export default function PotentialStocksPage() {
                         <td className="px-3 py-2 text-right text-text-secondary text-xs hidden xl:table-cell">
                           {(parseFloat(s.market_cap || '0') / 1e8).toFixed(0)}亿
                         </td>
+                        <td className="px-3 py-2 text-right">
+                          <AddToPersonalPoolButton code={s.code} name={s.name} industry={selectedBoard.name} thesis={`${selectedBoard.name}板块成分股；主力净流入 ${(parseFloat(s.main_net_inflow || '0') / 1e8).toFixed(2)}亿`} source="sector_potential_analysis" compact />
+                        </td>
                       </tr>
                     ))}
                     {filteredStocks.length === 0 && (
                       <tr>
-                        <td colSpan={10} className="px-4 py-10 text-center text-sm text-text-secondary">
+                        <td colSpan={11} className="px-4 py-10 text-center text-sm text-text-secondary">
                           未找到匹配成分股
                         </td>
                       </tr>

@@ -23,6 +23,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
+import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 
 type SelectionMode = 'quick' | 'full';
 type RiskProfile = 'conservative' | 'balanced' | 'aggressive';
@@ -811,7 +812,7 @@ export default function StockPickerPage() {
                       </h2>
                       <p className="text-xs text-text-secondary mt-1">{selected.sector || '行业未标注'} · 置信度 {selected.confidence.toFixed(0)}% · 现价 {selected.price.toFixed(2)} · 换手率 {selected.turnover.toFixed(2)}%</p>
                     </div>
-                    <span className={`border rounded px-2.5 py-1 text-sm ${verdictClass(selected.verdict)}`}>{selected.verdict}</span>
+                    <div className="flex items-center gap-2"><AddToPersonalPoolButton code={selected.code} name={selected.name} industry={selected.sector} thesis={`${selected.horizon_outlook.label}：${selected.horizon_outlook.basis}`} source="stock_selection_agent" /><span className={`border rounded px-2.5 py-1 text-sm ${verdictClass(selected.verdict)}`}>{selected.verdict}</span></div>
                   </div>
 
                   <section className="border-y border-border py-4 mb-5">

@@ -297,3 +297,65 @@ class AIChatHistory(Base):
     content = Column(Text, nullable=False)
     context_type = Column(String(50))
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PersonalPoolItem(Base):
+    """A user-managed item in one of the five personal investment pools."""
+
+    __tablename__ = "personal_pool_items"
+    __table_args__ = (
+        UniqueConstraint("pool_key", "code", name="uq_personal_pool_item_pool_code"),
+        Index("idx_personal_pool_items_pool", "pool_key", "updated_at"),
+        Index("idx_personal_pool_items_code", "code"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pool_key = Column(String(30), nullable=False)
+    code = Column(String(10), nullable=False)
+    name = Column(String(100), nullable=False)
+    asset_type = Column(String(20), nullable=False, default="stock")
+    industry = Column(String(100))
+    status = Column(String(30), nullable=False, default="watching")
+    cost = Column(Float)
+    entry_date = Column(Date)
+    position_pct = Column(Float)
+    stop_loss = Column(Float)
+    targets = Column(JSON)
+    max_position = Column(Float)
+    thesis = Column(Text)
+    risk_note = Column(Text)
+    warning = Column(Text)
+    etf_type = Column(String(30))
+    tags = Column(JSON)
+    source = Column(String(50), nullable=False, default="user")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PersonalSystemConfig(Base):
+    """Versioned JSON configuration for the personal decision workspace."""
+
+    __tablename__ = "personal_system_config"
+
+    key = Column(String(80), primary_key=True)
+    payload = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PersonalInvestmentLog(Base):
+    """A manually recorded investment decision or review."""
+
+    __tablename__ = "personal_investment_logs"
+    __table_args__ = (Index("idx_personal_logs_created", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action = Column(String(20), nullable=False)
+    code = Column(String(10))
+    name = Column(String(100))
+    price = Column(Float)
+    shares = Column(Integer)
+    reason = Column(Text, nullable=False)
+    pre_check = Column(JSON)
+    violations = Column(JSON)
+    reflection = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)

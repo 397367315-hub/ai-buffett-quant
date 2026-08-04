@@ -19,8 +19,15 @@ from services.ftshare_mcp import ftshare_mcp_client
 
 
 EASTMONEY_UT = "b2884a393a59ad6402e4dd90d24e112f"
-SHANGHAI_PREFIXES = ("600", "601", "603", "605", "688", "689", "900")
-SHENZHEN_PREFIXES = ("000", "001", "002", "003", "200", "300", "301", "302")
+# The application uses the same validated security-code path for A-shares and
+# the ETF pool.  Keep the exchange mapping explicit so an ETF is never sent to
+# the wrong EastMoney market namespace.
+SHANGHAI_STOCK_PREFIXES = ("600", "601", "603", "605", "688", "689", "900")
+SHENZHEN_STOCK_PREFIXES = ("000", "001", "002", "003", "200", "300", "301", "302")
+SHANGHAI_FUND_PREFIXES = ("510", "511", "512", "513", "515", "516", "517", "518", "560", "561", "562", "588")
+SHENZHEN_FUND_PREFIXES = ("150", "159", "160", "161", "162", "163", "164", "165", "166", "167", "168", "169")
+SHANGHAI_PREFIXES = SHANGHAI_STOCK_PREFIXES + SHANGHAI_FUND_PREFIXES
+SHENZHEN_PREFIXES = SHENZHEN_STOCK_PREFIXES + SHENZHEN_FUND_PREFIXES
 BEIJING_PREFIXES = ("4", "8", "92")
 SCI_TECH_PREFIXES = ("688", "689")
 STOCK_CODE_RE = re.compile(r"^(?:(SH|SZ|BJ)[.:-]?)?(\d{6})(?:\.(SH|SZ|BJ))?$")
@@ -63,7 +70,7 @@ def as_optional_float(value: object) -> float | None:
 
 
 def normalize_stock_code(value: object) -> str:
-    """Return a validated six-digit A-share code or raise ValueError."""
+    """Return a validated six-digit mainland security code or raise ValueError."""
     candidate = str(value or "").strip().upper()
     if candidate.startswith("BK"):
         raise ValueError("板块编码不能作为股票代码")
@@ -1083,7 +1090,7 @@ class EastMoneyDataCollector:
                 "https://push2.eastmoney.com/api/qt/stock/get",
                 {
                     "secid": stock_secid(code),
-                    "fields": "f43,f57,f58,f124",
+                    "fields": "f2,f3,f4,f8,f9,f18,f20,f23,f43,f44,f45,f47,f48,f57,f58,f100,f124,f169,f170",
                     "ut": EASTMONEY_UT,
                 },
             )
@@ -1091,10 +1098,33 @@ class EastMoneyDataCollector:
             price = as_optional_float(row.get("f43"))
             if price is None or price <= 0:
                 return None
+            change_pct_raw = as_optional_float(row.get("f170"))
+            previous_close_raw = as_optional_float(row.get("f18"))
             return {
                 "code": code,
                 "name": str(row.get("f58") or ""),
                 "price": price / 100,
+                "change_pct": change_pct_raw / 100 if change_pct_raw is not None else None,
+                "change_amount": (
+                    as_optional_float(row.get("f169")) / 100
+                    if as_optional_float(row.get("f169")) is not None else None
+                ),
+                "previous_close": previous_close_raw / 100 if previous_close_raw is not None else None,
+                "high": (
+                    as_optional_float(row.get("f44")) / 100
+                    if as_optional_float(row.get("f44")) is not None else None
+                ),
+                "low": (
+                    as_optional_float(row.get("f45")) / 100
+                    if as_optional_float(row.get("f45")) is not None else None
+                ),
+                "volume": as_int(row.get("f47")) if row.get("f47") is not None else None,
+                "amount": as_int(row.get("f48")) if row.get("f48") is not None else None,
+                "turnover": as_optional_float(row.get("f8")),
+                "pe": as_optional_float(row.get("f9")),
+                "pb": as_optional_float(row.get("f23")),
+                "market_cap": as_int(row.get("f20")) if row.get("f20") is not None else None,
+                "sector": str(row.get("f100") or "").strip(),
                 "quote_timestamp": as_int(row.get("f124")) or None,
             }
 

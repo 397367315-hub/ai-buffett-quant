@@ -30,6 +30,8 @@ services:
         value: admin
       - key: ADMIN_PASSWORD
         sync: false
+      - key: PERSONAL_POSITIONS_JSON
+        sync: false
 
   - type: web
     name: ai-buffett-data-proxy

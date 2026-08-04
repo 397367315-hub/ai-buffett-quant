@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit, LineChart } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit, LineChart, Bookmark } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -14,6 +14,7 @@ const proSubItems = [
   { href: '/pro/limit-board', label: '涨跌停板', icon: Zap },
   { href: '/pro/potential', label: '潜力股分析', icon: Sparkles },
   { href: '/pro/stock-picker', label: '智能选股', icon: BrainCircuit },
+  { href: '/pro/personal', label: '个人投资池', icon: Bookmark },
   { href: '/quant', label: '量化策略', icon: LineChart },
   { href: '/pro/rotation', label: '板块轮动', icon: TrendingUp },
   { href: '/pro/flow-observer', label: '资金流观察', icon: Activity },

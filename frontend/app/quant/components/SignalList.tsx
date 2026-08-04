@@ -2,6 +2,7 @@
 
 import { AlertTriangle, ArrowUpRight, Clock3, Database, Loader2, RefreshCw, Send, Signal, Wifi } from 'lucide-react';
 import type { BackgroundJob, SignalSnapshot, TradeSignal } from '../types';
+import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 
 function formatTime(value?: string | null) {
   if (!value) return '尚未扫描';
@@ -80,7 +81,7 @@ export default function SignalList({ snapshot, job, onRefresh, onAddToPaper, his
               {!signal.risk_flags?.hard_blocks.length && Boolean(signal.risk_flags?.warnings.length) && <div className="mt-1 text-warn line-clamp-1">风险：{signal.risk_flags?.warnings.join('；')}</div>}
               {Boolean(signal.unavailable_rules?.length) && <div className="mt-1 text-warn line-clamp-1">数据不足：{signal.unavailable_rules?.join('；')}</div>}
             </td>
-            <td className="px-3 py-2.5 text-right"><button type="button" onClick={() => onAddToPaper(signal)} className="inline-flex items-center gap-1 px-2 py-1.5 text-accent hover:bg-[#1F6FEB22] rounded-md" title="带入模拟盘"><Send size={13} />模拟买入</button></td>
+            <td className="px-3 py-2.5 text-right"><div className="flex items-center justify-end gap-1.5"><AddToPersonalPoolButton code={signal.stock_code} name={signal.stock_name} industry={signal.sector} thesis={`量化策略：${(signal.strategy_matches || [{ strategy_name: signal.strategy_name }]).map((item) => item.strategy_name).join('、')}；命中规则：${signal.matched_rules.join('；')}`} source="quant_signal" compact /><button type="button" onClick={() => onAddToPaper(signal)} className="inline-flex items-center gap-1 px-2 py-1.5 text-accent hover:bg-[#1F6FEB22] rounded-md" title="带入模拟盘"><Send size={13} />模拟买入</button></div></td>
           </tr>)}</tbody>
         </table></div> : <div className="py-12 text-center text-sm text-text-secondary"><ArrowUpRight size={22} className="mx-auto mb-2 text-border" />暂无匹配信号。可调整策略规则或发起一次全市场扫描。</div>}
       </section>
