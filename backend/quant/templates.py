@@ -121,5 +121,88 @@ TEMPLATES = [
 ]
 
 
+BUILTIN_STRATEGIES = [
+    {
+        "id": "strat_builtin_short_v1",
+        "name": "短线强势确认策略",
+        "description": "只在市场和行业同步偏强时，选择现金流为正且负债可控的非ST盈利股，用趋势、量能和主力资金共同确认，控制追高与解禁风险。",
+        "builtin": True,
+        "horizon": "short",
+        "target_win_rate": [70, 90],
+        "validation_note": "70%-90%仅为验证目标，需至少60笔完成交易、滚动样本外回测和模拟盘确认，不承诺收益。",
+        "active": True,
+        "scan_schedule": "daily",
+        "filter": {"logic": "AND", "rules": [
+            {"type": "market_cap", "operator": "between", "value": [50, 2000]},
+            {"type": "pe_ttm", "operator": "between", "value": [1, 60]},
+            {"type": "turnover", "operator": "between", "value": [2, 12]},
+            {"type": "ocf_to_profit", "operator": "gt", "value": 0},
+            {"type": "debt_ratio", "operator": "lt", "value": 70},
+            {"type": "is_profitable", "operator": "eq", "value": True},
+            {"type": "no_lockup_expiry", "operator": "gte", "value": 30},
+            {"type": "market_breadth", "operator": "gt", "value": 1},
+            {"type": "sector_strength", "operator": "lte", "value": 10},
+        ]},
+        "entry": {"logic": "AND", "rules": [
+            {"type": "above_ma", "operator": "eq", "value": "MA5"},
+            {"type": "above_ma", "operator": "eq", "value": "MA20"},
+            {"type": "rsi", "operator": "between", "value": [50, 70]},
+            {"type": "macd", "operator": "gt", "value": 0},
+            {"type": "vol_ratio", "operator": "between", "value": [1.2, 3.5]},
+            {"type": "main_inflow", "operator": "gt", "value": 0},
+            {"type": "change_pct", "operator": "between", "value": [0.5, 5]},
+        ]},
+        "exit": {
+            "stop_loss_pct": 4,
+            "take_profit_pct": 8,
+            "max_holding_days": 8,
+            "rules": [{"type": "below_ma", "operator": "eq", "value": "MA10"}],
+        },
+        "position": {**DEFAULT_POSITION, "max_holdings": 4, "max_position_pct": 20},
+    },
+    {
+        "id": "strat_builtin_long_v1",
+        "name": "长期质量成长趋势策略",
+        "description": "先筛选盈利质量、现金流、成长和估值均合格的公司，再用长期趋势和市场宽度确认入场。",
+        "builtin": True,
+        "horizon": "long",
+        "target_win_rate": [70, 90],
+        "validation_note": "70%-90%仅为验证目标，需跨牛熊周期、至少60笔完成交易并做滚动样本外验证，不承诺收益。",
+        "active": True,
+        "scan_schedule": "daily",
+        "filter": {"logic": "AND", "rules": [
+            {"type": "market_cap", "operator": "gt", "value": 100},
+            {"type": "pe_ttm", "operator": "between", "value": [1, 35]},
+            {"type": "pb", "operator": "between", "value": [0.01, 5]},
+            {"type": "roe", "operator": "gte", "value": 12},
+            {"type": "gross_margin", "operator": "gte", "value": 20},
+            {"type": "revenue_growth", "operator": "gt", "value": 0},
+            {"type": "deducted_profit_growth", "operator": "gt", "value": 0},
+            {"type": "ocf_to_profit", "operator": "gte", "value": 0.8},
+            {"type": "debt_ratio", "operator": "lt", "value": 60},
+            {"type": "receivable_to_revenue", "operator": "lt", "value": 30},
+            {"type": "is_profitable", "operator": "eq", "value": True},
+            {"type": "no_lockup_expiry", "operator": "gte", "value": 60},
+        ]},
+        "entry": {"logic": "AND", "rules": [
+            {"type": "above_ma", "operator": "eq", "value": "MA20"},
+            {"type": "above_ma", "operator": "eq", "value": "MA60"},
+            {"type": "rsi", "operator": "between", "value": [45, 68]},
+            {"type": "macd", "operator": "gt", "value": 0},
+            {"type": "market_breadth", "operator": "gt", "value": 1},
+        ]},
+        "exit": {
+            "stop_loss_pct": 12,
+            "take_profit_pct": 35,
+            "max_holding_days": 180,
+            "rules": [{"type": "below_ma", "operator": "eq", "value": "MA60"}],
+        },
+        "position": {**DEFAULT_POSITION, "max_holdings": 5, "max_position_pct": 20},
+    },
+]
+
+TEMPLATES.extend(BUILTIN_STRATEGIES)
+
+
 def list_templates() -> list[dict]:
     return copy.deepcopy(TEMPLATES)

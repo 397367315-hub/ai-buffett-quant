@@ -19,16 +19,26 @@ def _validate_strategy(strategy: dict) -> None:
         validate_group({"logic": "OR", "rules": [rule]}, allow_empty=False)
 
 
-def create_strategy(payload: StrategyCreate | dict) -> dict:
+def build_strategy(
+    payload: StrategyCreate | dict,
+    *,
+    strategy_id: str | None = None,
+    created_at: str | None = None,
+    updated_at: str | None = None,
+) -> dict:
     body = payload.model_dump(mode="json") if isinstance(payload, StrategyCreate) else StrategyCreate.model_validate(payload).model_dump(mode="json")
     _validate_strategy(body)
     now = shanghai_now().isoformat()
-    strategy = {
-        "id": f"strat_{uuid.uuid4().hex[:12]}",
-        "created_at": now,
-        "updated_at": now,
+    return {
+        "id": strategy_id or f"strat_{uuid.uuid4().hex[:12]}",
+        "created_at": created_at or now,
+        "updated_at": updated_at or now,
         **body,
     }
+
+
+def create_strategy(payload: StrategyCreate | dict) -> dict:
+    strategy = build_strategy(payload)
 
     def append(document: dict) -> None:
         if any(item.get("name") == strategy["name"] for item in document.get("strategies", [])):

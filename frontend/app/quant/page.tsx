@@ -94,13 +94,17 @@ export default function QuantPage() {
       const response = await apiFetch<{ data: Strategy }>(strategyId ? `/quant/strategy/${strategyId}` : '/quant/strategy', {
         method: strategyId ? 'PUT' : 'POST', body: JSON.stringify(draft),
       });
-      setStrategies((current) => {
-        const exists = current.some((item) => item.id === response.data.id);
-        return exists ? current.map((item) => item.id === response.data.id ? response.data : item) : [response.data, ...current];
-      });
-      setEditingId(response.data.id);
-    } catch (caught) { setError(caught instanceof Error ? caught.message : '策略保存失败'); }
-    setSaving(false);
+      // Confirm the committed record through the read path before showing success.
+      const persisted = await apiFetch<{ data: Strategy[] }>('/quant/strategies');
+      const saved = (persisted.data || []).find((item) => item.id === response.data.id);
+      if (!saved) throw new Error('后端未确认策略已持久化，请重试');
+      setStrategies(persisted.data || []);
+      setEditingId(saved.id);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '策略保存失败');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const previewStrategy = async (draft: StrategyDraft) => {
@@ -142,7 +146,7 @@ export default function QuantPage() {
     <div className="border border-border rounded-md overflow-x-auto mb-4"><div className="flex w-full min-w-[350px]">{tabs.map((item) => { const Icon = item.icon; return <button type="button" key={item.id} onClick={() => setTab(item.id)} className={`flex-1 inline-flex items-center justify-center gap-1 px-2 sm:px-4 py-2.5 text-xs sm:text-sm whitespace-nowrap border-r border-border last:border-r-0 ${tab === item.id ? 'bg-[#1F6FEB22] text-accent font-semibold' : 'text-text-secondary hover:bg-[#161B22] hover:text-text'}`}><Icon size={15} />{item.label}</button>; })}</div></div>
     {error && <div className="mb-4 border border-down/50 bg-[#EF535022] rounded-md p-3 text-xs text-down flex gap-2"><AlertTriangle size={15} className="shrink-0" />{error}</div>}
 
-    {tab === 'strategies' && <div className="grid grid-cols-1 xl:grid-cols-[250px_minmax(0,1fr)] gap-4"><aside className="border border-border rounded-md overflow-hidden h-fit"><div className="flex items-center justify-between px-3 py-2 border-b border-border"><span className="text-sm font-semibold text-text">我的策略</span><button type="button" onClick={() => { setEditingId(null); setBuilderNonce((value) => value + 1); }} className="h-7 w-7 inline-flex items-center justify-center rounded-md text-accent hover:bg-[#1F6FEB22]" title="新建策略" aria-label="新建策略"><Plus size={16} /></button></div><div className="p-2 space-y-1">{strategies.map((strategy) => <div key={strategy.id} className={`group flex items-center gap-2 p-2 rounded-md ${editingId === strategy.id ? 'bg-[#1F6FEB22]' : 'hover:bg-[#161B22]'}`}><button type="button" onClick={() => setEditingId(strategy.id)} className="min-w-0 flex-1 text-left"><div className="text-xs font-medium text-text truncate">{strategy.name}</div><div className="mt-1 flex items-center gap-1.5 text-[11px] text-text-secondary"><span className={`w-1.5 h-1.5 rounded-full ${strategy.active ? 'bg-up' : 'bg-text-secondary'}`} />{strategy.active ? '启用中' : '已停用'} · {strategy.entry.rules.length} 条买入规则</div></button><button type="button" onClick={() => deleteStrategy(strategy)} className="h-6 w-6 hidden group-hover:inline-flex items-center justify-center text-text-secondary hover:text-down rounded-md" title="删除策略" aria-label="删除策略"><Trash2 size={13} /></button></div>)}{!strategies.length && <div className="p-4 text-center text-xs text-text-secondary">尚未保存策略。可从右侧模板开始。</div>}</div></aside><section className="border border-border rounded-md p-3 md:p-4"><StrategyBuilder key={currentStrategy?.id || `new-${builderNonce}`} strategy={currentStrategy} templates={templates} rules={rules} sectors={sectors} onSave={saveStrategy} onPreview={previewStrategy} onBacktest={moveToBacktest} saving={saving} /></section></div>}
+    {tab === 'strategies' && <div className="grid grid-cols-1 xl:grid-cols-[250px_minmax(0,1fr)] gap-4"><aside className="border border-border rounded-md overflow-hidden h-fit"><div className="flex items-center justify-between px-3 py-2 border-b border-border"><span className="text-sm font-semibold text-text">我的策略</span><button type="button" onClick={() => { setEditingId(null); setBuilderNonce((value) => value + 1); }} className="h-7 w-7 inline-flex items-center justify-center rounded-md text-accent hover:bg-[#1F6FEB22]" title="新建策略" aria-label="新建策略"><Plus size={16} /></button></div><div className="p-2 space-y-1">{strategies.map((strategy) => <div key={strategy.id} className={`group flex items-center gap-2 p-2 rounded-md ${editingId === strategy.id ? 'bg-[#1F6FEB22]' : 'hover:bg-[#161B22]'}`}><button type="button" onClick={() => setEditingId(strategy.id)} className="min-w-0 flex-1 text-left"><div className="text-xs font-medium text-text truncate">{strategy.name}</div><div className="mt-1 flex items-center gap-1.5 text-[11px] text-text-secondary"><span className={`w-1.5 h-1.5 rounded-full ${strategy.active ? 'bg-up' : 'bg-text-secondary'}`} />{strategy.builtin ? '内置 · ' : ''}{strategy.active ? '启用中' : '已停用'} · {strategy.entry.rules.length} 条买入规则</div></button>{!strategy.builtin && <button type="button" onClick={() => deleteStrategy(strategy)} className="h-6 w-6 hidden group-hover:inline-flex items-center justify-center text-text-secondary hover:text-down rounded-md" title="删除策略" aria-label="删除策略"><Trash2 size={13} /></button>}</div>)}{!strategies.length && <div className="p-4 text-center text-xs text-text-secondary">尚未保存策略。可从右侧模板开始。</div>}</div></aside><section className="border border-border rounded-md p-3 md:p-4"><StrategyBuilder key={currentStrategy?.id || `new-${builderNonce}`} strategy={currentStrategy} templates={templates} rules={rules} sectors={sectors} onSave={saveStrategy} onPreview={previewStrategy} onBacktest={moveToBacktest} saving={saving} /></section></div>}
     {tab === 'signals' && <section className="border border-border rounded-md p-3 md:p-4"><SignalList snapshot={signals} job={scanJob} onRefresh={startScan} onAddToPaper={moveSignalToPaper} history={signalHistory} /></section>}
     {tab === 'overnight' && <OvernightPanel />}
     {tab === 'backtest' && <section className="border border-border rounded-md p-3 md:p-4"><BacktestPanel strategies={strategies} initialStrategyId={initialBacktestStrategy} onResult={handleResult} /></section>}

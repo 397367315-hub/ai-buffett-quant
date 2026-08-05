@@ -17,6 +17,7 @@ from models import StockDailyBar
 from quant.engine import get_strategy, match_stock
 from quant.indicators import enrich_with_indicators, normalize_snapshot_stock, number
 from quant.jobs import create_job, get_job, spawn, update_job
+from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
 from quant.rules import TECHNICAL_RULE_TYPES, evaluate_rules, static_group_can_match
 from quant.storage import quant_store
 from services.data_collector import collector, shanghai_now
@@ -139,9 +140,15 @@ class StrategyBacktestService:
             update_job("backtest", job_id, phase="market_snapshot", progress=8, message="历史股票池缺少快照，正在获取当前市场目录")
         try:
             snapshot = await collector.fetch_quant_market_snapshot()
+            await save_quant_market_snapshot(snapshot)
             quant_store.write("market_snapshot", {"version": 1, **snapshot})
             return [normalize_snapshot_stock(item) for item in snapshot.get("stocks") or []], warnings
         except Exception:
+            persistent = await load_quant_market_snapshot()
+            if persistent.get("stocks"):
+                quant_store.write("market_snapshot", {"version": 1, **persistent})
+                warnings.append(f"实时行情不可用，使用 {persistent.get('data_date')} 的最近交易日缓存股票池。")
+                return [normalize_snapshot_stock(item) for item in persistent["stocks"]], warnings
             warnings.append("当前全市场快照不可用，仅能使用已缓存日线中的技术规则；估值、板块和资金快照规则可能无法评估。")
             try:
                 async with async_session() as session:

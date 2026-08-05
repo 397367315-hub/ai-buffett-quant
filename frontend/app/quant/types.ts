@@ -38,9 +38,16 @@ export interface Strategy {
   exit: ExitConfig;
   position: PositionConfig;
   description?: string;
+  builtin?: boolean;
+  horizon?: 'short' | 'long';
+  target_win_rate?: [number, number];
+  validation_note?: string;
 }
 
-export type StrategyDraft = Omit<Strategy, 'id' | 'created_at' | 'updated_at'>;
+export type StrategyDraft = Omit<
+  Strategy,
+  'id' | 'created_at' | 'updated_at' | 'description' | 'builtin' | 'horizon' | 'target_win_rate' | 'validation_note'
+>;
 
 export interface RuleMeta {
   type: string;

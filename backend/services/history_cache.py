@@ -614,6 +614,11 @@ class HistoryCacheService:
                 "error": "quote_timestamp_missing",
             }
 
+        # The same verified full-market close is the durable fallback used by
+        # quantitative scans after a Render restart or an upstream outage.
+        from quant.market_cache import save_quant_market_snapshot
+        await save_quant_market_snapshot(snapshot)
+
         rows: list[dict] = []
         for stock in snapshot.get("stocks") or []:
             quote_at = collector._quote_timestamp_datetime(stock.get("quote_timestamp"))

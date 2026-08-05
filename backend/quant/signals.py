@@ -13,6 +13,7 @@ from models import StockDailyBar
 from quant.engine import get_strategy, list_strategies, match_stock
 from quant.indicators import enrich_with_indicators, normalize_snapshot_stock
 from quant.jobs import create_job, get_job, latest_running_job, spawn, update_job
+from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
 from quant.report import build_feature_coverage_report
 from quant.rules import TECHNICAL_RULE_TYPES, static_group_can_match
 from quant.storage import quant_store
@@ -112,12 +113,18 @@ class QuantSignalService:
             return cached, False, None
         try:
             snapshot = await collector.fetch_quant_market_snapshot()
+            await save_quant_market_snapshot(snapshot)
             quant_store.write("market_snapshot", {"version": 1, **snapshot})
             return snapshot, False, None
         except Exception as exc:
             if cached.get("stocks"):
                 warning = f"实时行情不可用，已降级到 {cached.get('fetched_at') or '上次'} 的缓存快照"
                 return {**cached, "is_realtime": False}, True, warning
+            persistent = await load_quant_market_snapshot()
+            if persistent.get("stocks"):
+                quant_store.write("market_snapshot", {"version": 1, **persistent})
+                warning = f"实时行情不可用，已使用 {persistent.get('data_date')} 的最近交易日缓存"
+                return persistent, True, warning
             raise RuntimeError("实时行情与本地行情缓存均不可用") from exc
 
     async def _annotate_board_codes(self, stocks: list[dict], strategies: list[dict]) -> None:

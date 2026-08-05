@@ -30,7 +30,17 @@ export const emptyStrategyDraft = (): StrategyDraft => ({
 
 function toDraft(strategy?: Strategy | StrategyDraft | null): StrategyDraft {
   if (!strategy) return emptyStrategyDraft();
-  const { id: _id, created_at: _createdAt, updated_at: _updatedAt, description: _description, ...rest } = strategy as Strategy & { description?: string };
+  const {
+    id: _id,
+    created_at: _createdAt,
+    updated_at: _updatedAt,
+    description: _description,
+    builtin: _builtin,
+    horizon: _horizon,
+    target_win_rate: _targetWinRate,
+    validation_note: _validationNote,
+    ...rest
+  } = strategy as Strategy;
   return JSON.parse(JSON.stringify(rest)) as StrategyDraft;
 }
 
@@ -183,6 +193,8 @@ export default function StrategyBuilder({ strategy, templates, rules, sectors, o
           {strategy && <button type="button" onClick={() => onBacktest(strategy.id)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-up/50 text-up rounded-md hover:bg-[#26A69A22]"><Check size={14} />回测</button>}
         </div>
       </div>
+
+      {strategy?.builtin && strategy.validation_note && <div className="border border-warn/40 bg-[#D2992222] rounded-md px-3 py-2 text-xs leading-5 text-warn">{strategy.validation_note}</div>}
 
       {templates.length > 0 && <div className="flex flex-wrap gap-2">
         {templates.map((template) => <button type="button" key={template.id || template.name} onClick={() => { setDraft(toDraft(template)); setPreview(null); }} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md text-xs text-text-secondary hover:border-accent hover:text-text" title={template.description}><CopyPlus size={13} />{template.name}</button>)}

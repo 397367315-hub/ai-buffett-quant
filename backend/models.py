@@ -149,6 +149,20 @@ class MarketDataCache(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class QuantStrategy(Base):
+    """User-authored quantitative strategies stored outside the ephemeral app filesystem."""
+
+    __tablename__ = "quant_strategies"
+    __table_args__ = (Index("idx_quant_strategies_updated", "updated_at"),)
+
+    id = Column(String(40), primary_key=True)
+    name = Column(String(80), nullable=False, unique=True)
+    is_builtin = Column(Boolean, nullable=False, default=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(String(50), nullable=False)
+    updated_at = Column(String(50), nullable=False)
+
+
 class NorthboundDealDaily(Base):
     """北向汇总成交额。净买入字段停止公开时保持为空，绝不填造数据。"""
 

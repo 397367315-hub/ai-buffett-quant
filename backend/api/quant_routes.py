@@ -5,8 +5,16 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, status
 
 from quant.backtest import quant_backtest_service
-from quant.engine import create_strategy, delete_strategy, get_strategy, list_strategies, update_strategy
+from quant.persistence import (
+    StrategyPersistenceError,
+    create_strategy_persisted,
+    delete_strategy_persisted,
+    get_strategy_persisted,
+    list_strategies_persisted,
+    update_strategy_persisted,
+)
 from quant.portfolio import paper_portfolio
+from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
 from quant.rules import public_rule_catalog
 from quant.schemas import (
     BacktestRequest,
@@ -52,9 +60,14 @@ async def get_sectors(limit: int = Query(300, ge=20, le=1000)):
     if not snapshot.get("stocks"):
         try:
             snapshot = await collector.fetch_quant_market_snapshot()
+            await save_quant_market_snapshot(snapshot)
             quant_store.write("market_snapshot", {"version": 1, **snapshot})
         except Exception:
-            snapshot = {"stocks": []}
+            snapshot = await load_quant_market_snapshot()
+            if snapshot.get("stocks"):
+                quant_store.write("market_snapshot", {"version": 1, **snapshot})
+            else:
+                snapshot = {"stocks": []}
     names = sorted({
         str(item.get("sector") or "").strip()
         for item in snapshot.get("stocks") or []
@@ -73,19 +86,27 @@ async def get_sectors(limit: int = Query(300, ge=20, le=1000)):
 @router.post("/strategy", status_code=status.HTTP_201_CREATED)
 async def create_strategy_endpoint(payload: StrategyCreate):
     try:
-        return {"code": 0, "data": create_strategy(payload)}
+        return {"code": 0, "data": await create_strategy_persisted(payload)}
     except ValueError as exc:
         raise _unprocessable(exc) from exc
+    except StrategyPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/strategies")
 async def list_strategies_endpoint():
-    return {"code": 0, "data": list_strategies()}
+    try:
+        return {"code": 0, "data": await list_strategies_persisted()}
+    except StrategyPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/strategy/{strategy_id}")
 async def get_strategy_endpoint(strategy_id: str):
-    strategy = get_strategy(strategy_id)
+    try:
+        strategy = await get_strategy_persisted(strategy_id)
+    except StrategyPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if strategy is None:
         raise HTTPException(status_code=404, detail="策略不存在")
     return {"code": 0, "data": strategy}
@@ -94,9 +115,11 @@ async def get_strategy_endpoint(strategy_id: str):
 @router.put("/strategy/{strategy_id}")
 async def update_strategy_endpoint(strategy_id: str, payload: StrategyUpdate):
     try:
-        strategy = update_strategy(strategy_id, payload)
+        strategy = await update_strategy_persisted(strategy_id, payload)
     except ValueError as exc:
         raise _unprocessable(exc) from exc
+    except StrategyPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if strategy is None:
         raise HTTPException(status_code=404, detail="策略不存在")
     return {"code": 0, "data": strategy}
@@ -104,7 +127,13 @@ async def update_strategy_endpoint(strategy_id: str, payload: StrategyUpdate):
 
 @router.delete("/strategy/{strategy_id}")
 async def delete_strategy_endpoint(strategy_id: str):
-    if not delete_strategy(strategy_id):
+    try:
+        deleted = await delete_strategy_persisted(strategy_id)
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    except StrategyPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="策略不存在")
     return {"code": 0, "data": {"deleted": True}}
 
@@ -207,7 +236,7 @@ async def get_backtest_status(job_id: str):
 
 @router.get("/performance/{strategy_id}")
 async def get_strategy_performance(strategy_id: str):
-    if get_strategy(strategy_id) is None:
+    if await get_strategy_persisted(strategy_id) is None:
         raise HTTPException(status_code=404, detail="策略不存在")
     return {"code": 0, "data": quant_backtest_service.get_results(strategy_id)}
 

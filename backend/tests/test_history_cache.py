@@ -163,10 +163,14 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
         }
         service._upsert = AsyncMock(return_value=1)
 
-        with patch.object(collector, "fetch_quant_market_snapshot", new_callable=AsyncMock, return_value=snapshot) as fetch:
+        with (
+            patch.object(collector, "fetch_quant_market_snapshot", new_callable=AsyncMock, return_value=snapshot) as fetch,
+            patch("quant.market_cache.save_quant_market_snapshot", new_callable=AsyncMock, return_value=True) as save_quant_snapshot,
+        ):
             result = await service.cache_current_stock_bars()
 
         fetch.assert_awaited_once_with(include_special=True)
+        save_quant_snapshot.assert_awaited_once_with(snapshot)
         self.assertEqual(result["status"], "partial")
         self.assertEqual(result["data_date"], "2026-08-03")
         self.assertEqual(result["verified_stocks"], 1)
