@@ -40,19 +40,29 @@ class AIService:
             print(f"AI generate error: {e}")
             return f"[AI服务暂时不可用: {e}]"
 
-    async def chat_stream(self, message: str, system_prompt: str, user_id: str) -> AsyncGenerator[dict, None]:
+    async def chat_stream(
+        self,
+        message: str,
+        system_prompt: str,
+        user_id: str,
+        history: Optional[list[dict]] = None,
+    ) -> AsyncGenerator[dict, None]:
         if not self.client:
             yield {"type": "text", "content": "[AI服务未配置，请在.env中设置DEEPSEEK_API_KEY]"}
             yield {"type": "end", "content": ""}
             return
 
         try:
+            messages = [{"role": "system", "content": system_prompt}]
+            for item in (history or [])[-80:]:
+                role = item.get("role")
+                content = str(item.get("content") or "").strip()
+                if role in {"user", "assistant"} and content:
+                    messages.append({"role": role, "content": content[:30000]})
+            messages.append({"role": "user", "content": message})
             stream = await self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message},
-                ],
+                messages=messages,
                 temperature=0.7,
                 max_tokens=1500,
                 stream=True,

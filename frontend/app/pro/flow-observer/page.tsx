@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  BrainCircuit,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -31,6 +32,28 @@ interface ObserverDatesResponse {
 interface ObserverApiResponse {
   code: number;
   data: ObserverFlowData;
+}
+
+type AnalysisWindow = 'week' | 'two_weeks' | 'month';
+
+interface FlowAnalysisData {
+  available: boolean;
+  board_label: string;
+  window: { id: AnalysisWindow; label: string; sessions: number };
+  period: { start: string | null; end: string | null };
+  coverage: { actual_sessions: number; requested_sessions: number; board_count: number; complete: boolean };
+  analysis: {
+    score: number; tone: string; headline: string; summary: string;
+    latest_breadth_pct: number; concentration_top3_pct: number; aggregate_inflow: number;
+    top_inflows: Array<{ code: string; name: string; total_inflow: number; positive_days: number }>;
+    top_outflows: Array<{ code: string; name: string; total_inflow: number; negative_days: number }>;
+    turning_positive: Array<{ code: string; name: string; latest_inflow: number }>;
+    turning_negative: Array<{ code: string; name: string; latest_inflow: number }>;
+    suggestions: string[]; risks: string[];
+  };
+  ai_narrative: string | null;
+  ai_generated: boolean;
+  method: string;
 }
 
 const MODE_OPTIONS: Array<{ id: FlowObserverMode; label: string; icon: typeof Zap }> = [
@@ -110,6 +133,10 @@ export default function FlowObserverPage() {
   const [datesLoading, setDatesLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [analysisWindow, setAnalysisWindow] = useState<AnalysisWindow>('week');
+  const [analysis, setAnalysis] = useState<FlowAnalysisData | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   const observerLoadedRef = useRef(false);
   const observerRequestRef = useRef(0);
@@ -194,6 +221,22 @@ export default function FlowObserverPage() {
     }
   }, [boardType, limit]);
 
+  const runAnalysis = useCallback(async (window: AnalysisWindow) => {
+    setAnalysisWindow(window);
+    setAnalysisLoading(true);
+    setAnalysisError(null);
+    try {
+      const response = await apiFetch<{ code: number; data: FlowAnalysisData }>('/flow/observer/analysis', {
+        method: 'POST', body: JSON.stringify({ board_type: boardType, window }),
+      });
+      setAnalysis(response.data);
+    } catch (caught) {
+      setAnalysisError(caught instanceof Error ? caught.message : '资金流分析暂时不可用');
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }, [boardType]);
+
   useEffect(() => {
     void loadDates(boardType);
     setPlaying(false);
@@ -273,6 +316,8 @@ export default function FlowObserverPage() {
     setError(null);
     setSelectedDate('');
     setDates([]);
+    setAnalysis(null);
+    setAnalysisError(null);
     setBoardType(nextBoardType);
   };
 
@@ -538,6 +583,25 @@ export default function FlowObserverPage() {
         </div>
       </section>
 
+      <section className="mt-4 rounded-lg border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><BrainCircuit size={16} className="text-warn" />资金流周期分析</h2>{analysis && <p className="mt-1 text-xs text-text-secondary">{analysis.period.start || '--'} 至 {analysis.period.end || '--'} · {analysis.coverage.actual_sessions}/{analysis.coverage.requested_sessions} 个交易日</p>}</div>
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-md bg-[#0D1117] p-1" role="group" aria-label="资金流分析周期">{([['week', '一周'], ['two_weeks', '两周'], ['month', '一月']] as const).map(([id, label]) => <button key={id} type="button" onClick={() => { setAnalysisWindow(id); if (analysis) void runAnalysis(id); }} className={`px-3 py-1.5 text-xs rounded ${analysisWindow === id ? 'bg-[#1F6FEB33] text-accent' : 'text-text-secondary hover:text-text'}`}>{label}</button>)}</div>
+            <button type="button" onClick={() => runAnalysis(analysisWindow)} disabled={analysisLoading} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-accent px-3 text-xs text-white disabled:opacity-50">{analysisLoading ? <RefreshCw size={13} className="animate-spin" /> : <BrainCircuit size={13} />}分析</button>
+          </div>
+        </div>
+        {analysisError && <div className="mt-3 text-xs text-up">{analysisError}</div>}
+        {analysisLoading && !analysis && <div className="mt-4 flex items-center gap-2 border-t border-border pt-4 text-xs text-text-secondary"><RefreshCw size={13} className="animate-spin text-accent" />聚合历史板块资金并生成解读</div>}
+        {analysis && <div className="mt-4 border-t border-border pt-4">
+          <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="text-sm font-medium text-text">{analysis.analysis.headline}</div><p className="mt-1 text-xs leading-5 text-text-secondary">{analysis.analysis.summary}</p></div><span className={`shrink-0 border rounded px-2 py-1 text-xs ${analysis.analysis.score >= 62 ? 'border-up/50 text-up' : analysis.analysis.score <= 38 ? 'border-down/50 text-down' : 'border-warn/50 text-warn'}`}>{analysis.analysis.tone} · {analysis.analysis.score.toFixed(0)}</span></div>
+          <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4 text-xs"><AnalysisMetric label="周期净流入" value={formatSignedAmount(analysis.analysis.aggregate_inflow)} /><AnalysisMetric label="最新资金广度" value={`${analysis.analysis.latest_breadth_pct.toFixed(1)}%`} /><AnalysisMetric label="前三集中度" value={`${analysis.analysis.concentration_top3_pct.toFixed(1)}%`} /><AnalysisMetric label="覆盖板块" value={`${analysis.coverage.board_count}个`} /></div>
+          <div className="mt-4 grid gap-4 lg:grid-cols-2"><AnalysisList title="持续流入 / 转强" items={[...analysis.analysis.top_inflows.slice(0, 3).map((item) => `${item.name} ${formatSignedAmount(item.total_inflow)}`), ...analysis.analysis.turning_positive.slice(0, 2).map((item) => `${item.name} 刚转强`)]} tone="text-up" /><AnalysisList title="持续流出 / 转弱" items={[...analysis.analysis.top_outflows.slice(0, 3).map((item) => `${item.name} ${formatSignedAmount(item.total_inflow)}`), ...analysis.analysis.turning_negative.slice(0, 2).map((item) => `${item.name} 刚转弱`)]} tone="text-down" /></div>
+          <div className="mt-4 grid gap-4 border-t border-border pt-4 lg:grid-cols-2"><AnalysisList title="观察建议" items={analysis.analysis.suggestions} tone="text-accent" /><AnalysisList title="风险与缺口" items={analysis.analysis.risks.length ? analysis.analysis.risks : ['当前覆盖未发现额外数据缺口']} tone="text-warn" /></div>
+          {analysis.ai_narrative && <div className="mt-4 border-l-2 border-warn pl-3"><div className="text-xs font-medium text-text">AI 综合解读</div><p className="mt-1 whitespace-pre-line text-xs leading-6 text-text-secondary">{analysis.ai_narrative}</p></div>}
+        </div>}
+      </section>
+
       <section className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {summaryCards.map((item) => (
           <StatCard key={item.label} {...item} />
@@ -577,4 +641,12 @@ export default function FlowObserverPage() {
       </section>
     </div>
   );
+}
+
+function AnalysisMetric({ label, value }: { label: string; value: string }) {
+  return <div><div className="text-text-secondary">{label}</div><div className="mt-1 font-mono text-base text-text">{value}</div></div>;
+}
+
+function AnalysisList({ title, items, tone }: { title: string; items: string[]; tone: string }) {
+  return <div><div className={`text-xs font-medium ${tone}`}>{title}</div><div className="mt-2 space-y-1.5">{items.length ? items.map((item, index) => <p key={`${item}-${index}`} className="text-xs leading-5 text-text-secondary">{item}</p>) : <p className="text-xs text-text-secondary">--</p>}</div></div>;
 }

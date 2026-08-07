@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Bot, ChevronDown, Clock3, Loader2, MoonStar, RefreshCw, WalletCards } from 'lucide-react';
+import { AlertTriangle, BookOpen, Bot, ChevronDown, Clock3, Loader2, MoonStar, RefreshCw, WalletCards } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import PersonalWorkspaceNav from '@/components/PersonalWorkspaceNav';
 import { apiFetch } from '@/lib/api';
@@ -52,7 +52,23 @@ interface PoolView {
   sectors: Array<{ key: string; label: string; count: number; picks: RobotPick[] }>;
   picks: RobotPick[];
   performance: Performance;
+  journal: RobotJournal | null;
   next_update: string;
+}
+
+interface RobotJournal {
+  id: number;
+  run_id: number | null;
+  pool_type: PoolType;
+  journal_date: string;
+  source_data_date: string | null;
+  is_realtime: boolean;
+  action_summary: string;
+  decision_reason: string;
+  pnl_reflection: string;
+  lessons: string;
+  metrics: Record<string, any>;
+  picks_snapshot: Array<Record<string, any>>;
 }
 
 interface Performance {
@@ -113,6 +129,8 @@ const time = (value?: string | null) => value ? new Date(value).toLocaleString('
 export default function RobotPage() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [history, setHistory] = useState<RobotRun[]>([]);
+  const [journals, setJournals] = useState<RobotJournal[]>([]);
+  const [selectedJournalId, setSelectedJournalId] = useState<number | null>(null);
   const [poolType, setPoolType] = useState<PoolType>('short');
   const [loading, setLoading] = useState(true);
   const [loadProgress, setLoadProgress] = useState(8);
@@ -123,12 +141,14 @@ export default function RobotPage() {
     if (!quiet) setLoading(true);
     setError(null);
     try {
-      const [dashboard, runs] = await Promise.all([
+      const [dashboard, runs, journalResponse] = await Promise.all([
         apiFetch<{ data: Dashboard }>('/personal/robot'),
         apiFetch<{ data: { runs: RobotRun[] } }>('/personal/robot/history?limit=12'),
+        apiFetch<{ data: { journals: RobotJournal[] } }>('/personal/robot/journals?limit=30'),
       ]);
       setData(dashboard.data);
       setHistory(runs.data.runs || []);
+      setJournals(journalResponse.data.journals || []);
       setLoadProgress(100);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'AI机器人池加载失败');
@@ -167,6 +187,11 @@ export default function RobotPage() {
   const pool = data?.pools?.[poolType];
   const combined = data?.combined_performance;
   const latestHistory = useMemo(() => history.filter((run) => run.status !== 'queued' && run.status !== 'running').slice(0, 6), [history]);
+  const poolJournals = useMemo(() => journals.filter((journal) => journal.pool_type === poolType), [journals, poolType]);
+  const selectedJournal = useMemo(
+    () => poolJournals.find((journal) => journal.id === selectedJournalId) || poolJournals[0] || pool?.journal || null,
+    [poolJournals, selectedJournalId, pool?.journal],
+  );
 
   if (loading && !data) {
     return <div className="max-w-5xl mx-auto px-4 py-20 text-center"><Loader2 size={30} className="animate-spin text-accent mx-auto" /><div className="text-sm text-text mt-4">正在读取机器人快照与模拟持仓</div><div className="h-1.5 max-w-sm mx-auto bg-[#21262D] mt-5 overflow-hidden rounded"><div className="h-full bg-accent transition-all" style={{ width: `${loadProgress}%` }} /></div><div className="text-xs text-text-secondary font-mono mt-2">{loadProgress}%</div></div>;
@@ -216,6 +241,8 @@ export default function RobotPage() {
 
         <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-text-secondary mb-4"><span>持有周期：{pool.config.holding_period}</span><span>自动更新：{pool.config.refresh_rule}</span><span>最近运行：{time(pool.run?.finished_at)}</span><span>下次：{time(pool.next_update)}</span>{pool.run?.summary && <span>调入 {pool.run.summary.new || 0} · 保留 {pool.run.summary.retained || 0} · 淘汰 {pool.run.summary.removed || 0}</span>}</div>
 
+        {selectedJournal && <RobotJournalSection journals={poolJournals.length ? poolJournals : [selectedJournal]} selected={selectedJournal} onSelect={setSelectedJournalId} />}
+
         {poolType === 'short' && data?.overnight && <OvernightRobotSection data={data.overnight} />}
 
         {pool.sectors.length === 0 ? <section className="border border-border rounded-md py-16 text-center"><Bot size={28} className="text-border mx-auto" /><div className="text-sm text-text mt-3">当前还没有完成的{pool.config.label}快照</div><div className="text-xs text-text-secondary mt-2">数据源明确返回空时不会使用旧名单冒充本轮结果。</div></section> : <div className="space-y-4">
@@ -235,6 +262,15 @@ function Metric({ label, value, className = '', wrapperClassName = '' }: { label
 
 function RobotRow({ pick }: { pick: RobotPick }) {
   return <tr className="border-b border-border/60 last:border-b-0 align-top"><td className="px-4 py-3"><div className="text-text font-medium">{pick.name}<span className="font-mono text-text-secondary ml-2">{pick.code}</span></div><div className="mt-1 flex gap-1.5"><span className={`border rounded px-1.5 py-0.5 ${pick.state === 'new' ? 'border-accent/50 text-accent' : 'border-border text-text-secondary'}`}>{pick.state === 'new' ? '新调入' : '保留'}</span><span className="text-text-secondary py-0.5">{pick.holding_label}</span></div></td><td className="px-3 py-3 text-right font-mono text-text">{number(pick.score, 1)}</td><td className="px-3 py-3 text-right font-mono"><div className="text-text">{pick.selected_price == null ? '等待有效行情' : `¥${number(pick.selected_price)}`}</div><div className="text-text-secondary mt-1">{pick.selected_on || '--'} · {pick.simulated_shares}股</div></td><td className="px-3 py-3 text-right font-mono"><div className="text-text">{pick.latest_price == null ? '--' : `¥${number(pick.latest_price)}`}</div><div className={pnlClass(pick.change_pct)}>{signed(pick.change_pct)}</div></td><td className="px-3 py-3 text-right font-mono text-text">{money(pick.cost_value)}</td><td className="px-3 py-3 text-right font-mono text-text">{money(pick.market_value)}</td><td className={`px-3 py-3 text-right font-mono ${pnlClass(pick.pnl)}`}><div>{money(pick.pnl)}</div><div>{signed(pick.pnl_pct)}</div></td><td className="px-3 py-3 max-w-[260px]"><p className="text-text-secondary leading-5 line-clamp-2">{pick.basis || pick.verdict || 'Agent证据已随快照保存'}</p>{pick.evidence.length > 0 && <details className="mt-1"><summary className="text-accent cursor-pointer inline-flex items-center gap-1">Agent证据<ChevronDown size={12} /></summary><div className="mt-2 space-y-1.5">{pick.evidence.slice(0, 4).map((item, index) => <div key={`${item.agent}-${index}`} className="border-l border-border pl-2"><div className="text-text">{item.agent}</div><div className="text-text-secondary leading-5">{item.summary}</div></div>)}</div></details>}</td><td className="px-4 py-3 text-right"><AddToPersonalPoolButton code={pick.code} name={pick.name} industry={pick.sector_label} thesis={`${pick.holding_label}：${pick.basis || pick.verdict}`} source={`ai_robot_${pick.pool_type}`} compact /></td></tr>;
+}
+
+function RobotJournalSection({ journals, selected, onSelect }: { journals: RobotJournal[]; selected: RobotJournal; onSelect: (id: number) => void }) {
+  const performance = selected.metrics?.performance as Performance | undefined;
+  return <section className="border border-border rounded-md overflow-hidden mb-4"><div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2"><h2 className="text-sm font-semibold text-text flex items-center gap-2"><BookOpen size={15} className="text-accent" />机器人复盘日记</h2><span className="text-[11px] text-text-secondary">记录日 {selected.journal_date} · 行情日 {selected.source_data_date || '--'}</span><span className="sm:ml-auto text-[11px] text-text-secondary">{selected.is_realtime ? '盘中数据' : '收盘/缓存数据'}</span></div><div className="grid lg:grid-cols-[180px_1fr]"><div className="border-b lg:border-b-0 lg:border-r border-border bg-[#0D1117] p-2 flex lg:block gap-1 overflow-x-auto">{journals.slice(0, 20).map((journal) => <button key={journal.id} type="button" onClick={() => onSelect(journal.id)} className={`shrink-0 w-[132px] lg:w-full text-left px-2.5 py-2 rounded text-xs mb-0 lg:mb-1 ${journal.id === selected.id ? 'bg-accent/15 text-accent' : 'text-text-secondary hover:bg-card hover:text-text'}`}><div className="font-mono">{journal.journal_date}</div><div className="mt-0.5 truncate">{journal.metrics?.new || 0}调入 · {journal.metrics?.removed || 0}移出</div></button>)}</div><div className="p-4 grid gap-4 md:grid-cols-2"><JournalBlock title="今天做了什么" text={selected.action_summary} /><JournalBlock title="为什么这样选" text={selected.decision_reason} /><JournalBlock title="盈亏思考" text={selected.pnl_reflection || (performance ? `组合盈亏 ${money(performance.pnl)} · ${signed(performance.pnl_pct)}` : '等待盘后盈亏快照')} /><JournalBlock title="今天的收获" text={selected.lessons} /></div></div></section>;
+}
+
+function JournalBlock({ title, text }: { title: string; text: string }) {
+  return <div className="min-w-0"><div className="text-[11px] text-text-secondary mb-1.5">{title}</div><div className="text-xs text-text leading-6 whitespace-pre-line break-words">{text || '--'}</div></div>;
 }
 
 function OvernightRobotSection({ data }: { data: NonNullable<Dashboard['overnight']> }) {

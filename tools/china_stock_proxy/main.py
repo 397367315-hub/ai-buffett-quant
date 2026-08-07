@@ -22,6 +22,8 @@ ALLOWED_HOSTS = {
     "np-anotice-stock.eastmoney.com",
     "web.ifzq.gtimg.cn",
 }
+TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
+TENCENT_SYMBOL_RE = re.compile(r"^(?:sh|sz|bj)\d{6}$")
 
 PUSH2_HOST = "push2.eastmoney.com"
 PUSH2_DELAY_HOST = "push2delay.eastmoney.com"
@@ -94,6 +96,10 @@ class FTShareMCPRequest(BaseModel):
 
     payload: dict = Field(default_factory=dict)
     headers: dict[str, str] = Field(default_factory=dict)
+
+
+class TencentQuoteRequest(BaseModel):
+    symbols: list[str] = Field(default_factory=list, max_length=200)
 
 
 app = FastAPI(title="China Stock Data Proxy", version="1.0.0")
@@ -183,6 +189,25 @@ async def _get_upstream_json(url: str, params: dict, headers: dict) -> dict:
     if last_error is not None:
         raise last_error
     raise RuntimeError("Upstream request did not run")
+
+
+async def _get_tencent_quote_text(symbols: list[str]) -> str:
+    normalized = list(dict.fromkeys(str(item).strip().lower() for item in symbols))
+    if not normalized or len(normalized) > 200 or any(
+        not TENCENT_SYMBOL_RE.fullmatch(item) for item in normalized
+    ):
+        raise HTTPException(status_code=400, detail="Invalid Tencent quote symbols")
+    async with httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT) as client:
+        response = await client.get(
+            TENCENT_QUOTE_URL + ",".join(normalized),
+            headers={
+                "User-Agent": "Mozilla/5.0 AppleWebKit/537.36",
+                "Referer": "https://gu.qq.com/",
+                "Accept": "text/plain,*/*",
+            },
+        )
+        response.raise_for_status()
+    return response.content.decode("gb18030", errors="replace")
 
 
 def _payload_has_error(data: dict) -> bool:
@@ -322,6 +347,23 @@ async def fetch_market_data(
     except Exception as e:
         logger.warning("EastMoney proxy request failed: %s", type(e).__name__)
         raise HTTPException(status_code=502, detail="Upstream request failed") from e
+
+
+@app.post("/tencent-quotes")
+async def fetch_tencent_quotes(
+    request: TencentQuoteRequest,
+    x_data_proxy_token: str | None = Header(default=None),
+):
+    """Relay a bounded batch of public Tencent A-share quote strings."""
+    _require_token(x_data_proxy_token)
+    try:
+        text = await _get_tencent_quote_text(request.symbols)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Tencent quote proxy request failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Tencent quotes unavailable") from exc
+    return {"text": text, "source": "tencent"}
 
 
 @app.post("/ftshare-mcp")

@@ -1,8 +1,9 @@
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from services.stock_selection_agents import StockSelectionAgentService
+from services.stock_selection_agents import StockSelectionAgentService, normalize_selection_factors
 
 
 def _history(start_price: float, days: int = 80) -> list[dict]:
@@ -192,6 +193,60 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         service = StockSelectionAgentService()
         with self.assertRaisesRegex(ValueError, "risk_profile"):
             await service.run(risk_profile="unknown")
+
+    def test_adjustable_factor_filter_reports_boundary_and_missing_data_rejections(self):
+        service = StockSelectionAgentService()
+        config = normalize_selection_factors({"preset": "short", "exclude_star_market": True})
+        base = {
+            "name": "测试", "price": 10.0, "change_pct": 2.0, "turnover": 5.0,
+            "pe": 20.0, "roe": 10.0, "volume_ratio": 1.21,
+            "market_cap": 10_000_000_000, "main_net_inflow": 100_000_000,
+        }
+
+        selected, metadata = service._apply_factor_filters([
+            {**base, "code": "600000"},
+            {**base, "code": "688001"},
+            {**base, "code": "600001", "volume_ratio": 1.19},
+            {**base, "code": "600002", "volume_ratio": 1.2},
+            {**base, "code": "600003", "volume_ratio": None},
+        ], config)
+
+        self.assertEqual([stock["code"] for stock in selected], ["600000"])
+        self.assertEqual(metadata["before_count"], 5)
+        self.assertEqual(metadata["matched_count"], 1)
+        self.assertEqual(metadata["rejection_counts"]["star_market"], 1)
+        self.assertEqual(metadata["rejection_counts"]["volume_ratio"], 2)
+        self.assertEqual(metadata["rejection_counts"]["volume_ratio_missing"], 1)
+
+    async def test_closed_market_prefers_persisted_candidate_snapshot_without_waiting_upstream(self):
+        class CachedSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, model, key):
+                del model, key
+                return SimpleNamespace(payload={
+                    "source": "eastmoney",
+                    "data_date": "2026-08-06",
+                    "stocks": [{"code": "600000", "price": 10.0}],
+                    "cached_at": "2026-08-06T15:10:00+08:00",
+                })
+
+        fetcher = AsyncMock(return_value={"stocks": []})
+        with patch("services.stock_selection_agents.async_session", return_value=CachedSession()):
+            result = await StockSelectionAgentService._candidate_snapshot(
+                "stock_selection_candidates_v1:market",
+                fetcher,
+                prefer_cache=True,
+            )
+
+        fetcher.assert_not_awaited()
+        self.assertEqual(result["source"], "cache")
+        self.assertTrue(result["cache_used"])
+        self.assertEqual(result["cache_reason"], "market_closed")
 
     async def test_sector_filter_excludes_nonmatching_candidates_before_ranking(self):
         service = StockSelectionAgentService()

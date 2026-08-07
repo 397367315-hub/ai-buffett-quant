@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import date, datetime
 from typing import Any
@@ -31,6 +32,32 @@ POOL_ALIASES = {
     "ETF": "etf",
 }
 LOG_ACTIONS = {"buy", "sell", "hold", "review", "move"}
+DELETION_CONFIG_KEY = "personal_pool_deletions_v1"
+
+
+def _deletion_token(pool_key: str, code: str) -> str:
+    return f"{pool_key}:{code}"
+
+
+async def _update_deletion_tokens(
+    session,
+    *,
+    add: set[str] | None = None,
+    remove: set[str] | None = None,
+) -> None:
+    row = await session.get(PersonalSystemConfig, DELETION_CONFIG_KEY)
+    payload = dict(row.payload) if row and isinstance(row.payload, dict) else {}
+    tokens = {str(item) for item in payload.get("items") or [] if item}
+    tokens.update(add or set())
+    tokens.difference_update(remove or set())
+    updated = {
+        "items": sorted(tokens),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    if row is None:
+        session.add(PersonalSystemConfig(key=DELETION_CONFIG_KEY, payload=updated))
+    else:
+        row.payload = updated
 
 
 def normalize_pool(value: object, default: str = "watchlist") -> str:
@@ -323,14 +350,17 @@ class PersonalPortfolioService:
         quotes: dict[str, dict] = {}
         quote_error = None
         quote_payload: dict[str, Any] = {}
-        if codes:
-            try:
-                quote_payload = await quote_snapshot_service.fetch(codes, async_session)
-                quotes = {str(item["code"]): item for item in quote_payload.get("stocks") or []}
-            except Exception as exc:
-                quote_error = type(exc).__name__
-
-        technical = await _load_history(codes)
+        quote_result, technical_result = await asyncio.gather(
+            quote_snapshot_service.fetch(codes, async_session) if codes else asyncio.sleep(0, result={}),
+            _load_history(codes),
+            return_exceptions=True,
+        )
+        if isinstance(quote_result, Exception):
+            quote_error = type(quote_result).__name__
+        else:
+            quote_payload = quote_result
+            quotes = {str(item["code"]): item for item in quote_payload.get("stocks") or []}
+        technical = {} if isinstance(technical_result, Exception) else technical_result
         items = [_enrich_item(row, quotes.get(row.code), technical.get(row.code)) for row in rows]
         quote_meta = {
             "available": bool(quotes),
@@ -394,10 +424,18 @@ class PersonalPortfolioService:
                 for field in ("name", "industry", "thesis", "source"):
                     if values.get(field):
                         setattr(existing, field, values[field])
+                await _update_deletion_tokens(
+                    session,
+                    remove={_deletion_token(pool_key, code)},
+                )
                 await session.commit()
                 return {"item": _basic_item(existing), "created": False}
             row = PersonalPoolItem(**values)
             session.add(row)
+            await _update_deletion_tokens(
+                session,
+                remove={_deletion_token(pool_key, code)},
+            )
             await session.commit()
             await session.refresh(row)
             return {"item": _basic_item(row), "created": True}
@@ -419,6 +457,8 @@ class PersonalPortfolioService:
             if duplicate:
                 raise ValueError("同一股票已经在目标股票池中")
             values = self._item_values(payload, code=code, pool_key=pool_key, name=str(payload.get("name") or row.name))
+            original_token = _deletion_token(row.pool_key, row.code)
+            target_token = _deletion_token(pool_key, code)
             provided_fields = set(payload)
             if "pool" in provided_fields:
                 provided_fields.add("pool_key")
@@ -431,6 +471,11 @@ class PersonalPortfolioService:
             for field, value in values.items():
                 if field in provided_fields or field in {"code"}:
                     setattr(row, field, value)
+            await _update_deletion_tokens(
+                session,
+                add={original_token} if original_token != target_token else set(),
+                remove={target_token},
+            )
             await session.commit()
             await session.refresh(row)
             return _basic_item(row)
@@ -440,6 +485,10 @@ class PersonalPortfolioService:
             row = await session.get(PersonalPoolItem, item_id)
             if row is None:
                 raise LookupError("个人池条目不存在")
+            await _update_deletion_tokens(
+                session,
+                add={_deletion_token(row.pool_key, row.code)},
+            )
             await session.delete(row)
             await session.commit()
 

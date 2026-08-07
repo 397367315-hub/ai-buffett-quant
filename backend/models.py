@@ -95,6 +95,37 @@ class StockFundFlowDaily(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DragonBoardDaily(Base):
+    """Daily Dragon-Tiger List snapshot, deduplicated by stock and trade date."""
+
+    __tablename__ = "dragon_board_daily"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trade_date", name="uq_dragon_board_code_date"),
+        Index("idx_dragon_board_date_net", "trade_date", "net_amount"),
+        Index("idx_dragon_board_code_date", "stock_code", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100), nullable=False)
+    close_price = Column(Float)
+    change_pct = Column(Float)
+    turnover = Column(Float)
+    deal_amount = Column(BigInteger)
+    buy_amount = Column(BigInteger)
+    sell_amount = Column(BigInteger)
+    net_amount = Column(BigInteger)
+    market_cap = Column(BigInteger)
+    institution_count = Column(Integer, nullable=False, default=0)
+    institution_buy_amount = Column(BigInteger)
+    institution_sell_amount = Column(BigInteger)
+    institution_net_amount = Column(BigInteger)
+    reason = Column(Text)
+    source = Column(String(30), nullable=False, default="eastmoney")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class MarketFundFlowDaily(Base):
     __tablename__ = "market_fund_flow_daily"
 
@@ -520,6 +551,32 @@ class AIRobotPick(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     run = relationship("AIRobotRun", back_populates="picks")
+
+
+class AIRobotJournal(Base):
+    """One daily, auditable decision and performance note per robot pool."""
+
+    __tablename__ = "ai_robot_journals"
+    __table_args__ = (
+        UniqueConstraint("pool_type", "journal_date", name="uq_ai_robot_journal_pool_date"),
+        Index("idx_ai_robot_journals_date", "journal_date"),
+        Index("idx_ai_robot_journals_pool_date", "pool_type", "journal_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey("ai_robot_runs.id", ondelete="SET NULL"))
+    pool_type = Column(String(20), nullable=False)
+    journal_date = Column(Date, nullable=False)
+    source_data_date = Column(Date)
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    action_summary = Column(Text, nullable=False)
+    decision_reason = Column(Text, nullable=False)
+    pnl_reflection = Column(Text)
+    lessons = Column(Text)
+    metrics = Column(JSON)
+    picks_snapshot = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class PersonalResearchNote(Base):

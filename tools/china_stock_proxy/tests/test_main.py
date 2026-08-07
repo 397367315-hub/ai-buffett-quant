@@ -71,6 +71,19 @@ class ProxyRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["mcp-session-id"], "upstream-session")
         self.assertEqual(response.body, FakeResponse.content)
 
+    async def test_tencent_quote_proxy_accepts_only_bounded_market_symbols(self):
+        with patch.object(
+            proxy,
+            "_get_tencent_quote_text",
+            return_value='v_sh600519="1~贵州茅台~600519";',
+        ) as upstream:
+            response = await proxy.fetch_tencent_quotes(
+                proxy.TencentQuoteRequest(symbols=["sh600519", "sz000001"]),
+            )
+
+        upstream.assert_awaited_once_with(["sh600519", "sz000001"])
+        self.assertEqual(response["source"], "tencent")
+
 
 if __name__ == "__main__":
     unittest.main()

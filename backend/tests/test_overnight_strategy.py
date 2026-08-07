@@ -32,7 +32,7 @@ def daily_bars(count: int = 80) -> list[dict]:
 def minute_payload(*, surge: bool = False, pulse: bool = False, trade_date: date = date(2026, 8, 4)) -> dict:
     bars = []
     start = datetime.combine(trade_date, datetime.min.time()).replace(hour=14, minute=15)
-    for index in range(36):
+    for index in range(41):
         price = 18 + index * 0.002
         if surge and index >= 31:
             price = 18.1 * (1 + (index - 30) * 0.006)
@@ -65,7 +65,7 @@ def minute_payload(*, surge: bool = False, pulse: bool = False, trade_date: date
 class OvernightRuleTests(unittest.TestCase):
     def setUp(self):
         self.service = OvernightStrategyService()
-        self.now = datetime(2026, 8, 4, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+        self.now = datetime(2026, 8, 4, 14, 55, tzinfo=ZoneInfo("Asia/Shanghai"))
         self.stock = {
             "code": "600000",
             "name": "浦发银行",
@@ -75,9 +75,22 @@ class OvernightRuleTests(unittest.TestCase):
             "vol_ratio": 1.8,
             "turnover": 5.0,
             "market_cap": 180.0,
+            "volume": 1_200_000,
             "high": 18.3,
             "low": 17.7,
         }
+
+    def test_prefilter_requires_volume_ratio_strictly_above_1_2(self):
+        snapshot_stock = {
+            **self.stock,
+            "market_cap": 18_000_000_000,
+        }
+        at_threshold = {**snapshot_stock, "volume_ratio": 1.2}
+        above_threshold = {**snapshot_stock, "code": "600001", "volume_ratio": 1.21}
+
+        selected = self.service._prefilter([at_threshold, above_threshold])
+
+        self.assertEqual([stock["code"] for stock in selected], ["600001"])
 
     def test_daily_rules_pass_only_with_complete_blacklist_evidence(self):
         audit = self.service._daily_audit(
@@ -107,9 +120,10 @@ class OvernightRuleTests(unittest.TestCase):
         self.assertIn("当日无重大利空公告", unavailable["unavailable_reasons"])
 
     def test_last_five_minute_surge_and_pulse_volume_are_hard_blocks(self):
-        normal = self.service._minute_audit(minute_payload(), self.now)
-        surge = self.service._minute_audit(minute_payload(surge=True), self.now)
-        pulse = self.service._minute_audit(minute_payload(pulse=True), self.now)
+        benchmark = minute_payload()
+        normal = self.service._minute_audit(minute_payload(), self.now, benchmark)
+        surge = self.service._minute_audit(minute_payload(surge=True), self.now, benchmark)
+        pulse = self.service._minute_audit(minute_payload(pulse=True), self.now, benchmark)
 
         self.assertTrue(normal["minute_passed"])
         self.assertFalse(surge["minute_passed"])
@@ -256,13 +270,13 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     async def test_entry_run_creates_only_verified_hundred_share_position(self):
-        now = datetime(2026, 8, 4, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+        now = datetime(2026, 8, 4, 14, 55, tzinfo=ZoneInfo("Asia/Shanghai"))
         snapshot = {
             "stocks": [{
                 "code": "600000", "name": "浦发银行", "sector": "银行", "price": 18.2,
                 "change_pct": 4.0, "volume_ratio": 1.8, "turnover": 5.0,
                 "market_cap": 18_000_000_000, "high": 18.3, "low": 17.7,
-                "previous_close": 17.5,
+                "previous_close": 17.5, "volume": 1_200_000,
             }],
             "complete": True,
             "is_realtime": True,
@@ -272,12 +286,14 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch("services.overnight_strategy.shanghai_now", return_value=now),
             patch("services.overnight_strategy.collector.fetch_quant_market_snapshot", new_callable=AsyncMock, return_value=snapshot),
+            patch("services.overnight_strategy.collector.fetch_market_turnover", new_callable=AsyncMock, return_value={"sh_change_pct": 0.2}),
             patch("services.overnight_strategy.macro_policy_news_collector.get_stock_announcements_audit", new_callable=AsyncMock, return_value={
                 "announcements": {"600000": []},
                 "status": {"600000": {"available": True, "source": "eastmoney", "error": None}},
             }),
             patch.object(self.service, "_appointment_map", new_callable=AsyncMock, return_value=({"600000": []}, True)),
             patch("services.overnight_strategy.collector.fetch_stock_minute_trends", new_callable=AsyncMock, return_value=minute_payload()),
+            patch("services.overnight_strategy.collector.fetch_shanghai_index_minute_trends", new_callable=AsyncMock, return_value=minute_payload()),
             patch.object(self.service, "_persist_minute_bars", new_callable=AsyncMock, return_value=36),
         ):
             result = await self.service.start("entry", background=False)

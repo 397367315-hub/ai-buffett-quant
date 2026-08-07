@@ -131,6 +131,18 @@ async def get_robot_history(
     return {"code": 0, "data": {"runs": runs}}
 
 
+@router.get("/robot/journals")
+async def get_robot_journals(
+    pool_type: str | None = Query(None),
+    limit: int = Query(30, ge=1, le=180),
+):
+    try:
+        journals = await ai_robot_service.journal_history(pool_type, limit)
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    return {"code": 0, "data": {"journals": journals}}
+
+
 @router.get("/allocation")
 async def get_personal_allocation():
     return {"code": 0, "data": await personal_analytics_service.allocation()}

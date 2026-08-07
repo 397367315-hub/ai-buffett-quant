@@ -73,6 +73,16 @@ async def refresh_personal_report_calendar():
         return None
 
 
+async def refresh_dragon_board_cache():
+    from services.dragon_board import dragon_board_service
+
+    try:
+        return await dragon_board_service.refresh()
+    except Exception as exc:
+        print(f"[Scheduler] 龙虎榜盘后缓存失败: {type(exc).__name__}")
+        return None
+
+
 async def run_overnight_preliminary_scan():
     from services.overnight_strategy import overnight_strategy_service
 
@@ -155,6 +165,16 @@ async def start_scheduler(data_collector=None, db_session=None):
     )
     scheduler.add_job(
         daily_data_collection,
+        CronTrigger(hour=9, minute=40, day_of_week="mon-fri"),
+        id="opening_market_snapshot",
+        name="开盘后全市场股票数与行情快照",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        daily_data_collection,
         CronTrigger(hour=11, minute=35, day_of_week="mon-fri"),
         id="midday_collection",
         name="午间行情快照采集",
@@ -198,14 +218,14 @@ async def start_scheduler(data_collector=None, db_session=None):
 
     scheduler.add_job(
         refresh_ai_robot_short,
-        CronTrigger(hour=21, minute=0, day_of_week="sun"),
-        id="ai_robot_short_weekly", name="AI机器人短期池周刷新", replace_existing=True,
+        CronTrigger(hour=15, minute=45, day_of_week="mon-fri"),
+        id="ai_robot_short_daily", name="AI机器人短期池每日盘后刷新", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         refresh_ai_robot_long,
-        CronTrigger(hour=21, minute=0, day="1-7", day_of_week="sun"),
-        id="ai_robot_long_monthly", name="AI机器人长期池月刷新", replace_existing=True,
+        CronTrigger(hour=16, minute=20, day_of_week="mon-fri"),
+        id="ai_robot_long_daily", name="AI机器人长期池每日盘后刷新", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
@@ -216,9 +236,15 @@ async def start_scheduler(data_collector=None, db_session=None):
     )
     scheduler.add_job(
         snapshot_ai_robot_performance,
-        CronTrigger(hour=15, minute=10, day_of_week="mon-fri"),
-        id="ai_robot_performance_close", name="AI机器人池盘后统计", replace_existing=True,
+        CronTrigger(hour=16, minute=50, day_of_week="mon-fri"),
+        id="ai_robot_performance_close", name="AI机器人池每日盈亏与复盘", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=900,
+    )
+    scheduler.add_job(
+        refresh_dragon_board_cache,
+        CronTrigger(hour=15, minute=35, day_of_week="mon-fri"),
+        id="dragon_board_close_cache", name="龙虎榜盘后缓存", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         refresh_personal_report_calendar,
@@ -240,8 +266,8 @@ async def start_scheduler(data_collector=None, db_session=None):
     )
     scheduler.add_job(
         run_overnight_entry_scan,
-        CronTrigger(hour=14, minute=50, day_of_week="mon-fri"),
-        id="overnight_entry_scan", name="一夜持股14:50入场复核", replace_existing=True,
+        CronTrigger(hour=14, minute=55, day_of_week="mon-fri"),
+        id="overnight_entry_scan", name="一夜持股14:55入场复核", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(

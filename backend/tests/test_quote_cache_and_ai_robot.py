@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import Base
-from models import AIRobotPick, AIRobotRun, StockDailyBar
+from models import AIRobotJournal, AIRobotPick, AIRobotRun, StockDailyBar
 from services.ai_robot import AIRobotService, stock_selection_agents
 from services.data_collector import is_a_share_market_session
 from services.quote_cache import QuoteSnapshotService, collector
@@ -162,6 +162,47 @@ class AIRobotSimulationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pick.simulated_shares, 100)
         self.assertEqual(pick.selected_price, 12.35)
         self.assertEqual(pick.selected_on, date(2026, 8, 3))
+        async with self.session_factory() as session:
+            journal = (await session.execute(
+                select(AIRobotJournal).where(AIRobotJournal.run_id == run_id)
+            )).scalar_one()
+        self.assertIn("新调入 1 只", journal.action_summary)
+        self.assertEqual(journal.picks_snapshot[0]["shares"], 100)
+        self.assertIn("贵州茅台", journal.decision_reason)
+
+    async def test_daily_journal_records_actual_portfolio_pnl_reflection(self):
+        run_id = await self._create_run()
+        await self._execute_with_recommendation(run_id, data_date="2026-08-03", price=12.35)
+        performance = {
+            "positions": 1, "priced_positions": 1, "waiting_positions": 0,
+            "quote_unavailable_positions": 0, "simulated_shares": 100,
+            "cost_value": 1235.0, "market_value": 1300.0, "pnl": 65.0,
+            "pnl_pct": 5.26, "winners": 1, "losers": 0,
+        }
+        dashboard = {
+            "updated_at": "2026-08-04T16:50:00+08:00",
+            "quote": {"data_date": "2026-08-04", "source": "cache", "is_realtime": False},
+            "pools": {
+                "short": {
+                    "run": {"id": run_id},
+                    "performance": performance,
+                    "picks": [{
+                        "code": "600519", "latest_price": 13.0, "market_value": 1300.0,
+                        "pnl": 65.0, "pnl_pct": 5.26, "price_status": "available",
+                    }],
+                },
+            },
+        }
+
+        await self.service._record_performance_journals(dashboard)
+
+        async with self.session_factory() as session:
+            journal = (await session.execute(
+                select(AIRobotJournal).where(AIRobotJournal.run_id == run_id)
+            )).scalar_one()
+        self.assertIn("浮盈 65.00 元", journal.pnl_reflection)
+        self.assertEqual(journal.metrics["performance"]["simulated_shares"], 100)
+        self.assertEqual(journal.picks_snapshot[0]["pnl"], 65.0)
 
     async def test_retained_pick_keeps_original_simulated_cost(self):
         run_id = await self._create_run(

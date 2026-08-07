@@ -19,12 +19,16 @@ from services.data_collector import (
 from services.admin_auth import create_admin_token
 from config import settings
 from services.ai_service import ai_service
+from services.ai_assistant import MAX_HISTORY_MESSAGES, ai_assistant_service
 from services.ai_prompts import BEGINNER_SYSTEM_PROMPT, PROFESSIONAL_SYSTEM_PROMPT, DAILY_REPORT_PROMPT_TEMPLATE
 from services.stock_selection_agents import (
     VALID_RISK_PROFILES,
     VALID_SELECTION_MODES,
     stock_selection_agents,
 )
+from services.technical_screener import SCREENER_PRESETS, SCREENER_SCHEMA, technical_screener_service
+from services.flow_analysis import FLOW_WINDOWS, flow_analysis_service
+from services.dragon_board import DRAGON_WINDOWS, dragon_board_service
 from services.horizon_analysis import VALID_HORIZONS
 from models import (
     KnowledgeTerm, LearningCase, ConceptBoard,
@@ -34,6 +38,7 @@ from models import (
 from database import async_session
 from services.history_cache import history_cache
 from services.sector_flow_network import build_inferred_transfers
+from quant.market_cache import load_quant_market_snapshot
 
 router = APIRouter(prefix="/api/v1")
 
@@ -88,8 +93,14 @@ async def _fetch_market_component(name: str, awaitable, fallback):
 
 
 async def _latest_cached_trade_date(model) -> date | None:
-    async with async_session() as session:
-        return (await session.execute(select(func.max(model.trade_date)))).scalar_one_or_none()
+    try:
+        async with async_session() as session:
+            return (await session.execute(select(func.max(model.trade_date)))).scalar_one_or_none()
+    except Exception as exc:
+        # A fresh deployment may receive traffic before the cache tables exist;
+        # the live observer still has a verified upstream fallback.
+        print(f"Cached trade-date lookup failed: {type(exc).__name__}")
+        return None
 
 
 async def _read_json_snapshot(key: str) -> dict | None:
@@ -1118,6 +1129,18 @@ async def get_flow_observer_dates(board_type: str = Query("industry")):
     }
 
 
+@router.post("/flow/observer/analysis")
+async def analyze_flow_observer(request: dict | None = None):
+    payload = request or {}
+    board_type = str(payload.get("board_type") or "industry").strip().lower()
+    window = str(payload.get("window") or "week").strip().lower()
+    try:
+        result = await flow_analysis_service.analyze(board_type, window)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": result, "windows": FLOW_WINDOWS}
+
+
 @router.get("/flow/rotation")
 async def get_sector_rotation():
     """获取板块轮动数据"""
@@ -1127,19 +1150,51 @@ async def get_sector_rotation():
 
 
 @router.get("/dragon/board")
-async def get_dragon_board():
-    """获取龙虎榜数据"""
-    stocks = await collector.fetch_dragon_board()
-    data_date = max((stock["date"] for stock in stocks if stock.get("date")), default=None)
-    return {"code": 0, "data": {
-        "stocks": stocks,
-        "summary": {
-            "total": len(stocks),
-            "institution_active": sum(stock.get("institution_count", 0) for stock in stocks),
-            "total_main_inflow": sum(stock.get("main_net_inflow", 0) for stock in stocks),
-        },
-        **_market_metadata(available=bool(stocks), data_date=data_date, is_realtime=False),
-    }}
+async def get_dragon_board(
+    target_date: Optional[str] = Query(None, alias="date"),
+    refresh: bool = Query(False),
+):
+    """Return one persisted Dragon-Tiger List session, with an upstream cache fill when missing."""
+    requested_date = None
+    if target_date:
+        try:
+            requested_date = date.fromisoformat(target_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必须是 YYYY-MM-DD") from exc
+        if requested_date > shanghai_now().date():
+            raise HTTPException(status_code=422, detail="不能查询未来交易日")
+    data = await dragon_board_service.get_board(requested_date, force_refresh=refresh)
+    return {"code": 0, "data": data}
+
+
+@router.get("/dragon/board/dates")
+async def get_dragon_board_dates(limit: int = Query(250, ge=1, le=500)):
+    dates = await dragon_board_service.list_dates(limit)
+    return {"code": 0, "data": {"dates": dates, "count": len(dates), "source": "database_cache"}}
+
+
+@router.post("/dragon/board/analysis")
+async def analyze_dragon_board(request: dict | None = None):
+    window = str((request or {}).get("window") or "week").strip().lower()
+    try:
+        result = await dragon_board_service.analyze(window)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": result, "windows": DRAGON_WINDOWS}
+
+
+@router.post("/dragon/board/refresh")
+async def refresh_dragon_board(request: dict | None = None):
+    raw_date = (request or {}).get("date")
+    target_date = None
+    if raw_date:
+        try:
+            target_date = date.fromisoformat(str(raw_date))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必须是 YYYY-MM-DD") from exc
+    result = await dragon_board_service.refresh(target_date)
+    data = await dragon_board_service.get_board(target_date)
+    return {"code": 0, "data": data, "refresh": result}
 
 
 @router.get("/block-trade/list")
@@ -1158,9 +1213,30 @@ async def get_block_trades():
 async def get_technical_screener(
     min_change: float = Query(2), max_pe: int = Query(100), min_turnover: float = Query(3),
 ):
-    """技术面筛选器"""
-    data = await collector.fetch_technical_screener({"min_change": min_change, "max_pe": max_pe, "min_turnover": min_turnover})
-    data.update(_quote_metadata(available=bool(data.get("stocks"))))
+    """Backward-compatible technical screen backed by the configurable service."""
+    try:
+        data = await technical_screener_service.run({
+            "preset": "custom",
+            "change_pct": [min_change, 20.0],
+            "pe_ttm": [-1000.0, float(max_pe)],
+            "turnover_pct": [min_turnover, 100.0],
+        })
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.get("/screener/technical/config")
+async def get_technical_screener_config():
+    return {"code": 0, "data": {"schema": SCREENER_SCHEMA, "presets": SCREENER_PRESETS}}
+
+
+@router.post("/screener/technical/run")
+async def run_technical_screener(request: dict | None = None):
+    try:
+        data = await technical_screener_service.run(request or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"code": 0, "data": data}
 
 
@@ -1189,6 +1265,43 @@ async def get_stock_selection_sectors():
             directory_stale = not refreshed_at or datetime.utcnow() - refreshed_at > timedelta(hours=24)
     except Exception as exc:
         print(f"Sector directory cache load failed: {type(exc).__name__}")
+
+    universe_data_date = None
+    universe_updated_at = None
+    try:
+        market_snapshot = await load_quant_market_snapshot()
+        snapshot_stocks = (
+            market_snapshot.get("stocks") or []
+            if isinstance(market_snapshot, dict) and market_snapshot.get("complete")
+            else []
+        )
+        live_counts: dict[str, int] = {}
+        for stock in snapshot_stocks:
+            sector_name = str(stock.get("sector") or "").strip()
+            if sector_name:
+                live_counts[sector_name] = live_counts.get(sector_name, 0) + 1
+        if live_counts:
+            cached_by_name = {
+                str(item.get("name") or "").strip(): item
+                for item in seed_sectors
+                if str(item.get("name") or "").strip()
+            }
+            seed_sectors = [
+                {
+                    **cached_by_name.get(name, {}),
+                    "name": name,
+                    "candidate_count": count,
+                    "stock_count": count,
+                    "count_source": "stock_universe",
+                }
+                for name, count in live_counts.items()
+            ]
+            universe_data_date = market_snapshot.get("data_date")
+            universe_updated_at = market_snapshot.get("fetched_at") or market_snapshot.get("source_updated_at")
+            classification_refreshed_at = universe_updated_at or classification_refreshed_at
+            directory_stale = False
+    except Exception as exc:
+        print(f"Dynamic stock universe count load failed: {type(exc).__name__}")
 
     sectors = await collector.fetch_intelligent_selection_sectors(seed_sectors=seed_sectors)
     coverage_complete = bool(sectors) and all(
@@ -1225,6 +1338,8 @@ async def get_stock_selection_sectors():
             "coverage_complete": coverage_complete,
             "mapped_sector_count": sum(bool(item.get("code")) for item in sectors),
             "classification_refreshed_at": classification_refreshed_at,
+            "universe_data_date": universe_data_date,
+            "universe_updated_at": universe_updated_at,
             "directory_cache_used": bool(seed_sectors),
             "directory_stale": directory_stale,
             **_quote_metadata(available=bool(sectors)),
@@ -1291,15 +1406,22 @@ async def run_stock_selection(request: dict | None = None):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if sector_code and not sector:
         raise HTTPException(status_code=422, detail="sector_code 必须与 sector 一起提交")
+    factor_filters = payload.get("factor_filters")
+    if factor_filters is not None and not isinstance(factor_filters, dict):
+        raise HTTPException(status_code=422, detail="factor_filters 必须是对象")
 
-    result = await stock_selection_agents.run(
-        mode=mode,
-        risk_profile=risk_profile,
-        top_n=top_n,
-        sector=sector,
-        sector_code=sector_code,
-        horizon=horizon,
-    )
+    try:
+        result = await stock_selection_agents.run(
+            mode=mode,
+            risk_profile=risk_profile,
+            top_n=top_n,
+            sector=sector,
+            sector_code=sector_code,
+            horizon=horizon,
+            factor_filters=factor_filters,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     run_id = await _store_stock_selection_run(result)
     result["run_id"] = run_id
     result["trace_available"] = run_id is not None
@@ -1883,16 +2005,67 @@ async def get_board_encyclopedia(board_code: str):
 
 @router.post("/ai/chat")
 async def ai_chat(request: dict):
-    user_id = request.get("user_id", "anonymous")
-    message = request.get("message", "")
-    context = request.get("context", {})
-    is_beginner = context.get("mode", "beginner") == "beginner"
+    user_id = ai_assistant_service.normalize_user_id(request.get("user_id", "web_user"))
+    message = str(request.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="消息不能为空")
+    if len(message) > 4000:
+        raise HTTPException(status_code=422, detail="单条消息不能超过4000字")
+    context = request.get("context") if isinstance(request.get("context"), dict) else {}
+    mode = "beginner" if context.get("mode", "beginner") == "beginner" else "professional"
+    is_beginner = mode == "beginner"
     system_prompt = BEGINNER_SYSTEM_PROMPT if is_beginner else PROFESSIONAL_SYSTEM_PROMPT
+    try:
+        history = await ai_assistant_service.history(user_id, MAX_HISTORY_MESSAGES)
+        await ai_assistant_service.save_message(user_id, "user", message, mode)
+    except Exception as exc:
+        print(f"AI history load failed: {type(exc).__name__}")
+        history = []
+    try:
+        data_context = await ai_assistant_service.build_context(message)
+    except Exception as exc:
+        print(f"AI context build failed: {type(exc).__name__}")
+        data_context = {
+            "available": False,
+            "sources": [],
+            "generated_at": shanghai_now().isoformat(),
+            "error": "数据检索暂时不可用",
+        }
+    grounded_prompt = (
+        system_prompt
+        + "\n\n你可以使用系统提供的 DATA_CONTEXT 回答实时或历史数据问题。严格遵守："
+        "1. 只把 DATA_CONTEXT 中存在的数据当作事实；2. 明确区分实时、收盘缓存和历史数据；"
+        "3. 回答具体数值时说明数据日期与来源；4. 数据缺失时直接说明，不猜测、不补造；"
+        "5. 不承诺收益，不把评分、龙虎榜或资金流单独解释为必涨；6. 结合此前对话保持上下文连续。"
+        "\nDATA_CONTEXT:\n"
+        + json.dumps(data_context, ensure_ascii=False, default=str)[:24000]
+    )
 
     async def generate():
-        yield f"data: {json.dumps({'type': 'start', 'message_id': f'msg_{datetime.now().timestamp()}'})}\n\n"
-        async for chunk in ai_service.chat_stream(message=message, system_prompt=system_prompt, user_id=user_id):
+        start = {
+            "type": "start",
+            "message_id": f"msg_{datetime.now().timestamp()}",
+            "sources": data_context.get("sources") or [],
+            "history_messages": len(history),
+        }
+        yield f"data: {json.dumps(start, ensure_ascii=False)}\n\n"
+        full_content = ""
+        async for chunk in ai_service.chat_stream(
+            message=message,
+            system_prompt=grounded_prompt,
+            user_id=user_id,
+            history=history,
+        ):
+            if chunk.get("type") == "text":
+                full_content += str(chunk.get("content") or "")
+            elif chunk.get("type") == "end" and not full_content:
+                full_content = str(chunk.get("content") or "")
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        if full_content.strip():
+            try:
+                await ai_assistant_service.save_message(user_id, "assistant", full_content, mode)
+            except Exception as exc:
+                print(f"AI history save failed: {type(exc).__name__}")
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -1900,6 +2073,21 @@ async def ai_chat(request: dict):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
+
+
+@router.get("/ai/history")
+async def get_ai_history(
+    user_id: str = Query("web_user"),
+    limit: int = Query(MAX_HISTORY_MESSAGES, ge=1, le=MAX_HISTORY_MESSAGES),
+):
+    messages = await ai_assistant_service.history(user_id, limit)
+    return {"code": 0, "data": {"messages": messages, "count": len(messages)}}
+
+
+@router.delete("/ai/history")
+async def clear_ai_history(user_id: str = Query("web_user")):
+    deleted = await ai_assistant_service.clear_history(user_id)
+    return {"code": 0, "data": {"deleted": deleted}, "message": "对话记录已清空"}
 
 
 @router.post("/ai/daily-report")

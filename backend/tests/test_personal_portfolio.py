@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import Base
-from models import PersonalPoolItem
+from models import PersonalPoolItem, PersonalSystemConfig
 from seed_data import seed
 from services.data_collector import collector
 from services.personal_portfolio import PersonalPortfolioService, _health, normalize_pool
@@ -162,6 +162,32 @@ class PersonalPortfolioTests(unittest.IsolatedAsyncioTestCase):
         async with self.session_factory() as session:
             count = (await session.execute(select(func.count()).select_from(PersonalPoolItem))).scalar_one()
         self.assertEqual(count, 1)
+
+    async def test_deleted_seed_item_is_not_restored_after_restart_seed(self):
+        await seed()
+        async with self.session_factory() as session:
+            row = (await session.execute(
+                select(PersonalPoolItem).where(
+                    PersonalPoolItem.pool_key == "core",
+                    PersonalPoolItem.code == "601611",
+                )
+            )).scalar_one()
+            item_id = row.id
+
+        service = PersonalPortfolioService()
+        await service.delete_item(item_id)
+        await seed()
+
+        async with self.session_factory() as session:
+            restored = (await session.execute(
+                select(PersonalPoolItem).where(
+                    PersonalPoolItem.pool_key == "core",
+                    PersonalPoolItem.code == "601611",
+                )
+            )).scalar_one_or_none()
+            deletion = await session.get(PersonalSystemConfig, "personal_pool_deletions_v1")
+        self.assertIsNone(restored)
+        self.assertIn("core:601611", deletion.payload["items"])
 
 
 if __name__ == "__main__":

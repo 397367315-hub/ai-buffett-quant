@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import uuid
 from datetime import date, datetime, timedelta
 from statistics import median
 from typing import Any
@@ -14,6 +15,7 @@ from database import async_session
 from models import (
     OvernightPosition,
     OvernightStrategyRun,
+    PersonalSystemConfig,
     StockDailyBar,
     StockMinuteBar,
 )
@@ -27,15 +29,23 @@ from services.report_calendar import report_calendar_service
 
 
 STRATEGY_CONFIG: dict[str, Any] = {
-    "name": "一夜持股",
-    "version": "1.0",
+    "id": "overnight_review_v2",
+    "name": "一夜持股·复盘增强版",
+    "version": "2.0",
+    "is_builtin": True,
     "preliminary_scan": "14:30",
-    "entry_window": "14:45-14:55",
+    "entry_window": "14:52-14:59",
     "exit_window": "次一交易日 09:30-10:00",
     "change_pct": [3.0, 5.0],
     "volume_ratio_min": 1.2,
-    "turnover_pct": [3.0, 9.0],
-    "market_cap_yi": [40.0, 230.0],
+    "turnover_pct": [5.0, 10.0],
+    "market_cap_yi": [50.0, 200.0],
+    "exclude_star_market": True,
+    "require_volume_staircase": True,
+    "require_relative_strength": True,
+    "relative_strength_min_pct": 0.0,
+    "require_vwap_hold": True,
+    "require_late_high_retest": True,
     "minimum_listing_sessions": 60,
     "last_five_minute_change_max": 2.0,
     "max_positions": 5,
@@ -47,6 +57,28 @@ STRATEGY_CONFIG: dict[str, Any] = {
     "slippage_rate": 0.001,
     "stamp_tax_rate": 0.0005,
 }
+
+OVERNIGHT_STRATEGY_CONFIG_KEY = "overnight_strategy_configs_v2"
+EDITABLE_FACTORS = {
+    "change_pct", "volume_ratio_min", "turnover_pct", "market_cap_yi",
+    "exclude_star_market", "require_volume_staircase", "require_relative_strength",
+    "relative_strength_min_pct", "require_vwap_hold", "require_late_high_retest",
+    "last_five_minute_change_max", "max_positions",
+}
+FACTOR_SCHEMA = [
+    {"key": "change_pct", "label": "当日涨幅", "type": "range", "min": -5, "max": 15, "step": 0.5, "unit": "%"},
+    {"key": "volume_ratio_min", "label": "最低量比", "type": "number", "min": 0.5, "max": 5, "step": 0.1},
+    {"key": "turnover_pct", "label": "换手率", "type": "range", "min": 0, "max": 30, "step": 0.5, "unit": "%"},
+    {"key": "market_cap_yi", "label": "总市值", "type": "range", "min": 10, "max": 1000, "step": 10, "unit": "亿元"},
+    {"key": "exclude_star_market", "label": "排除科创板(688/689)", "type": "boolean"},
+    {"key": "require_volume_staircase", "label": "近3日台阶放量", "type": "boolean"},
+    {"key": "require_relative_strength", "label": "分时强于上证指数", "type": "boolean"},
+    {"key": "relative_strength_min_pct", "label": "最低相对强度", "type": "number", "min": -2, "max": 5, "step": 0.1, "unit": "%"},
+    {"key": "require_vwap_hold", "label": "尾盘守住VWAP", "type": "boolean"},
+    {"key": "require_late_high_retest", "label": "14:55新高回踩确认", "type": "boolean"},
+    {"key": "last_five_minute_change_max", "label": "尾盘5分钟最大涨幅", "type": "number", "min": 0.5, "max": 5, "step": 0.1, "unit": "%"},
+    {"key": "max_positions", "label": "最多持股数", "type": "number", "min": 1, "max": 10, "step": 1, "unit": "只"},
+]
 
 MAJOR_NEGATIVE_TERMS = tuple(dict.fromkeys((
     *CRITICAL_ANNOUNCEMENT_TERMS,
@@ -147,6 +179,145 @@ class OvernightStrategyService:
         self._tasks: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
 
+    @staticmethod
+    def _validate_strategy(payload: dict[str, Any], *, strategy_id: str | None = None) -> dict[str, Any]:
+        config = {**STRATEGY_CONFIG}
+        for key in EDITABLE_FACTORS:
+            if key in payload:
+                config[key] = payload[key]
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("策略名称不能为空")
+        if len(name) > 80:
+            raise ValueError("策略名称不能超过80个字符")
+
+        for key in ("change_pct", "turnover_pct", "market_cap_yi"):
+            values = config.get(key)
+            if not isinstance(values, (list, tuple)) or len(values) != 2:
+                raise ValueError(f"{key} 必须是包含最小值和最大值的数组")
+            lower, upper = (_number(values[0]), _number(values[1]))
+            if lower is None or upper is None or lower >= upper:
+                raise ValueError(f"{key} 的最小值必须小于最大值")
+            config[key] = [round(lower, 4), round(upper, 4)]
+        numeric_limits = {
+            "volume_ratio_min": (0.1, 10.0),
+            "relative_strength_min_pct": (-5.0, 10.0),
+            "last_five_minute_change_max": (0.1, 10.0),
+            "max_positions": (1, 10),
+        }
+        for key, (minimum, maximum) in numeric_limits.items():
+            value = _number(config.get(key))
+            if value is None or not minimum <= value <= maximum:
+                raise ValueError(f"{key} 必须在 {minimum} 到 {maximum} 之间")
+            config[key] = int(value) if key == "max_positions" else round(value, 4)
+        for key in (
+            "exclude_star_market", "require_volume_staircase", "require_relative_strength",
+            "require_vwap_hold", "require_late_high_retest",
+        ):
+            config[key] = bool(config.get(key))
+        config.update({
+            "id": strategy_id or f"overnight_{uuid.uuid4().hex[:12]}",
+            "name": name,
+            "version": "2.0",
+            "is_builtin": False,
+            "updated_at": datetime.utcnow().isoformat(),
+        })
+        return config
+
+    async def _strategy_store(self) -> tuple[str, list[dict[str, Any]]]:
+        payload: dict[str, Any] = {}
+        try:
+            async with async_session() as session:
+                row = await session.get(PersonalSystemConfig, OVERNIGHT_STRATEGY_CONFIG_KEY)
+            if row and isinstance(row.payload, dict):
+                payload = dict(row.payload)
+        except Exception:
+            payload = {}
+        strategies = [{**STRATEGY_CONFIG}]
+        seen = {STRATEGY_CONFIG["id"]}
+        for item in payload.get("strategies") or []:
+            if not isinstance(item, dict):
+                continue
+            strategy_id = str(item.get("id") or "")
+            if not strategy_id or strategy_id in seen:
+                continue
+            try:
+                strategies.append(self._validate_strategy(item, strategy_id=strategy_id))
+                seen.add(strategy_id)
+            except ValueError:
+                continue
+        active_id = str(payload.get("active_id") or STRATEGY_CONFIG["id"])
+        if active_id not in seen:
+            active_id = STRATEGY_CONFIG["id"]
+        return active_id, strategies
+
+    async def _save_strategy_store(self, active_id: str, strategies: list[dict[str, Any]]) -> None:
+        custom = [item for item in strategies if not item.get("is_builtin")]
+        payload = {
+            "active_id": active_id,
+            "strategies": custom,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        async with async_session() as session:
+            row = await session.get(PersonalSystemConfig, OVERNIGHT_STRATEGY_CONFIG_KEY)
+            if row is None:
+                session.add(PersonalSystemConfig(key=OVERNIGHT_STRATEGY_CONFIG_KEY, payload=payload))
+            else:
+                row.payload = payload
+            await session.commit()
+
+    async def list_strategies(self) -> dict[str, Any]:
+        active_id, strategies = await self._strategy_store()
+        return {
+            "active_id": active_id,
+            "strategies": strategies,
+            "factor_schema": FACTOR_SCHEMA,
+            "validation_note": "参数可调不等于胜率承诺；历史点时分钟样本不足时只展示真实前向运行对比。",
+        }
+
+    async def save_strategy(self, payload: dict[str, Any], strategy_id: str | None = None) -> dict[str, Any]:
+        active_id, strategies = await self._strategy_store()
+        if strategy_id == STRATEGY_CONFIG["id"]:
+            raise ValueError("内置复盘策略不可覆盖，请另存为新策略")
+        existing = next((item for item in strategies if item["id"] == strategy_id), None)
+        merged = {**(existing or {}), **(payload or {})}
+        config = self._validate_strategy(merged, strategy_id=strategy_id)
+        if any(item["name"] == config["name"] and item["id"] != config["id"] for item in strategies):
+            raise ValueError("策略名称已存在")
+        strategies = [item for item in strategies if item["id"] != config["id"]]
+        strategies.append(config)
+        await self._save_strategy_store(active_id, strategies)
+        return config
+
+    async def activate_strategy(self, strategy_id: str) -> dict[str, Any]:
+        _, strategies = await self._strategy_store()
+        strategy = next((item for item in strategies if item["id"] == strategy_id), None)
+        if strategy is None:
+            raise LookupError("一夜持股策略不存在")
+        await self._save_strategy_store(strategy_id, strategies)
+        return strategy
+
+    async def delete_strategy(self, strategy_id: str) -> None:
+        active_id, strategies = await self._strategy_store()
+        strategy = next((item for item in strategies if item["id"] == strategy_id), None)
+        if strategy is None:
+            raise LookupError("一夜持股策略不存在")
+        if strategy.get("is_builtin"):
+            raise ValueError("内置复盘策略不可删除")
+        remaining = [item for item in strategies if item["id"] != strategy_id]
+        await self._save_strategy_store(
+            STRATEGY_CONFIG["id"] if active_id == strategy_id else active_id,
+            remaining,
+        )
+
+    async def _resolve_strategy(self, strategy_id: str | None = None) -> dict[str, Any]:
+        active_id, strategies = await self._strategy_store()
+        target = strategy_id or active_id
+        strategy = next((item for item in strategies if item["id"] == target), None)
+        if strategy is None:
+            raise ValueError("所选一夜持股策略不存在")
+        return {**strategy}
+
     async def _set_progress(self, run_id: int, progress: int, message: str) -> None:
         async with async_session() as session:
             row = await session.get(OvernightStrategyRun, run_id)
@@ -186,12 +357,19 @@ class OvernightStrategyService:
             row.prefiltered_count = prefiltered_count
             row.qualified_count = sum(bool(item.get("qualified")) for item in candidate_rows)
             row.candidates = candidate_rows
-            row.data_quality = data_quality or {}
+            existing_quality = row.data_quality if isinstance(row.data_quality, dict) else {}
+            row.data_quality = {**existing_quality, **(data_quality or {})}
             row.error = error
             row.finished_at = datetime.utcnow()
             await session.commit()
 
-    async def _create_run(self, stage: str, trigger: str) -> tuple[OvernightStrategyRun, bool]:
+    async def _create_run(
+        self,
+        stage: str,
+        trigger: str,
+        strategy: dict[str, Any] | None = None,
+    ) -> tuple[OvernightStrategyRun, bool]:
+        strategy = strategy or {**STRATEGY_CONFIG}
         normalized = str(stage or "").strip().lower()
         normalized_trigger = str(trigger or "manual").strip().lower()[:20]
         if normalized not in RUN_STAGES:
@@ -236,7 +414,7 @@ class OvernightStrategyService:
                 progress=0,
                 message="等待策略引擎开始",
                 candidates=[],
-                data_quality={},
+                data_quality={"strategy_id": strategy["id"], "strategy": strategy},
             )
             session.add(row)
             await session.commit()
@@ -254,8 +432,10 @@ class OvernightStrategyService:
         *,
         trigger: str = "manual",
         background: bool = True,
+        strategy_id: str | None = None,
     ) -> dict[str, Any]:
-        row, created = await self._create_run(stage, trigger)
+        strategy = await self._resolve_strategy(strategy_id)
+        row, created = await self._create_run(stage, trigger, strategy)
         if created:
             if background:
                 self._spawn(row.id)
@@ -273,8 +453,12 @@ class OvernightStrategyService:
                     if row is None:
                         return
                     stage = row.stage
+                    stored = row.data_quality or {}
+                    strategy = stored.get("strategy") if isinstance(stored, dict) else None
+                    if not isinstance(strategy, dict):
+                        strategy = await self._resolve_strategy()
                 if stage in {"preliminary", "entry"}:
-                    await self._scan(run_id, stage)
+                    await self._scan(run_id, stage, strategy)
                 else:
                     await self._exit(run_id, force=stage == "force_exit")
             except Exception as exc:
@@ -291,7 +475,7 @@ class OvernightStrategyService:
         minute = now.hour * 60 + now.minute
         if stage == "preliminary":
             return 14 * 60 + 25 <= minute <= 14 * 60 + 40, "预扫描只在交易日14:25-14:40执行"
-        return 14 * 60 + 45 <= minute <= 14 * 60 + 55, "模拟入场只在交易日14:45-14:55执行"
+        return 14 * 60 + 52 <= minute <= 14 * 60 + 59, "模拟入场只在交易日14:52-14:59执行"
 
     @staticmethod
     async def _daily_bars(codes: list[str], today: date) -> dict[str, list[dict]]:
@@ -322,10 +506,15 @@ class OvernightStrategyService:
         return grouped
 
     @staticmethod
-    def _prefilter(stocks: list[dict]) -> list[dict]:
+    def _prefilter(stocks: list[dict], config: dict[str, Any] | None = None) -> list[dict]:
+        config = config or STRATEGY_CONFIG
+        change_min, change_max = config["change_pct"]
+        turnover_min, turnover_max = config["turnover_pct"]
+        cap_min, cap_max = config["market_cap_yi"]
         selected = []
         for raw in stocks:
             stock = normalize_snapshot_stock(raw)
+            code = str(stock.get("code") or "")
             name = str(stock.get("name") or "")
             change = _number(stock.get("change_pct"))
             ratio = _number(stock.get("vol_ratio"))
@@ -334,13 +523,15 @@ class OvernightStrategyService:
             price = _number(stock.get("price"))
             if price is None or price <= 0 or "ST" in name.upper() or "退" in name:
                 continue
-            if change is None or not 3.0 <= change <= 5.0:
+            if config.get("exclude_star_market") and code.startswith(("688", "689")):
                 continue
-            if ratio is None or ratio <= 1.2:
+            if change is None or not change_min <= change <= change_max:
                 continue
-            if turnover is None or not 3.0 <= turnover <= 9.0:
+            if ratio is None or ratio <= float(config["volume_ratio_min"]):
                 continue
-            if market_cap is None or not 40.0 <= market_cap <= 230.0:
+            if turnover is None or not turnover_min <= turnover <= turnover_max:
+                continue
+            if market_cap is None or not cap_min <= market_cap <= cap_max:
                 continue
             selected.append(stock)
         return selected
@@ -360,7 +551,9 @@ class OvernightStrategyService:
         announcement_available: bool,
         report_dates: list[str],
         report_available: bool,
+        config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        config = config or STRATEGY_CONFIG
         price = _number(stock.get("price"))
         previous_closes = [
             value for item in bars
@@ -373,13 +566,42 @@ class OvernightStrategyService:
             for period in (5, 10, 20, 30)
         }
         conditions = [
-            _condition("change_pct", "当日涨幅", "passed", round(float(stock["change_pct"]), 2), "3%-5%", source="全市场实时行情"),
-            _condition("volume_ratio", "量比", "passed", round(float(stock["vol_ratio"]), 2), ">1.2", source="全市场实时行情"),
-            _condition("turnover", "换手率", "passed", round(float(stock["turnover"]), 2), "3%-9%", source="全市场实时行情"),
-            _condition("market_cap", "总市值", "passed", round(float(stock["market_cap"]), 2), "40-230亿元", source="全市场实时行情"),
+            _condition("change_pct", "当日涨幅", "passed", round(float(stock["change_pct"]), 2), f"{config['change_pct'][0]:g}%-{config['change_pct'][1]:g}%", source="全市场实时行情"),
+            _condition("volume_ratio", "量比", "passed", round(float(stock["vol_ratio"]), 2), f">{config['volume_ratio_min']:g}", source="全市场实时行情"),
+            _condition("turnover", "换手率", "passed", round(float(stock["turnover"]), 2), f"{config['turnover_pct'][0]:g}%-{config['turnover_pct'][1]:g}%", source="全市场实时行情"),
+            _condition("market_cap", "总市值", "passed", round(float(stock["market_cap"]), 2), f"{config['market_cap_yi'][0]:g}-{config['market_cap_yi'][1]:g}亿元", source="全市场实时行情"),
+            _condition(
+                "star_market_permission", "科创板权限过滤", "passed",
+                "已排除688/689" if config.get("exclude_star_market") else "允许科创板",
+                "按策略开关过滤", source="股票代码与策略配置",
+            ),
         ]
 
-        listing_ok = len(bars) >= STRATEGY_CONFIG["minimum_listing_sessions"]
+        recent_volumes = [
+            value for item in bars[-2:]
+            for value in [_number(item.get("volume"))]
+            if value is not None and value > 0
+        ]
+        current_volume = _number(stock.get("volume"))
+        staircase_available = len(recent_volumes) == 2 and current_volume is not None and current_volume > 0
+        staircase_passed = bool(
+            staircase_available
+            and recent_volumes[0] < recent_volumes[1] < current_volume
+        )
+        if config.get("require_volume_staircase"):
+            conditions.append(_condition(
+                "volume_staircase", "近3日台阶放量",
+                "passed" if staircase_passed else "failed" if staircase_available else "unavailable",
+                [*recent_volumes, current_volume], "前两日成交量 < 昨日成交量 < 当日累计成交量",
+                source="本地日线缓存+全市场实时行情",
+            ))
+        else:
+            conditions.append(_condition(
+                "volume_staircase", "近3日台阶放量", "passed", "策略未启用", "可选增强因子",
+                source="策略配置",
+            ))
+
+        listing_ok = len(bars) >= int(config["minimum_listing_sessions"])
         conditions.append(_condition(
             "listing_sessions", "上市交易日", "passed" if listing_ok else "unavailable",
             len(bars), ">=60个已缓存交易日", source="本地日线缓存",
@@ -473,8 +695,9 @@ class OvernightStrategyService:
             if ma.get(10) is not None and ma.get(30) not in (None, 0) else 0.0
         )
         score = 55.0
-        score += max(0.0, 12.0 - abs(float(stock.get("change_pct") or 0) - 4.0) * 6.0)
-        score += min(10.0, max(0.0, (float(stock.get("vol_ratio") or 0) - 1.2) * 12.0))
+        change_midpoint = sum(config["change_pct"]) / 2
+        score += max(0.0, 12.0 - abs(float(stock.get("change_pct") or 0) - change_midpoint) * 6.0)
+        score += min(10.0, max(0.0, (float(stock.get("vol_ratio") or 0) - float(config["volume_ratio_min"])) * 12.0))
         score += min(12.0, max(0.0, trend_spread * 4.0))
         if fib and price is not None and price >= fib["s500"]:
             score += 6.0
@@ -489,7 +712,13 @@ class OvernightStrategyService:
         }
 
     @staticmethod
-    def _minute_audit(payload: dict, now: datetime) -> dict[str, Any]:
+    def _minute_audit(
+        payload: dict,
+        now: datetime,
+        benchmark_payload: dict | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        config = config or STRATEGY_CONFIG
         today_text = now.date().isoformat()
         bars = [
             item for item in payload.get("bars") or []
@@ -501,14 +730,14 @@ class OvernightStrategyService:
         conditions = []
         fresh = bool(
             latest_at
-            and 14 * 60 + 45 <= latest_at.hour * 60 + latest_at.minute <= 14 * 60 + 55
+            and 14 * 60 + 52 <= latest_at.hour * 60 + latest_at.minute <= 14 * 60 + 59
             and 0 <= (_local_naive(now) - latest_at).total_seconds() <= 10 * 60
         )
         conditions.append(_condition(
             "minute_freshness", "入场窗口分钟行情",
             "passed" if fresh else "unavailable",
             latest_at.isoformat(timespec="minutes") if latest_at else None,
-            "当日14:45-14:55且延迟不超过10分钟", source="东方财富1分钟分时",
+            "当日14:52-14:59且延迟不超过10分钟", source="东方财富1分钟分时",
         ))
 
         last_five_change = None
@@ -524,9 +753,9 @@ class OvernightStrategyService:
                 last_five_change = (latest_close / anchor_close - 1) * 100
         conditions.append(_condition(
             "last_five_change", "排除尾盘5分钟急拉",
-            "passed" if last_five_change is not None and last_five_change <= 2.0 else "failed" if last_five_change is not None else "unavailable",
+            "passed" if last_five_change is not None and last_five_change <= float(config["last_five_minute_change_max"]) else "failed" if last_five_change is not None else "unavailable",
             round(last_five_change, 3) if last_five_change is not None else None,
-            "最近5分钟涨幅<=2%", source="东方财富1分钟分时",
+            f"最近5分钟涨幅<={config['last_five_minute_change_max']:g}%", source="东方财富1分钟分时",
         ))
 
         volumes = [
@@ -550,9 +779,92 @@ class OvernightStrategyService:
             detail=volume_detail,
         ))
 
+        market_price = _number((latest or {}).get("close"))
+        vwap = _number((latest or {}).get("average"))
+        if vwap is None:
+            total_volume = sum(_number(item.get("volume")) or 0 for item in bars)
+            total_amount = sum(_number(item.get("amount")) or 0 for item in bars)
+            vwap = total_amount / total_volume if total_volume > 0 and total_amount > 0 else None
+        vwap_passed = bool(market_price is not None and vwap is not None and market_price >= vwap)
+        if config.get("require_vwap_hold"):
+            conditions.append(_condition(
+                "vwap_hold", "尾盘守住VWAP",
+                "passed" if vwap_passed else "failed" if market_price is not None and vwap is not None else "unavailable",
+                {"price": round(market_price, 4) if market_price is not None else None, "vwap": round(vwap, 4) if vwap is not None else None},
+                "最新价>=当日成交均价", source="东方财富1分钟分时",
+            ))
+        else:
+            conditions.append(_condition("vwap_hold", "尾盘守住VWAP", "passed", "策略未启用", "可选确认因子", source="策略配置"))
+
+        stock_return = None
+        benchmark_return = None
+        relative_strength = None
+        stock_pre_close = _number(payload.get("pre_close"))
+        if market_price is not None and stock_pre_close not in (None, 0):
+            stock_return = (market_price / stock_pre_close - 1) * 100
+        benchmark_bars = [
+            item for item in (benchmark_payload or {}).get("bars") or []
+            if str(item.get("bar_time") or "").startswith(today_text)
+            and (latest_at is None or (_datetime(item.get("bar_time")) or datetime.max) <= latest_at)
+        ]
+        benchmark_close = _number((benchmark_bars[-1] if benchmark_bars else {}).get("close"))
+        benchmark_pre_close = _number((benchmark_payload or {}).get("pre_close"))
+        if benchmark_close is not None and benchmark_pre_close not in (None, 0):
+            benchmark_return = (benchmark_close / benchmark_pre_close - 1) * 100
+        if stock_return is not None and benchmark_return is not None:
+            relative_strength = stock_return - benchmark_return
+        relative_passed = bool(
+            relative_strength is not None
+            and relative_strength >= float(config["relative_strength_min_pct"])
+        )
+        if config.get("require_relative_strength"):
+            conditions.append(_condition(
+                "relative_strength", "分时强于上证指数",
+                "passed" if relative_passed else "failed" if relative_strength is not None else "unavailable",
+                {
+                    "stock_return_pct": round(stock_return, 3) if stock_return is not None else None,
+                    "benchmark_return_pct": round(benchmark_return, 3) if benchmark_return is not None else None,
+                    "excess_pct": round(relative_strength, 3) if relative_strength is not None else None,
+                },
+                f"相对强度>={config['relative_strength_min_pct']:g}%", source="个股与上证指数1分钟分时",
+            ))
+        else:
+            conditions.append(_condition("relative_strength", "分时强于上证指数", "passed", "策略未启用", "可选确认因子", source="策略配置"))
+
+        day_highs = [value for item in bars for value in [_number(item.get("high"))] if value is not None]
+        late_bars = [
+            item for item in bars
+            if ((_datetime(item.get("bar_time")) or datetime.min).hour * 60 + (_datetime(item.get("bar_time")) or datetime.min).minute) >= 14 * 60 + 50
+        ]
+        late_highs = [value for item in late_bars for value in [_number(item.get("high"))] if value is not None]
+        day_high = max(day_highs, default=None)
+        late_high = max(late_highs, default=None)
+        pullback_pct = (
+            (late_high - market_price) / late_high * 100
+            if late_high not in (None, 0) and market_price is not None else None
+        )
+        late_confirmation = bool(
+            day_high is not None and late_high is not None and market_price is not None
+            and late_high >= day_high * 0.999
+            and pullback_pct is not None and pullback_pct <= 1.0
+            and (vwap is None or market_price >= vwap)
+        )
+        if config.get("require_late_high_retest"):
+            conditions.append(_condition(
+                "late_high_retest", "14:55新高回踩确认",
+                "passed" if late_confirmation else "failed" if day_high is not None and late_high is not None and market_price is not None else "unavailable",
+                {
+                    "day_high": round(day_high, 4) if day_high is not None else None,
+                    "late_high": round(late_high, 4) if late_high is not None else None,
+                    "pullback_pct": round(pullback_pct, 3) if pullback_pct is not None else None,
+                },
+                "14:50后触及当日新高，回踩<=1%且不破VWAP", source="东方财富1分钟分时",
+            ))
+        else:
+            conditions.append(_condition("late_high_retest", "14:55新高回踩确认", "passed", "策略未启用", "可选确认因子", source="策略配置"))
+
         failed = [item["label"] for item in conditions if item["status"] == "failed"]
         unavailable = [item["label"] for item in conditions if item["status"] == "unavailable"]
-        market_price = _number((latest or {}).get("close"))
         return {
             "conditions": conditions,
             "minute_passed": not failed and not unavailable,
@@ -561,7 +873,7 @@ class OvernightStrategyService:
             "latest_bar_at": latest_at.isoformat(timespec="minutes") if latest_at else None,
             "market_price": market_price,
             "entry_price": (
-                round(market_price * (1 + STRATEGY_CONFIG["slippage_rate"]), 4)
+                round(market_price * (1 + float(config["slippage_rate"])), 4)
                 if market_price is not None else None
             ),
             "bars": bars,
@@ -609,7 +921,27 @@ class OvernightStrategyService:
                 output[code].append(publish_date.isoformat())
         return output, True
 
-    async def _scan(self, run_id: int, stage: str) -> None:
+    @staticmethod
+    async def _loss_circuit(now: datetime) -> dict[str, Any]:
+        async with async_session() as session:
+            rows = (await session.execute(
+                select(OvernightPosition)
+                .where(OvernightPosition.status == "closed", OvernightPosition.pnl.is_not(None))
+                .order_by(desc(OvernightPosition.exit_at), desc(OvernightPosition.id))
+                .limit(3)
+            )).scalars().all()
+        if len(rows) < 3 or not all(float(row.pnl or 0) < 0 for row in rows):
+            return {"blocked": False, "consecutive_losses": sum(float(row.pnl or 0) < 0 for row in rows)}
+        latest_exit = rows[0].exit_at or rows[0].updated_at or rows[0].created_at
+        pause_until = latest_exit.date() + timedelta(days=7) if latest_exit else now.date()
+        return {
+            "blocked": now.date() < pause_until,
+            "consecutive_losses": 3,
+            "pause_until": pause_until.isoformat(),
+            "reason": "连续3笔亏损，强制空仓一周",
+        }
+
+    async def _scan(self, run_id: int, stage: str, config: dict[str, Any]) -> None:
         now = shanghai_now()
         window_open, window_message = self._stage_window_status(stage, now)
         if now.weekday() >= 5 or not window_open:
@@ -626,18 +958,37 @@ class OvernightStrategyService:
             )
             return
 
+        circuit = await self._loss_circuit(now)
+        if circuit.get("blocked"):
+            await self._finish(
+                run_id,
+                status="completed",
+                message=f"空仓日：{circuit['reason']}（至 {circuit['pause_until']}）",
+                data_date=now.date(),
+                data_quality={
+                    "strategy_id": config["id"], "strategy": config,
+                    "cash_day": True, "loss_circuit": circuit, "quote": "not_requested",
+                },
+            )
+            return
+
         await self._set_progress(run_id, 5, "正在获取完整A股实时横截面")
-        try:
-            snapshot = await collector.fetch_quant_market_snapshot()
-        except Exception as exc:
+        snapshot_result, market_result = await asyncio.gather(
+            collector.fetch_quant_market_snapshot(),
+            collector.fetch_market_turnover(),
+            return_exceptions=True,
+        )
+        if isinstance(snapshot_result, Exception):
             await self._finish(
                 run_id,
                 status="unavailable",
                 message="完整实时行情不可用，本轮不产生一夜持股信号",
-                data_quality={"quote": "unavailable", "exception": type(exc).__name__},
-                error=type(exc).__name__,
+                data_quality={"quote": "unavailable", "exception": type(snapshot_result).__name__},
+                error=type(snapshot_result).__name__,
             )
             return
+        snapshot = snapshot_result
+        market = {} if isinstance(market_result, Exception) else market_result
 
         data_date = _date(snapshot.get("data_date"))
         realtime = bool(snapshot.get("is_realtime")) and data_date == now.date()
@@ -660,7 +1011,28 @@ class OvernightStrategyService:
             )
             return
 
-        prefiltered = self._prefilter(stocks)
+        prefiltered = self._prefilter(stocks, config)
+        market_change = _number(market.get("sh_change_pct"))
+        market_circuit = {
+            "triggered": bool(market_change is not None and market_change <= -2.0),
+            "sh_change_pct": market_change,
+            "resilient_candidates": len(prefiltered),
+        }
+        if market_circuit["triggered"] and not prefiltered:
+            await self._finish(
+                run_id,
+                status="completed",
+                message="空仓日：上证跌幅超过2%且没有通过条件的抗跌候选",
+                data_date=data_date,
+                is_realtime=True,
+                scanned_count=len(stocks),
+                data_quality={
+                    "strategy_id": config["id"], "strategy": config,
+                    "cash_day": True, "loss_circuit": circuit,
+                    "market_circuit": market_circuit,
+                },
+            )
+            return
         await self._set_progress(run_id, 24, f"静态条件通过 {len(prefiltered)} 只，正在核验日线与黑名单")
         codes = [str(item["code"]) for item in prefiltered]
         bars_result, announcements_result, appointments_result = await asyncio.gather(
@@ -686,6 +1058,7 @@ class OvernightStrategyService:
                 announcement_available=bool((announcement_status.get(code) or {}).get("available")),
                 report_dates=appointment_map.get(code, []),
                 report_available=report_available,
+                config=config,
             )
             candidates.append({
                 "code": code,
@@ -713,6 +1086,7 @@ class OvernightStrategyService:
         daily_passed = [item for item in candidates if item["daily_passed"]]
         minute_payloads: list[dict] = []
         minute_covered = 0
+        benchmark_payload: dict[str, Any] = {}
         if stage == "entry" and daily_passed:
             await self._set_progress(run_id, 62, f"日线与黑名单通过 {len(daily_passed)} 只，正在复核1分钟分时")
             semaphore = asyncio.Semaphore(8)
@@ -724,7 +1098,13 @@ class OvernightStrategyService:
                     except Exception as exc:
                         return candidate["code"], exc
 
-            minute_results = await asyncio.gather(*(fetch_minutes(item) for item in daily_passed))
+            minute_results_raw, benchmark_result = await asyncio.gather(
+                asyncio.gather(*(fetch_minutes(item) for item in daily_passed)),
+                collector.fetch_shanghai_index_minute_trends(days=1),
+                return_exceptions=True,
+            )
+            minute_results = [] if isinstance(minute_results_raw, Exception) else minute_results_raw
+            benchmark_payload = {} if isinstance(benchmark_result, Exception) else benchmark_result
             by_code = {code: payload for code, payload in minute_results}
             for candidate in daily_passed:
                 payload = by_code.get(candidate["code"])
@@ -736,7 +1116,7 @@ class OvernightStrategyService:
                     ))
                     continue
                 minute_payloads.append(payload)
-                minute_audit = self._minute_audit(payload, now)
+                minute_audit = self._minute_audit(payload, now, benchmark_payload, config)
                 minute_covered += bool(
                     payload.get("is_realtime")
                     and _date(payload.get("data_date")) == now.date()
@@ -769,9 +1149,14 @@ class OvernightStrategyService:
         selected_count = 0
         if stage == "entry":
             await self._set_progress(run_id, 88, "分钟条件核验完成，正在执行仓位上限并建立100股模拟持仓")
-            selected_count = await self._create_positions(run_id, candidates, now)
+            selected_count = await self._create_positions(run_id, candidates, now, config)
 
         data_quality = {
+            "strategy_id": config["id"],
+            "strategy": config,
+            "cash_day": not any(item.get("qualified") for item in candidates),
+            "loss_circuit": circuit,
+            "market_circuit": market_circuit,
             "quote": {
                 "source": snapshot.get("source", "eastmoney"),
                 "data_date": snapshot.get("data_date"),
@@ -792,15 +1177,19 @@ class OvernightStrategyService:
             "minute": {
                 "covered": minute_covered,
                 "requested": len(daily_passed) if stage == "entry" else 0,
+                "benchmark_available": bool(benchmark_payload.get("bars")),
                 "persisted_forward_only": True,
             },
             "missing_policy": "任一强制字段缺失即不入选；不会以日线推断尾盘分钟条件",
             "backtest_limitation": "现有分钟缓存不是历史全市场点时样本，不能据此宣称十年精确回测或固定胜率",
         }
         if stage == "preliminary":
-            message = f"14:30预扫描完成：{len(daily_passed)}只等待14:50最终分钟复核"
+            message = f"14:30预扫描完成：{len(daily_passed)}只等待14:55最终分钟复核"
         else:
-            message = f"尾盘复核完成：{sum(item['qualified'] for item in candidates)}只合格，模拟买入{selected_count}只"
+            message = (
+                f"尾盘复核完成：{sum(item['qualified'] for item in candidates)}只合格，模拟买入{selected_count}只"
+                if selected_count else "空仓日：尾盘复核后没有满足全部因子的标的"
+            )
         await self._finish(
             run_id,
             status="completed",
@@ -813,7 +1202,13 @@ class OvernightStrategyService:
             data_quality=data_quality,
         )
 
-    async def _create_positions(self, run_id: int, candidates: list[dict], now: datetime) -> int:
+    async def _create_positions(
+        self,
+        run_id: int,
+        candidates: list[dict],
+        now: datetime,
+        config: dict[str, Any],
+    ) -> int:
         qualified = [item for item in candidates if item.get("qualified")]
         qualified.sort(key=lambda item: (item.get("score") or 0, item.get("code") or ""), reverse=True)
         async with async_session() as session:
@@ -822,7 +1217,7 @@ class OvernightStrategyService:
             )).scalars().all()
             open_codes = {row.stock_code for row in open_rows}
             occupied_pct = sum(float(row.allocated_pct or 0) for row in open_rows)
-            remaining_slots = max(0, STRATEGY_CONFIG["max_positions"] - len(open_rows))
+            remaining_slots = max(0, int(config["max_positions"]) - len(open_rows))
             selected = 0
             for candidate in qualified:
                 if selected >= remaining_slots:
@@ -837,13 +1232,13 @@ class OvernightStrategyService:
                     candidate["qualified"] = False
                     candidate["unavailable_reasons"].append("有效模拟成交价")
                     continue
-                cost = entry_price * STRATEGY_CONFIG["shares_per_position"]
-                allocated_pct = cost / STRATEGY_CONFIG["reference_capital"] * 100
-                if allocated_pct > STRATEGY_CONFIG["max_position_pct"]:
+                cost = entry_price * int(config["shares_per_position"])
+                allocated_pct = cost / float(config["reference_capital"]) * 100
+                if allocated_pct > float(config["max_position_pct"]):
                     candidate["qualified"] = False
                     candidate["failed_reasons"].append("100股成本超过参考资金10%单股上限")
                     continue
-                if occupied_pct + allocated_pct > STRATEGY_CONFIG["max_total_position_pct"]:
+                if occupied_pct + allocated_pct > float(config["max_total_position_pct"]):
                     candidate["qualified"] = False
                     candidate["failed_reasons"].append("短线总仓位将超过50%")
                     continue
@@ -853,19 +1248,21 @@ class OvernightStrategyService:
                     stock_name=candidate["name"],
                     sector=candidate.get("sector"),
                     status="open",
-                    shares=STRATEGY_CONFIG["shares_per_position"],
+                    shares=int(config["shares_per_position"]),
                     signal_at=_local_naive(now),
                     entry_at=entry_at,
                     entry_price=entry_price,
                     previous_close=_number(candidate.get("previous_close")),
-                    reference_capital=STRATEGY_CONFIG["reference_capital"],
+                    reference_capital=float(config["reference_capital"]),
                     allocated_pct=allocated_pct,
                     audit={
-                        "strategy": STRATEGY_CONFIG["name"],
+                        "strategy_id": config["id"],
+                        "strategy": config["name"],
+                        "strategy_config": config,
                         "score": candidate.get("score"),
                         "conditions": candidate.get("conditions") or [],
                         "entry_market_price": (candidate.get("minute") or {}).get("market_price"),
-                        "entry_slippage_rate": STRATEGY_CONFIG["slippage_rate"],
+                        "entry_slippage_rate": config["slippage_rate"],
                     },
                 ))
                 candidate["selected_for_entry"] = True
@@ -1079,7 +1476,8 @@ class OvernightStrategyService:
             "name": row.stock_name,
             "sector": row.sector or "",
             "status": row.status,
-            "strategy_tag": STRATEGY_CONFIG["name"],
+            "strategy_tag": str((row.audit or {}).get("strategy") or STRATEGY_CONFIG["name"]),
+            "strategy_id": str((row.audit or {}).get("strategy_id") or STRATEGY_CONFIG["id"]),
             "shares": shares,
             "signal_at": row.signal_at.isoformat() if row.signal_at else None,
             "entry_at": row.entry_at.isoformat() if row.entry_at else None,
@@ -1103,7 +1501,79 @@ class OvernightStrategyService:
             raise LookupError("一夜持股运行记录不存在")
         return _run_view(row) or {}
 
+    async def compare_strategies(self, strategy_ids: list[str]) -> dict[str, Any]:
+        requested = list(dict.fromkeys(str(item) for item in strategy_ids if item))
+        if not 2 <= len(requested) <= 5:
+            raise ValueError("请选择2到5个一夜持股策略进行对比")
+        _, strategies = await self._strategy_store()
+        by_id = {item["id"]: item for item in strategies}
+        missing = [item for item in requested if item not in by_id]
+        if missing:
+            raise ValueError(f"策略不存在: {','.join(missing)}")
+        async with async_session() as session:
+            runs = (await session.execute(
+                select(OvernightStrategyRun)
+                .where(
+                    OvernightStrategyRun.stage == "entry",
+                    OvernightStrategyRun.status.in_(["completed", "partial"]),
+                )
+                .order_by(OvernightStrategyRun.id)
+            )).scalars().all()
+            positions = (await session.execute(
+                select(OvernightPosition).order_by(OvernightPosition.exit_at, OvernightPosition.id)
+            )).scalars().all()
+        positions_by_run: dict[int, list[OvernightPosition]] = {}
+        for position in positions:
+            positions_by_run.setdefault(position.entry_run_id, []).append(position)
+
+        comparisons = []
+        for strategy_id in requested:
+            strategy_runs = [
+                row for row in runs
+                if str((row.data_quality or {}).get("strategy_id") or STRATEGY_CONFIG["id"]) == strategy_id
+            ]
+            samples = [item for row in strategy_runs for item in positions_by_run.get(row.id, [])]
+            closed = [item for item in samples if item.status == "closed" and item.pnl is not None]
+            cumulative = 0.0
+            peak = 0.0
+            max_drawdown = 0.0
+            for item in closed:
+                cumulative += float(item.pnl or 0)
+                peak = max(peak, cumulative)
+                max_drawdown = min(max_drawdown, cumulative - peak)
+            total_cost = sum(float(item.entry_price) * int(item.shares or 100) for item in closed)
+            total_pnl = sum(float(item.pnl or 0) for item in closed)
+            comparisons.append({
+                "strategy_id": strategy_id,
+                "name": by_id[strategy_id]["name"],
+                "config": by_id[strategy_id],
+                "run_count": len(strategy_runs),
+                "cash_days": sum(bool((row.data_quality or {}).get("cash_day")) for row in strategy_runs),
+                "positions": len(samples),
+                "closed_positions": len(closed),
+                "wins": sum(float(item.pnl or 0) > 0 for item in closed),
+                "losses": sum(float(item.pnl or 0) < 0 for item in closed),
+                "win_rate": round(sum(float(item.pnl or 0) > 0 for item in closed) / len(closed) * 100, 2) if closed else None,
+                "total_pnl": round(total_pnl, 2) if closed else None,
+                "return_pct": round(total_pnl / total_cost * 100, 3) if total_cost else None,
+                "average_pnl": round(total_pnl / len(closed), 2) if closed else None,
+                "max_drawdown_amount": round(max_drawdown, 2) if closed else None,
+                "sample_from": strategy_runs[0].data_date.isoformat() if strategy_runs and strategy_runs[0].data_date else None,
+                "sample_to": strategy_runs[-1].data_date.isoformat() if strategy_runs and strategy_runs[-1].data_date else None,
+            })
+        return {
+            "method": "forward_point_in_time_comparison",
+            "comparisons": comparisons,
+            "sample_complete": all(item["closed_positions"] >= 30 for item in comparisons),
+            "limitation": "这是上线后真实点时信号的前向对比，不是伪造的多年历史回测；每个策略至少完成30笔后再比较胜率。",
+        }
+
     async def dashboard(self) -> dict[str, Any]:
+        strategy_store = await self.list_strategies()
+        active_strategy = next(
+            item for item in strategy_store["strategies"]
+            if item["id"] == strategy_store["active_id"]
+        )
         async with async_session() as session:
             runs = (await session.execute(
                 select(OvernightStrategyRun).order_by(desc(OvernightStrategyRun.id)).limit(20)
@@ -1138,11 +1608,12 @@ class OvernightStrategyService:
         return {
             "updated_at": shanghai_now().isoformat(),
             "strategy": {
-                **STRATEGY_CONFIG,
+                **active_strategy,
                 "enabled": True,
                 "execution": "研究用100股模拟成交，不连接券商",
                 "selection_limit": "按可审计综合分取前5只",
             },
+            "strategy_store": strategy_store,
             "active_run": _run_view(active),
             "latest_entry_run": _run_view(latest_entry),
             "latest_preliminary_run": _run_view(latest_preliminary),
@@ -1176,9 +1647,9 @@ class OvernightStrategyService:
                 "collection_mode": "从上线日起对实际候选和持仓前向采集",
             },
             "backtest": {
-                "available": False,
-                "grade": "待积累",
-                "reason": "尚无全市场历史点时分钟快照，现有日线不能还原14:30筛选、尾盘5分钟或次日09:30-10:00成交",
+                "available": True,
+                "grade": "真实前向样本",
+                "reason": "可比较不同参数上线后的真实点时运行；尚无全市场历史点时分钟快照，因此不宣称多年精确回测。",
                 "requirements": [
                     "历史全市场14:30点时快照",
                     "候选股票14:45-14:55逐分钟成交",
@@ -1193,8 +1664,8 @@ class OvernightStrategyService:
         dashboard = await self.dashboard()
         latest = dashboard.get("latest_entry_run") or {}
         return {
-            "tag": STRATEGY_CONFIG["name"],
-            "schedule": "交易日14:30预扫，14:50复核，次日10:00前退出",
+            "tag": str((dashboard.get("strategy") or {}).get("name") or STRATEGY_CONFIG["name"]),
+            "schedule": "交易日14:30预扫，14:55复核，次日10:00前退出",
             "run": latest,
             "positions": dashboard.get("open_positions") or [],
             "recent_closed": (dashboard.get("closed_positions") or [])[:10],

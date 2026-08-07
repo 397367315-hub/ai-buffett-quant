@@ -11,6 +11,7 @@ from sqlalchemy import desc, select
 
 from database import async_session
 from models import (
+    AIRobotJournal,
     AIRobotPick,
     AIRobotRun,
     ConceptBoard,
@@ -30,7 +31,7 @@ POOL_CONFIG: dict[str, dict[str, Any]] = {
         "mode": "quick",
         "risk_profile": "balanced",
         "holding_period": "1-4周",
-        "refresh_rule": "每周日 21:00",
+        "refresh_rule": "每个交易日盘后 15:45",
         "criteria": ["20日动量", "MACD与放量", "RSI区间", "MA20趋势", "换手活跃度", "公告风险否决"],
     },
     "long": {
@@ -39,7 +40,7 @@ POOL_CONFIG: dict[str, dict[str, Any]] = {
         "mode": "full",
         "risk_profile": "conservative",
         "holding_period": "3-12个月",
-        "refresh_rule": "每月首个周日 21:00",
+        "refresh_rule": "每个交易日盘后 16:20",
         "criteria": ["行业景气", "营收与利润质量", "ROE", "经营现金流", "负债约束", "估值与公告风险"],
     },
 }
@@ -139,24 +140,34 @@ def _run_dict(row: AIRobotRun) -> dict[str, Any]:
     }
 
 
-def _next_sunday(now: datetime) -> datetime:
-    days = (6 - now.weekday()) % 7
-    candidate = now.replace(hour=21, minute=0, second=0, microsecond=0) + timedelta(days=days)
-    return candidate if candidate > now else candidate + timedelta(days=7)
+def _journal_dict(row: AIRobotJournal | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "run_id": row.run_id,
+        "pool_type": row.pool_type,
+        "journal_date": row.journal_date.isoformat(),
+        "source_data_date": row.source_data_date.isoformat() if row.source_data_date else None,
+        "is_realtime": bool(row.is_realtime),
+        "action_summary": row.action_summary,
+        "decision_reason": row.decision_reason,
+        "pnl_reflection": row.pnl_reflection or "",
+        "lessons": row.lessons or "",
+        "metrics": row.metrics or {},
+        "picks_snapshot": row.picks_snapshot or [],
+        "created_at": _datetime_text(row.created_at),
+        "updated_at": _datetime_text(row.updated_at),
+    }
 
 
-def _first_sunday(year: int, month: int, template: datetime) -> datetime:
-    first = template.replace(year=year, month=month, day=1, hour=21, minute=0, second=0, microsecond=0)
-    return first + timedelta(days=(6 - first.weekday()) % 7)
-
-
-def _next_monthly_refresh(now: datetime) -> datetime:
-    candidate = _first_sunday(now.year, now.month, now)
-    if candidate > now:
-        return candidate
-    year = now.year + (1 if now.month == 12 else 0)
-    month = 1 if now.month == 12 else now.month + 1
-    return _first_sunday(year, month, now)
+def _next_weekday_refresh(now: datetime, hour: int, minute: int) -> datetime:
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate
 
 
 class AIRobotService:
@@ -362,6 +373,106 @@ class AIRobotService:
             })
         return output
 
+    @staticmethod
+    def _pick_basis(row: AIRobotPick) -> str:
+        recommendation = row.recommendation or {}
+        outlook = recommendation.get("horizon_outlook") or {}
+        supervisor = (recommendation.get("agents") or {}).get("supervisor") or {}
+        return str(outlook.get("basis") or supervisor.get("summary") or row.verdict or "Agent 规则评分通过")
+
+    async def _record_decision_journal(self, run_id: int) -> None:
+        async with async_session() as session:
+            run = await session.get(AIRobotRun, run_id)
+            if run is None or run.status not in {"completed", "partial"}:
+                return
+            picks = list((await session.execute(
+                select(AIRobotPick).where(AIRobotPick.run_id == run_id).order_by(desc(AIRobotPick.score))
+            )).scalars().all())
+            summary = dict(run.summary or {})
+            journal_date = shanghai_now().date()
+            source_label = run.source_data_date.isoformat() if run.source_data_date else "无有效行情日期"
+            action_summary = (
+                f"{POOL_CONFIG[run.pool_type]['label']}本轮保留 {summary.get('retained', 0)} 只、"
+                f"新调入 {summary.get('new', 0)} 只、移出 {summary.get('removed', 0)} 只；"
+                f"有核验价格的标的均按 100 股模拟，依据数据日 {source_label}。"
+            )
+            reasons = [
+                f"{row.name}({row.code})：{self._pick_basis(row)[:140]}"
+                for row in picks[:6]
+            ]
+            decision_reason = "\n".join(reasons) or "本轮没有形成可验证的入选依据。"
+            unavailable = len(SECTOR_BLUEPRINTS) - int(summary.get("available_sectors") or 0)
+            lessons = (
+                f"本轮有 {unavailable} 个板块数据不完整，结论只覆盖已返回有效数据的板块。"
+                if unavailable > 0
+                else "八大板块均完成数据核验；仍需用后续行情检验选股依据，不能把评分当作收益承诺。"
+            )
+            snapshot = [{
+                "code": row.code,
+                "name": row.name,
+                "sector": row.sector_label,
+                "state": row.state,
+                "score": row.score,
+                "confidence": row.confidence,
+                "selected_price": row.selected_price,
+                "selected_on": row.selected_on.isoformat() if row.selected_on else None,
+                "shares": int(row.simulated_shares or 100),
+                "basis": self._pick_basis(row),
+            } for row in picks]
+            journal = (await session.execute(
+                select(AIRobotJournal).where(
+                    AIRobotJournal.pool_type == run.pool_type,
+                    AIRobotJournal.journal_date == journal_date,
+                )
+            )).scalar_one_or_none()
+            if journal is None:
+                journal = AIRobotJournal(
+                    pool_type=run.pool_type,
+                    journal_date=journal_date,
+                    action_summary=action_summary,
+                    decision_reason=decision_reason,
+                )
+                session.add(journal)
+            journal.run_id = run.id
+            journal.source_data_date = run.source_data_date
+            journal.is_realtime = bool(run.is_realtime)
+            journal.action_summary = action_summary
+            journal.decision_reason = decision_reason
+            journal.lessons = lessons
+            journal.metrics = {
+                "selected": summary.get("selected", len(picks)),
+                "new": summary.get("new", 0),
+                "retained": summary.get("retained", 0),
+                "removed": summary.get("removed", 0),
+                "waiting_for_price": summary.get("waiting_for_price", 0),
+                "available_sectors": summary.get("available_sectors", 0),
+            }
+            journal.picks_snapshot = snapshot
+            await session.commit()
+
+    async def journal_history(self, pool_type: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        if pool_type and pool_type not in POOL_CONFIG:
+            raise ValueError("pool_type 必须是 short 或 long")
+        query = select(AIRobotJournal).order_by(desc(AIRobotJournal.journal_date), desc(AIRobotJournal.id)).limit(min(max(limit, 1), 180))
+        if pool_type:
+            query = query.where(AIRobotJournal.pool_type == pool_type)
+        async with async_session() as session:
+            rows = list((await session.execute(query)).scalars().all())
+        return [_journal_dict(row) for row in rows]
+
+    async def _latest_journals(self) -> dict[str, dict[str, Any] | None]:
+        output: dict[str, dict[str, Any] | None] = {}
+        async with async_session() as session:
+            for pool_type in POOL_CONFIG:
+                row = (await session.execute(
+                    select(AIRobotJournal)
+                    .where(AIRobotJournal.pool_type == pool_type)
+                    .order_by(desc(AIRobotJournal.journal_date), desc(AIRobotJournal.id))
+                    .limit(1)
+                )).scalar_one_or_none()
+                output[pool_type] = _journal_dict(row)
+        return output
+
     async def _execute(self, run_id: int) -> None:
         try:
             async with async_session() as session:
@@ -515,6 +626,11 @@ class AIRobotService:
                 row.finished_at = datetime.utcnow()
                 row.error = None if pending_picks else "NoVerifiedSelection"
                 await session.commit()
+            if pending_picks:
+                try:
+                    await self._record_decision_journal(run_id)
+                except Exception as journal_exc:
+                    print(f"AI robot journal write failed: {type(journal_exc).__name__}")
         except Exception as exc:
             async with async_session() as session:
                 row = await session.get(AIRobotRun, run_id)
@@ -584,7 +700,10 @@ class AIRobotService:
             async with semaphore:
                 snapshot = await stock_selection_agents._candidate_snapshot(
                     f"stock_selection_candidates_v1:{board['code']}",
-                    collector.fetch_all_board_stocks(str(board["code"]), sector_name=str(board.get("name") or sector["label"])),
+                    lambda: collector.fetch_all_board_stocks(
+                        str(board["code"]),
+                        sector_name=str(board.get("name") or sector["label"]),
+                    ),
                 )
             return {
                 "key": sector["key"],
@@ -597,7 +716,7 @@ class AIRobotService:
         market, sector_results = await asyncio.gather(
             stock_selection_agents._candidate_snapshot(
                 "stock_selection_candidates_v1:market",
-                collector.fetch_intelligent_selection_candidates(),
+                lambda: collector.fetch_intelligent_selection_candidates(),
             ),
             asyncio.gather(*(warm(sector) for sector in sectors)),
         )
@@ -701,6 +820,7 @@ class AIRobotService:
             }
         latest = await self._latest_runs()
         active_runs = await self._active_runs()
+        latest_journals = await self._latest_journals()
         run_ids = [row.id for row in latest.values() if row and row.status in {"completed", "partial"}]
         async with async_session() as session:
             rows = (await session.execute(
@@ -726,7 +846,12 @@ class AIRobotService:
                 "sectors": grouped,
                 "picks": picks,
                 "performance": self._pool_performance(picks),
-                "next_update": (_next_sunday(now) if pool_type == "short" else _next_monthly_refresh(now)).isoformat(),
+                "journal": latest_journals.get(pool_type),
+                "next_update": _next_weekday_refresh(
+                    now,
+                    15 if pool_type == "short" else 16,
+                    45 if pool_type == "short" else 20,
+                ).isoformat(),
             }
         return {
             "updated_at": now.isoformat(),
@@ -751,6 +876,74 @@ class AIRobotService:
             "disclaimer": "机器人组合为研究用模拟记录，不会连接券商或自动下单，不构成投资建议。",
         }
 
+    async def _record_performance_journals(self, dashboard: dict[str, Any]) -> None:
+        run_ids = [
+            int(pool["run"]["id"])
+            for pool in dashboard["pools"].values()
+            if (pool.get("run") or {}).get("id")
+        ]
+        for run_id in run_ids:
+            await self._record_decision_journal(run_id)
+
+        async with async_session() as session:
+            for pool_type, pool in dashboard["pools"].items():
+                run_data = pool.get("run") or {}
+                if not run_data.get("id"):
+                    continue
+                journal = (await session.execute(
+                    select(AIRobotJournal)
+                    .where(AIRobotJournal.run_id == int(run_data["id"]))
+                    .order_by(desc(AIRobotJournal.journal_date), desc(AIRobotJournal.id))
+                    .limit(1)
+                )).scalar_one_or_none()
+                if journal is None:
+                    continue
+                performance = dict(pool.get("performance") or {})
+                pnl = _number(performance.get("pnl"))
+                pnl_pct = _number(performance.get("pnl_pct"))
+                priced = int(performance.get("priced_positions") or 0)
+                waiting = int(performance.get("waiting_positions") or 0) + int(performance.get("quote_unavailable_positions") or 0)
+                if priced == 0:
+                    reflection = f"今天没有足够的有效行情核算盈亏，{waiting} 只标的仍待价格恢复；不据此判断策略表现。"
+                elif pnl is not None and pnl > 0:
+                    reflection = (
+                        f"当前可核算组合浮盈 {pnl:.2f} 元（{pnl_pct or 0:+.2f}%），"
+                        f"盈利 {performance.get('winners', 0)} 只、亏损 {performance.get('losers', 0)} 只。"
+                        "单日浮盈不证明选股逻辑长期有效，继续观察回撤和板块集中度。"
+                    )
+                elif pnl is not None and pnl < 0:
+                    reflection = (
+                        f"当前可核算组合浮亏 {pnl:.2f} 元（{pnl_pct or 0:+.2f}%），"
+                        f"盈利 {performance.get('winners', 0)} 只、亏损 {performance.get('losers', 0)} 只。"
+                        "优先复核亏损标的原始依据是否失效，不用补仓掩盖错误。"
+                    )
+                else:
+                    reflection = "当前可核算组合接近盈亏平衡，继续用后续交易日验证选股依据和风险约束。"
+                metrics = dict(journal.metrics or {})
+                metrics.update({
+                    "performance_recorded_at": dashboard["updated_at"],
+                    "quote_data_date": dashboard.get("quote", {}).get("data_date"),
+                    "quote_source": dashboard.get("quote", {}).get("source"),
+                    "quote_is_realtime": bool(dashboard.get("quote", {}).get("is_realtime")),
+                    "performance": performance,
+                })
+                latest_by_code = {item["code"]: item for item in pool.get("picks") or []}
+                snapshots = []
+                for item in journal.picks_snapshot or []:
+                    latest = latest_by_code.get(item.get("code"), {})
+                    snapshots.append({
+                        **item,
+                        "latest_price": latest.get("latest_price"),
+                        "market_value": latest.get("market_value"),
+                        "pnl": latest.get("pnl"),
+                        "pnl_pct": latest.get("pnl_pct"),
+                        "price_status": latest.get("price_status"),
+                    })
+                journal.metrics = metrics
+                journal.picks_snapshot = snapshots
+                journal.pnl_reflection = reflection
+            await session.commit()
+
     async def record_performance_snapshot(self) -> dict[str, Any]:
         dashboard = await self.dashboard()
         async with async_session() as session:
@@ -768,6 +961,7 @@ class AIRobotService:
                 }
                 row.summary = summary
             await session.commit()
+        await self._record_performance_journals(dashboard)
         return dashboard["combined_performance"]
 
     async def check_anomalies(self) -> list[dict[str, Any]]:

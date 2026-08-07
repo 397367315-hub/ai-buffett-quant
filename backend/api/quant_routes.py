@@ -194,13 +194,70 @@ async def get_overnight_strategy_dashboard():
     return {"code": 0, "data": await overnight_strategy_service.dashboard()}
 
 
+@router.get("/overnight/strategies")
+async def get_overnight_strategies():
+    return {"code": 0, "data": await overnight_strategy_service.list_strategies()}
+
+
+@router.post("/overnight/strategies", status_code=status.HTTP_201_CREATED)
+async def create_overnight_strategy(request: dict):
+    try:
+        strategy = await overnight_strategy_service.save_strategy(request or {})
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    return {"code": 0, "data": strategy, "message": "一夜持股策略已另存"}
+
+
+@router.put("/overnight/strategies/{strategy_id}")
+async def update_overnight_strategy(strategy_id: str, request: dict):
+    try:
+        strategy = await overnight_strategy_service.save_strategy(request or {}, strategy_id)
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    return {"code": 0, "data": strategy, "message": "一夜持股策略已更新"}
+
+
+@router.delete("/overnight/strategies/{strategy_id}")
+async def delete_overnight_strategy(strategy_id: str):
+    try:
+        await overnight_strategy_service.delete_strategy(strategy_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    return {"code": 0, "data": {"deleted": True}, "message": "一夜持股策略已删除"}
+
+
+@router.post("/overnight/strategies/{strategy_id}/activate")
+async def activate_overnight_strategy(strategy_id: str):
+    try:
+        strategy = await overnight_strategy_service.activate_strategy(strategy_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"code": 0, "data": strategy, "message": "已切换一夜持股策略"}
+
+
+@router.post("/overnight/compare")
+async def compare_overnight_strategies(request: dict):
+    try:
+        result = await overnight_strategy_service.compare_strategies(
+            list((request or {}).get("strategy_ids") or [])
+        )
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    return {"code": 0, "data": result}
+
+
 @router.post("/overnight/runs", status_code=status.HTTP_202_ACCEPTED)
 async def start_overnight_strategy_run(request: dict):
     stage = str((request or {}).get("stage") or "preliminary").strip().lower()
     requested_trigger = str((request or {}).get("trigger") or "manual").strip().lower()
     trigger = "github_schedule" if requested_trigger == "github_schedule" else "manual"
+    strategy_id = str((request or {}).get("strategy_id") or "").strip() or None
     try:
-        result = await overnight_strategy_service.start(stage, trigger=trigger, background=True)
+        result = await overnight_strategy_service.start(
+            stage, trigger=trigger, background=True, strategy_id=strategy_id,
+        )
     except ValueError as exc:
         raise _unprocessable(exc) from exc
     return {"code": 0, "data": result, "message": "一夜持股策略任务已提交"}

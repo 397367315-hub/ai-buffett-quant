@@ -117,6 +117,7 @@ class EastMoneyDataCollector:
     HISTORY_BASE_URL = "https://push2his.eastmoney.com"
     DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
     TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
     MAX_LIST_PAGE_SIZE = 100
     PAGE_FETCH_CONCURRENCY = 8
     HEADERS = {
@@ -895,11 +896,22 @@ class EastMoneyDataCollector:
             "data_date": now.date().isoformat() if is_a_share_market_session(now) else None,
         }
 
-    async def fetch_dragon_board(self, page_size: int = 50) -> list[dict]:
+    async def fetch_dragon_board(
+        self,
+        page_size: int = 50,
+        target_date: date | str | None = None,
+    ) -> list[dict]:
         params = {
             "reportName": "RPT_DAILYBILLBOARD_DETAILSNEW", "columns": "ALL", "pageNumber": "1", "pageSize": str(page_size),
             "sortTypes": "-1,-1", "sortColumns": "TRADE_DATE,BILLBOARD_NET_AMT", "source": "WEB", "client": "WEB",
         }
+        if target_date:
+            normalized_date = target_date.isoformat() if isinstance(target_date, date) else str(target_date)[:10]
+            try:
+                normalized_date = date.fromisoformat(normalized_date).isoformat()
+            except ValueError as exc:
+                raise ValueError("target_date must use YYYY-MM-DD") from exc
+            params["filter"] = f"(TRADE_DATE='{normalized_date}')"
         try:
             data = await self.fetch_json(self.DATACENTER_URL, params)
         except Exception as exc:
@@ -912,15 +924,25 @@ class EastMoneyDataCollector:
                 code = normalize_stock_code(item.get("SECURITY_CODE"))
             except ValueError:
                 continue
-            institutions = re.search(r"(\d+)家机构", str(item.get("EXPLAIN") or ""))
+            explanation = str(item.get("EXPLANATION") or item.get("EXPLAIN") or "").strip()
+            institutions = re.search(r"(\d+)家机构", explanation)
+            institution_count = as_int(
+                item.get("ORG_BUY_COUNT") or item.get("BUY_TIMES") or (
+                    institutions.group(1) if institutions else 0
+                )
+            )
             stocks.append({
                 "code": code, "name": item.get("SECURITY_NAME_ABBR", ""),
                 "date": str(item.get("TRADE_DATE") or "")[:10], "price": as_float(item.get("CLOSE_PRICE")),
                 "change_pct": as_float(item.get("CHANGE_RATE")), "turnover": as_float(item.get("TURNOVERRATE")),
                 "amount": as_int(item.get("BILLBOARD_DEAL_AMT")), "main_net_inflow": as_int(item.get("BILLBOARD_NET_AMT")),
+                "net_amount": as_int(item.get("BILLBOARD_NET_AMT")),
                 "buy_amount": as_int(item.get("BILLBOARD_BUY_AMT")), "sell_amount": as_int(item.get("BILLBOARD_SELL_AMT")),
-                "market_cap": as_int(item.get("FREE_MARKET_CAP")), "institution_count": as_int(institutions.group(1)) if institutions else 0,
-                "reason": item.get("EXPLANATION", ""),
+                "market_cap": as_int(item.get("FREE_MARKET_CAP")), "institution_count": institution_count,
+                "institution_buy_amount": as_int(item.get("ORG_BUY_AMT")),
+                "institution_sell_amount": as_int(item.get("ORG_SELL_AMT")),
+                "institution_net_amount": as_int(item.get("ORG_NET_BUY")),
+                "reason": explanation,
             })
         return stocks
 
@@ -968,7 +990,7 @@ class EastMoneyDataCollector:
 
     async def _fetch_screener_rows(self, sort_field: str, page_size: int) -> list[dict]:
         """Fetch one descending, live A-share ranking for a screener workflow."""
-        if sort_field not in {"f3", "f10", "f62"}:
+        if sort_field not in {"f3", "f8", "f10", "f62"}:
             raise ValueError(f"Unsupported screener sort field: {sort_field}")
         params = {
             "pn": "1", "pz": str(min(max(page_size, 1), 500)),
@@ -1082,55 +1104,52 @@ class EastMoneyDataCollector:
         }
 
     async def fetch_stock_quotes(self, stock_codes: list[str]) -> dict:
-        """Fetch current quotes for a small, explicitly requested stock set."""
+        """Fetch a bounded quote set with EastMoney/Tencent source failover.
+
+        EastMoney's batch endpoint is preferred while A-shares are trading.
+        Tencent supplies one compact 24-hour batch outside the session and for
+        any symbols missing from the primary response.
+        """
         codes = list(dict.fromkeys(normalize_stock_code(code) for code in stock_codes))
+        by_code: dict[str, dict] = {}
+        sources: list[str] = []
 
-        async def fetch_one(code: str) -> dict | None:
-            data = await self.fetch_json(
-                "https://push2.eastmoney.com/api/qt/stock/get",
-                {
-                    "secid": stock_secid(code),
-                    "fields": "f2,f3,f4,f8,f9,f10,f18,f20,f23,f43,f44,f45,f47,f48,f57,f58,f100,f124,f169,f170",
-                    "ut": EASTMONEY_UT,
-                },
-            )
-            row = data.get("data") or {}
-            price = as_optional_float(row.get("f43"))
-            if price is None or price <= 0:
-                return None
-            change_pct_raw = as_optional_float(row.get("f170"))
-            previous_close_raw = as_optional_float(row.get("f18"))
-            return {
-                "code": code,
-                "name": str(row.get("f58") or ""),
-                "price": price / 100,
-                "change_pct": change_pct_raw / 100 if change_pct_raw is not None else None,
-                "change_amount": (
-                    as_optional_float(row.get("f169")) / 100
-                    if as_optional_float(row.get("f169")) is not None else None
-                ),
-                "previous_close": previous_close_raw / 100 if previous_close_raw is not None else None,
-                "high": (
-                    as_optional_float(row.get("f44")) / 100
-                    if as_optional_float(row.get("f44")) is not None else None
-                ),
-                "low": (
-                    as_optional_float(row.get("f45")) / 100
-                    if as_optional_float(row.get("f45")) is not None else None
-                ),
-                "volume": as_int(row.get("f47")) if row.get("f47") is not None else None,
-                "amount": as_int(row.get("f48")) if row.get("f48") is not None else None,
-                "turnover": as_optional_float(row.get("f8")),
-                "volume_ratio": as_optional_float(row.get("f10")),
-                "pe": as_optional_float(row.get("f9")),
-                "pb": as_optional_float(row.get("f23")),
-                "market_cap": as_int(row.get("f20")) if row.get("f20") is not None else None,
-                "sector": str(row.get("f100") or "").strip(),
-                "quote_timestamp": as_int(row.get("f124")) or None,
-            }
+        if codes and is_a_share_market_session():
+            try:
+                for start in range(0, len(codes), 100):
+                    batch = codes[start:start + 100]
+                    data = await self.fetch_json(
+                        "https://push2.eastmoney.com/api/qt/ulist.np/get",
+                        {
+                            "secids": ",".join(stock_secid(code) for code in batch),
+                            "fields": self.STOCK_SCREENER_FIELDS,
+                            "fltt": "2",
+                            "invt": "2",
+                            "ut": EASTMONEY_UT,
+                        },
+                    )
+                    for row in (data.get("data") or {}).get("diff") or []:
+                        stock = self._map_screener_stock(row)
+                        if stock and stock["code"] in batch:
+                            stock["quote_source"] = "eastmoney"
+                            by_code[stock["code"]] = stock
+                if by_code:
+                    sources.append("eastmoney")
+            except Exception as exc:
+                print(f"EastMoney batch quotes failed: {type(exc).__name__}")
 
-        results = await asyncio.gather(*(fetch_one(code) for code in codes), return_exceptions=True)
-        stocks = [item for item in results if isinstance(item, dict)]
+        missing = [code for code in codes if code not in by_code]
+        if missing:
+            try:
+                fallback = await self.fetch_tencent_quotes(missing)
+                for stock in fallback.get("stocks") or []:
+                    by_code[str(stock["code"])] = stock
+                if fallback.get("stocks"):
+                    sources.append("tencent")
+            except Exception as exc:
+                print(f"Tencent batch quotes failed: {type(exc).__name__}")
+
+        stocks = [by_code[code] for code in codes if code in by_code]
         if codes and not stocks:
             raise RuntimeError("持仓股票最新行情不可用")
 
@@ -1138,11 +1157,101 @@ class EastMoneyDataCollector:
         return {
             "stocks": stocks,
             "total": len(stocks),
-            "source": "eastmoney",
+            "source": "+".join(dict.fromkeys(sources)) or "unavailable",
             **quote_metadata,
             "fetched_at": shanghai_now().isoformat(),
             "complete": len(stocks) == len(codes),
         }
+
+    async def fetch_tencent_quotes(self, stock_codes: list[str]) -> dict:
+        """Fetch and normalize Tencent's compact, batch A-share quote feed."""
+        codes = list(dict.fromkeys(normalize_stock_code(code) for code in stock_codes))
+        symbols = [self._tencent_symbol(code) for code in codes]
+        texts: list[str] = []
+        for start in range(0, len(symbols), 200):
+            batch = symbols[start:start + 200]
+            if settings.data_proxy_base_url:
+                headers: dict[str, str] = {}
+                if settings.data_proxy_token:
+                    headers["X-Data-Proxy-Token"] = settings.data_proxy_token
+                async with httpx.AsyncClient(timeout=self._request_timeout()) as client:
+                    response = await client.post(
+                        f"{settings.data_proxy_base_url.rstrip('/')}/tencent-quotes",
+                        json={"symbols": batch},
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    texts.append(str(response.json().get("text") or ""))
+            else:
+                async with httpx.AsyncClient(timeout=self._request_timeout()) as client:
+                    response = await client.get(
+                        self.TENCENT_QUOTE_URL + ",".join(batch),
+                        headers=self.TENCENT_HEADERS,
+                    )
+                    response.raise_for_status()
+                    texts.append(response.content.decode("gb18030", errors="replace"))
+
+        stocks = self._parse_tencent_quote_text("\n".join(texts))
+        by_code = {str(stock["code"]): stock for stock in stocks}
+        ordered = [by_code[code] for code in codes if code in by_code]
+        return {
+            "stocks": ordered,
+            "total": len(ordered),
+            "source": "tencent",
+            **self._quote_snapshot_metadata(ordered),
+            "fetched_at": shanghai_now().isoformat(),
+            "complete": len(ordered) == len(codes),
+        }
+
+    @classmethod
+    def _parse_tencent_quote_text(cls, text: str) -> list[dict]:
+        stocks = []
+        pattern = re.compile(r'v_(?:sh|sz|bj)(\d{6})="([^"]*)"')
+        for match in pattern.finditer(text or ""):
+            raw_code, payload = match.groups()
+            try:
+                code = normalize_stock_code(raw_code)
+            except ValueError:
+                continue
+            values = payload.split("~")
+            if len(values) < 47:
+                continue
+            price = as_optional_float(values[3])
+            if price is None or price <= 0:
+                continue
+            quote_timestamp = None
+            try:
+                quote_at = datetime.strptime(values[30], "%Y%m%d%H%M%S").replace(
+                    tzinfo=ZoneInfo("Asia/Shanghai")
+                )
+                quote_timestamp = int(quote_at.timestamp())
+            except (TypeError, ValueError):
+                pass
+            raw_volume = as_optional_float(values[36] or values[6])
+            amount_wan = as_optional_float(values[57]) if len(values) > 57 else None
+            total_cap_yi = as_optional_float(values[44]) if len(values) > 44 else None
+            stocks.append({
+                "code": code,
+                "name": values[1],
+                "price": price,
+                "change_pct": as_optional_float(values[32]),
+                "change_amount": as_optional_float(values[31]),
+                "previous_close": as_optional_float(values[4]),
+                "open": as_optional_float(values[5]),
+                "high": as_optional_float(values[33]),
+                "low": as_optional_float(values[34]),
+                "volume": cls._tencent_volume_in_shares(code, raw_volume),
+                "amount": int(amount_wan * 10_000) if amount_wan is not None else None,
+                "turnover": as_optional_float(values[38]),
+                "volume_ratio": as_optional_float(values[49]) if len(values) > 49 else None,
+                "pe": as_optional_float(values[39]),
+                "pb": as_optional_float(values[46]),
+                "market_cap": int(total_cap_yi * 1e8) if total_cap_yi is not None else None,
+                "sector": "",
+                "quote_timestamp": quote_timestamp,
+                "quote_source": "tencent",
+            })
+        return stocks
 
     async def fetch_stock_minute_trends(self, stock_code: str, days: int = 1) -> dict:
         """Fetch source-native one-minute bars used by live intraday decisions."""
@@ -1191,6 +1300,69 @@ class EastMoneyDataCollector:
         return {
             "stock_code": code,
             "stock_name": str(payload.get("name") or ""),
+            "pre_close": as_optional_float(payload.get("preClose")),
+            "bars": bars,
+            "bar_count": len(bars),
+            "source": "eastmoney",
+            "data_date": latest.date().isoformat() if latest else None,
+            "latest_bar_at": latest_text,
+            "is_realtime": bool(
+                latest
+                and latest.date() == now.date()
+                and age_seconds is not None
+                and 0 <= age_seconds <= 10 * 60
+                and is_a_share_market_session(now)
+            ),
+            "complete": bool(bars),
+            "fetched_at": now.isoformat(),
+        }
+
+    async def fetch_shanghai_index_minute_trends(self, days: int = 1) -> dict:
+        """Fetch Shanghai Composite one-minute bars for relative-strength checks."""
+        requested_days = min(max(int(days), 1), 5)
+        data = await self.fetch_json(
+            f"{self.HISTORY_BASE_URL}/api/qt/stock/trends2/get",
+            {
+                "secid": "1.000001",
+                "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+                "ndays": str(requested_days),
+                "iscr": "0",
+                "iscca": "0",
+                "ut": EASTMONEY_UT,
+            },
+        )
+        payload = data.get("data") or {}
+        bars = []
+        for line in payload.get("trends") or []:
+            values = str(line).split(",")
+            if len(values) < 8:
+                continue
+            try:
+                bar_time = datetime.fromisoformat(values[0])
+            except ValueError:
+                continue
+            bars.append({
+                "stock_code": "SH000001",
+                "stock_name": "上证指数",
+                "bar_time": bar_time.isoformat(timespec="minutes"),
+                "interval_minutes": 1,
+                "open": as_optional_float(values[1]),
+                "close": as_optional_float(values[2]),
+                "high": as_optional_float(values[3]),
+                "low": as_optional_float(values[4]),
+                "volume": as_int(values[5]),
+                "amount": as_int(values[6]),
+                "average": as_optional_float(values[7]),
+            })
+        bars.sort(key=lambda item: item["bar_time"])
+        now = shanghai_now()
+        latest_text = bars[-1]["bar_time"] if bars else None
+        latest = datetime.fromisoformat(latest_text).replace(tzinfo=now.tzinfo) if latest_text else None
+        age_seconds = (now - latest).total_seconds() if latest else None
+        return {
+            "stock_code": "SH000001",
+            "stock_name": "上证指数",
             "pre_close": as_optional_float(payload.get("preClose")),
             "bars": bars,
             "bar_count": len(bars),

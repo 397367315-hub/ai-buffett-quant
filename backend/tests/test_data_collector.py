@@ -1,12 +1,26 @@
 import asyncio
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 
 from services.data_collector import EastMoneyDataCollector, normalize_stock_code, stock_secid
 
 
 class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dragon_board_target_date_is_forwarded_to_eastmoney_filter(self):
+        collector = EastMoneyDataCollector()
+        calls = []
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            calls.append(dict(params))
+            return {"result": {"data": []}}
+
+        collector.fetch_json = fake_fetch_json
+        await collector.fetch_dragon_board(target_date=date(2026, 8, 6))
+
+        self.assertEqual(calls[0]["filter"], "(TRADE_DATE='2026-08-06')")
+
     async def test_data_source_timeout_is_capped_for_stale_deploy_settings(self):
         collector = EastMoneyDataCollector()
 
@@ -116,15 +130,18 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         async def fake_fetch_json(url, params, headers=None):
             del url, headers
             calls.append(dict(params))
-            code = str(params["secid"]).split(".")[-1]
-            return {"data": {"f43": 1234, "f57": code, "f58": f"测试{code}", "f124": 0}}
+            return {"data": {"diff": [
+                {"f2": 12.34, "f12": "600000", "f14": "测试600000", "f124": 0},
+                {"f2": 12.34, "f12": "000001", "f14": "测试000001", "f124": 0},
+            ]}}
 
         collector.fetch_json = fake_fetch_json
-        snapshot = await collector.fetch_stock_quotes(["600000", "000001", "600000"])
+        with patch("services.data_collector.is_a_share_market_session", return_value=True):
+            snapshot = await collector.fetch_stock_quotes(["600000", "000001", "600000"])
 
         self.assertEqual([item["code"] for item in snapshot["stocks"]], ["600000", "000001"])
         self.assertTrue(all(item["price"] == 12.34 for item in snapshot["stocks"]))
-        self.assertEqual([call["secid"] for call in calls], ["1.600000", "0.000001"])
+        self.assertEqual(calls[0]["secids"], "1.600000,0.000001")
         self.assertTrue(snapshot["complete"])
 
     async def test_small_quote_refresh_supports_shanghai_and_shenzhen_etfs(self):
@@ -134,13 +151,16 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         async def fake_fetch_json(url, params, headers=None):
             del url, headers
             calls.append(dict(params))
-            code = str(params["secid"]).split(".")[-1]
-            return {"data": {"f43": 1000, "f57": code, "f58": f"ETF{code}", "f170": 125, "f124": 0}}
+            return {"data": {"diff": [
+                {"f2": 10.0, "f3": 1.25, "f12": "510300", "f14": "ETF510300", "f124": 0},
+                {"f2": 10.0, "f3": 1.25, "f12": "159992", "f14": "ETF159992", "f124": 0},
+            ]}}
 
         collector.fetch_json = fake_fetch_json
-        snapshot = await collector.fetch_stock_quotes(["510300", "159992"])
+        with patch("services.data_collector.is_a_share_market_session", return_value=True):
+            snapshot = await collector.fetch_stock_quotes(["510300", "159992"])
 
-        self.assertEqual([call["secid"] for call in calls], ["1.510300", "0.159992"])
+        self.assertEqual(calls[0]["secids"], "1.510300,0.159992")
         self.assertEqual([item["price"] for item in snapshot["stocks"]], [10.0, 10.0])
         self.assertEqual([item["change_pct"] for item in snapshot["stocks"]], [1.25, 1.25])
 
@@ -535,6 +555,57 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
             {"date": "2025-07-30", "close": 3810.0},
             {"date": "2026-07-30", "close": 3804.69},
         ])
+
+    def test_tencent_quote_parser_preserves_code_units_and_timestamp(self):
+        values = [""] * 88
+        values[1] = "贵州茅台"
+        values[2] = "600519"
+        values[3] = "1309.22"
+        values[4] = "1308.55"
+        values[5] = "1308.66"
+        values[30] = "20260807145500"
+        values[31] = "0.67"
+        values[32] = "0.05"
+        values[33] = "1315.28"
+        values[34] = "1301.00"
+        values[36] = "24976"
+        values[38] = "0.20"
+        values[39] = "19.79"
+        values[44] = "16366.32"
+        values[46] = "7.03"
+        values[49] = "0.63"
+        values[57] = "326691.9421"
+
+        stocks = EastMoneyDataCollector._parse_tencent_quote_text(
+            f'v_sh600519="{"~".join(values)}";'
+        )
+
+        self.assertEqual(len(stocks), 1)
+        stock = stocks[0]
+        self.assertEqual(stock["code"], "600519")
+        self.assertEqual(stock["volume"], 2_497_600)
+        self.assertEqual(stock["amount"], 3_266_919_421)
+        self.assertEqual(stock["market_cap"], 1_636_632_000_000)
+        self.assertEqual(stock["quote_source"], "tencent")
+        self.assertIsInstance(stock["quote_timestamp"], int)
+
+    async def test_stock_quotes_use_one_eastmoney_batch_during_market(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_json = AsyncMock(return_value={
+            "data": {
+                "diff": [
+                    {"f2": 11.2, "f3": 1.0, "f12": "000001", "f14": "平安银行", "f124": 1786080000},
+                    {"f2": 1309.2, "f3": 0.1, "f12": "600519", "f14": "贵州茅台", "f124": 1786080000},
+                ]
+            }
+        })
+        with patch("services.data_collector.is_a_share_market_session", return_value=True):
+            result = await collector.fetch_stock_quotes(["000001", "600519"])
+
+        collector.fetch_json.assert_awaited_once()
+        self.assertEqual(result["source"], "eastmoney")
+        self.assertTrue(result["complete"])
+        self.assertEqual([item["code"] for item in result["stocks"]], ["000001", "600519"])
 
 
 if __name__ == "__main__":

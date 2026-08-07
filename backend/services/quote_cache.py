@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -14,6 +15,10 @@ from services.data_collector import collector, is_a_share_market_session, normal
 
 
 class QuoteSnapshotService:
+    def __init__(self) -> None:
+        self._live_lock = asyncio.Lock()
+        self._memory_quotes: dict[str, tuple[datetime, dict[str, Any]]] = {}
+
     @staticmethod
     async def _load(codes: list[str], session_factory) -> dict[str, dict[str, Any]]:
         async with session_factory() as session:
@@ -111,7 +116,7 @@ class QuoteSnapshotService:
         should_fetch = is_a_share_market_session(now) or len(cached) < len(codes)
         if should_fetch and codes:
             try:
-                live_payload = await collector.fetch_stock_quotes(codes)
+                live_payload = await self._fetch_live_cached(codes, now)
                 await self._persist(live_payload, session_factory)
             except Exception as exc:
                 live_error = type(exc).__name__
@@ -148,6 +153,47 @@ class QuoteSnapshotService:
             "cached_count": cached_count,
             "stale": not is_realtime,
             "error": live_error,
+        }
+
+    async def _fetch_live_cached(self, codes: list[str], now: datetime) -> dict[str, Any]:
+        ttl = timedelta(seconds=15 if is_a_share_market_session(now) else 300)
+
+        def fresh(code: str) -> dict[str, Any] | None:
+            cached = self._memory_quotes.get(code)
+            if cached is None or now - cached[0] > ttl:
+                return None
+            return cached[1]
+
+        missing = [code for code in codes if fresh(code) is None]
+        source_error = None
+        async with self._live_lock:
+            missing = [code for code in codes if fresh(code) is None]
+            if missing:
+                try:
+                    payload = await collector.fetch_stock_quotes(missing)
+                    fetched_at = shanghai_now()
+                    for quote in payload.get("stocks") or []:
+                        code = str(quote.get("code") or "")
+                        if code:
+                            normalized = dict(quote)
+                            normalized.setdefault("quote_source", payload.get("source") or "mixed")
+                            self._memory_quotes[code] = (fetched_at, normalized)
+                except Exception as exc:
+                    source_error = type(exc).__name__
+
+        stocks = [quote for code in codes if (quote := fresh(code)) is not None]
+        if codes and not stocks:
+            raise RuntimeError(source_error or "最新行情不可用")
+        sources = [str(item.get("quote_source") or "") for item in stocks]
+        source = "+".join(dict.fromkeys(item for item in sources if item)) or "mixed"
+        return {
+            "stocks": stocks,
+            "total": len(stocks),
+            "source": source,
+            **collector._quote_snapshot_metadata(stocks),
+            "fetched_at": now.isoformat(),
+            "complete": len(stocks) == len(codes),
+            "error": source_error,
         }
 
 

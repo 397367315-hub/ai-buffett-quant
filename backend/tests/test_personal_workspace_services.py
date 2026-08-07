@@ -71,6 +71,9 @@ class MacroDashboardCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["source_status"]["东方财富资金"], "cache")
         self.assertEqual(result["source_status"]["宏观政策快照"], "cache")
         self.assertEqual(result["domestic_liquidity"]["northbound"]["date"], "2026-08-03")
+        self.assertIn(result["a_share_outlook"]["stance"], {"bullish", "neutral", "cautious"})
+        self.assertIn("A股综合方向", result["a_share_outlook"]["headline"])
+        self.assertGreater(result["a_share_outlook"]["data_points"], 0)
         self.assertEqual(save.await_args.args[0]["snapshot_updated_at"], cached_at)
 
 

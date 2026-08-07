@@ -11,6 +11,7 @@ import asyncio
 import math
 from collections import defaultdict
 from datetime import timedelta
+from typing import Awaitable, Callable
 
 from sqlalchemy import select
 
@@ -63,6 +64,68 @@ PROFILE_CONFIG = {
     },
 }
 
+SELECTION_FACTOR_DEFAULTS = {
+    "enabled": False,
+    "preset": "off",
+    "use_change_pct": True,
+    "change_pct": [-3.0, 8.0],
+    "use_volume_ratio": True,
+    "volume_ratio_min": 1.2,
+    "use_turnover": True,
+    "turnover_pct": [1.0, 15.0],
+    "use_market_cap": True,
+    "market_cap_yi": [30.0, 3000.0],
+    "use_pe": False,
+    "pe_max": 80.0,
+    "use_roe": False,
+    "roe_min": 0.0,
+    "use_main_inflow": False,
+    "main_net_inflow_yi_min": 0.0,
+    "require_profitable": False,
+    "exclude_star_market": False,
+    "exclude_gem": False,
+    "exclude_bse": True,
+}
+
+SELECTION_FACTOR_PRESETS = {
+    "off": {**SELECTION_FACTOR_DEFAULTS},
+    "short": {
+        **SELECTION_FACTOR_DEFAULTS,
+        "enabled": True,
+        "preset": "short",
+        "change_pct": [0.0, 7.0],
+        "volume_ratio_min": 1.2,
+        "turnover_pct": [2.0, 15.0],
+        "market_cap_yi": [30.0, 1200.0],
+        "use_main_inflow": True,
+        "main_net_inflow_yi_min": 0.0,
+    },
+    "long": {
+        **SELECTION_FACTOR_DEFAULTS,
+        "enabled": True,
+        "preset": "long",
+        "change_pct": [-4.0, 6.0],
+        "use_volume_ratio": False,
+        "turnover_pct": [0.3, 10.0],
+        "market_cap_yi": [50.0, 5000.0],
+        "use_pe": True,
+        "pe_max": 50.0,
+        "use_roe": True,
+        "roe_min": 8.0,
+        "require_profitable": True,
+    },
+}
+
+SELECTION_FACTOR_SCHEMA = [
+    {"key": "change_pct", "label": "当日涨跌幅", "type": "range", "min": -20, "max": 20, "step": 0.5, "unit": "%", "toggle": "use_change_pct"},
+    {"key": "volume_ratio_min", "label": "最低量比（严格大于）", "type": "number", "min": 0, "max": 20, "step": 0.1, "toggle": "use_volume_ratio", "comparison": "gt"},
+    {"key": "turnover_pct", "label": "换手率", "type": "range", "min": 0, "max": 100, "step": 0.5, "unit": "%", "toggle": "use_turnover"},
+    {"key": "market_cap_yi", "label": "总市值", "type": "range", "min": 0, "max": 100000, "step": 10, "unit": "亿元", "toggle": "use_market_cap"},
+    {"key": "pe_max", "label": "最高PE(TTM)", "type": "number", "min": 0, "max": 1000, "step": 1, "toggle": "use_pe"},
+    {"key": "roe_min", "label": "最低ROE", "type": "number", "min": -100, "max": 200, "step": 0.5, "unit": "%", "toggle": "use_roe"},
+    {"key": "main_net_inflow_yi_min", "label": "最低主力净流入", "type": "number", "min": -1000, "max": 1000, "step": 0.1, "unit": "亿元", "toggle": "use_main_inflow"},
+]
+
 
 def _clamp(value: float, lower: float = 0, upper: float = 100) -> float:
     return max(lower, min(upper, value))
@@ -93,6 +156,69 @@ def _normalise_sector(value: object) -> str:
     return " ".join(str(value or "").split())[:60]
 
 
+def _factor_number(value: object, key: str, lower: float, upper: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} 必须是数字") from exc
+    if not math.isfinite(number) or not lower <= number <= upper:
+        raise ValueError(f"{key} 必须在 {lower:g} 到 {upper:g} 之间")
+    return round(number, 4)
+
+
+def normalize_selection_factors(raw: dict | None) -> dict:
+    """Validate one user-controlled factor set before it reaches the ranking pipeline."""
+    if raw is None:
+        return dict(SELECTION_FACTOR_DEFAULTS)
+    if not isinstance(raw, dict):
+        raise ValueError("factor_filters 必须是对象")
+
+    preset = str(raw.get("preset") or "custom").strip().lower()
+    if preset not in {*SELECTION_FACTOR_PRESETS, "custom"}:
+        raise ValueError("factor_filters.preset 仅支持 off、short、long 或 custom")
+    base = dict(SELECTION_FACTOR_PRESETS.get(preset, SELECTION_FACTOR_DEFAULTS))
+    allowed = set(SELECTION_FACTOR_DEFAULTS)
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError(f"factor_filters 包含未知字段：{', '.join(unknown)}")
+    base.update(raw)
+    base["preset"] = preset
+
+    boolean_keys = {
+        "enabled", "use_change_pct", "use_volume_ratio", "use_turnover",
+        "use_market_cap", "use_pe", "use_roe", "use_main_inflow",
+        "require_profitable", "exclude_star_market", "exclude_gem", "exclude_bse",
+    }
+    for key in boolean_keys:
+        if not isinstance(base.get(key), bool):
+            raise ValueError(f"factor_filters.{key} 必须是布尔值")
+
+    ranges = {
+        "change_pct": (-20.0, 20.0),
+        "turnover_pct": (0.0, 100.0),
+        "market_cap_yi": (0.0, 100000.0),
+    }
+    for key, (lower, upper) in ranges.items():
+        values = base.get(key)
+        if not isinstance(values, (list, tuple)) or len(values) != 2:
+            raise ValueError(f"factor_filters.{key} 必须是包含上下限的数组")
+        start = _factor_number(values[0], f"factor_filters.{key}[0]", lower, upper)
+        end = _factor_number(values[1], f"factor_filters.{key}[1]", lower, upper)
+        if start > end:
+            raise ValueError(f"factor_filters.{key} 下限不能高于上限")
+        base[key] = [start, end]
+
+    number_limits = {
+        "volume_ratio_min": (0.0, 20.0),
+        "pe_max": (0.0, 1000.0),
+        "roe_min": (-100.0, 200.0),
+        "main_net_inflow_yi_min": (-1000.0, 1000.0),
+    }
+    for key, (lower, upper) in number_limits.items():
+        base[key] = _factor_number(base.get(key), f"factor_filters.{key}", lower, upper)
+    return base
+
+
 class StockSelectionAgentService:
     """Runs a visible research pipeline over verified real-time market data."""
 
@@ -101,7 +227,12 @@ class StockSelectionAgentService:
     _FULL_ANALYSIS_LIMIT = 80
 
     @staticmethod
-    async def _candidate_snapshot(cache_key: str, fetcher) -> dict:
+    async def _candidate_snapshot(
+        cache_key: str,
+        fetcher: Callable[[], Awaitable[dict]],
+        *,
+        prefer_cache: bool = False,
+    ) -> dict:
         """Persist verified candidates and reuse them when an upstream is unavailable."""
         cached: dict = {}
         try:
@@ -112,9 +243,20 @@ class StockSelectionAgentService:
         except Exception:
             cached = {}
 
+        if prefer_cache and cached.get("stocks"):
+            return {
+                **cached,
+                "source": "cache",
+                "upstream_source": cached.get("source") or "eastmoney",
+                "is_realtime": False,
+                "source_updated_at": cached.get("source_updated_at") or cached.get("cached_at"),
+                "cache_used": True,
+                "cache_reason": "market_closed",
+            }
+
         source_failed = False
         try:
-            result = await fetcher
+            result = await fetcher()
         except Exception:
             result = {}
             source_failed = True
@@ -136,15 +278,103 @@ class StockSelectionAgentService:
             return {
                 **cached,
                 "source": "cache",
+                "upstream_source": cached.get("source") or "eastmoney",
                 "is_realtime": False,
                 "source_updated_at": cached.get("source_updated_at") or cached.get("cached_at"),
                 "cache_used": True,
+                "cache_reason": "upstream_unavailable",
             }
         return result if isinstance(result, dict) else {}
 
     @staticmethod
     def _is_market_session() -> bool:
         return is_a_share_market_session()
+
+    @staticmethod
+    def _apply_factor_filters(stocks: list[dict], config: dict) -> tuple[list[dict], dict]:
+        before_count = len(stocks)
+        if not config.get("enabled"):
+            return list(stocks), {
+                "enabled": False,
+                "config": config,
+                "before_count": before_count,
+                "matched_count": before_count,
+                "rejected_count": 0,
+                "rejection_counts": {},
+            }
+
+        selected: list[dict] = []
+        rejection_counts: dict[str, int] = defaultdict(int)
+
+        def require_number(stock: dict, key: str, reason: str) -> tuple[float | None, list[str]]:
+            value = _optional_number(stock.get(key))
+            return value, [] if value is not None else [f"{reason}_missing"]
+
+        for stock in stocks:
+            reasons: list[str] = []
+            code = str(stock.get("code") or "")
+            if config["exclude_star_market"] and code.startswith(("688", "689")):
+                reasons.append("star_market")
+            if config["exclude_gem"] and code.startswith(("300", "301")):
+                reasons.append("gem")
+            if config["exclude_bse"] and (code.startswith(("4", "8", "920"))):
+                reasons.append("bse")
+
+            if config["use_change_pct"]:
+                value, missing = require_number(stock, "change_pct", "change_pct")
+                reasons.extend(missing)
+                if value is not None and not config["change_pct"][0] <= value <= config["change_pct"][1]:
+                    reasons.append("change_pct")
+            if config["use_volume_ratio"]:
+                value, missing = require_number(stock, "volume_ratio", "volume_ratio")
+                reasons.extend(missing)
+                if value is not None and value <= config["volume_ratio_min"]:
+                    reasons.append("volume_ratio")
+            if config["use_turnover"]:
+                value, missing = require_number(stock, "turnover", "turnover")
+                reasons.extend(missing)
+                if value is not None and not config["turnover_pct"][0] <= value <= config["turnover_pct"][1]:
+                    reasons.append("turnover")
+            if config["use_market_cap"]:
+                raw_value, missing = require_number(stock, "market_cap", "market_cap")
+                reasons.extend(missing)
+                value = raw_value / 1e8 if raw_value is not None else None
+                if value is not None and not config["market_cap_yi"][0] <= value <= config["market_cap_yi"][1]:
+                    reasons.append("market_cap")
+            pe = _optional_number(stock.get("pe"))
+            if config["require_profitable"] and (pe is None or pe <= 0):
+                reasons.append("profitable")
+            if config["use_pe"]:
+                if pe is None:
+                    reasons.append("pe_missing")
+                elif pe <= 0 or pe > config["pe_max"]:
+                    reasons.append("pe")
+            if config["use_roe"]:
+                value, missing = require_number(stock, "roe", "roe")
+                reasons.extend(missing)
+                if value is not None and value < config["roe_min"]:
+                    reasons.append("roe")
+            if config["use_main_inflow"]:
+                raw_value, missing = require_number(stock, "main_net_inflow", "main_inflow")
+                reasons.extend(missing)
+                value = raw_value / 1e8 if raw_value is not None else None
+                if value is not None and value < config["main_net_inflow_yi_min"]:
+                    reasons.append("main_inflow")
+
+            if reasons:
+                for reason in set(reasons):
+                    rejection_counts[reason] += 1
+            else:
+                selected.append(stock)
+
+        return selected, {
+            "enabled": True,
+            "config": config,
+            "before_count": before_count,
+            "matched_count": len(selected),
+            "rejected_count": before_count - len(selected),
+            "rejection_counts": dict(sorted(rejection_counts.items())),
+        }
 
     async def _load_histories(self, stock_codes: list[str]) -> dict[str, list[dict]]:
         """Load cached daily bars in one query instead of issuing one request per stock."""
@@ -290,9 +520,9 @@ class StockSelectionAgentService:
                 score += 3
                 evidence.append(f"RSI {rsi:.0f}，存在超卖修复可能")
 
-        if volume_ratio is not None and 1.2 <= volume_ratio <= 4:
+        if volume_ratio is not None and 1.2 < volume_ratio <= 4:
             score += 8
-            evidence.append(f"量比 {volume_ratio:.2f}，成交活跃度匹配")
+            evidence.append(f"量比 {volume_ratio:.2f}（>1.2），成交活跃度匹配")
         elif volume_ratio is not None and volume_ratio > 6:
             score -= 5
             risks.append(f"量比 {volume_ratio:.2f}，短线交易过热")
@@ -531,7 +761,7 @@ class StockSelectionAgentService:
         elif inflow_pct is not None and inflow_pct <= -5:
             score -= 7
             risks.append(f"主力净流入占比 {inflow_pct:.1f}%")
-        if volume_ratio is not None and 1.2 <= volume_ratio <= 4:
+        if volume_ratio is not None and 1.2 < volume_ratio <= 4:
             score += 6
         if 3 <= turnover <= 15:
             score += 5
@@ -1080,6 +1310,7 @@ class StockSelectionAgentService:
         sector: str | None = None,
         sector_code: str | None = None,
         horizon: str = "week",
+        factor_filters: dict | None = None,
     ) -> dict:
         if mode not in VALID_SELECTION_MODES:
             raise ValueError("mode 必须是 quick 或 full")
@@ -1092,12 +1323,18 @@ class StockSelectionAgentService:
         sector_board_code = normalize_board_code(sector_code) if sector_code else ""
         if sector_board_code and not sector_filter:
             raise ValueError("sector_code 必须与行业名称一起提交")
+        factor_config = normalize_selection_factors(factor_filters)
+        market_session = self._is_market_session()
 
+        candidate_fetcher = (
+            (lambda: collector.fetch_all_board_stocks(sector_board_code, sector_name=sector_filter))
+            if sector_board_code
+            else (lambda: collector.fetch_intelligent_selection_candidates())
+        )
         source_awaitable = self._candidate_snapshot(
             f"stock_selection_candidates_v1:{sector_board_code or 'market'}",
-            collector.fetch_all_board_stocks(sector_board_code, sector_name=sector_filter)
-            if sector_board_code
-            else collector.fetch_intelligent_selection_candidates(),
+            candidate_fetcher,
+            prefer_cache=not market_session,
         )
 
         source_result, regime_result, macro_result = await asyncio.gather(
@@ -1136,6 +1373,8 @@ class StockSelectionAgentService:
                 stock for stock in candidates
                 if _normalise_sector(stock.get("sector")) == sector_filter
             ]
+        sector_candidate_count = len(candidates)
+        candidates, factor_metadata = self._apply_factor_filters(candidates, factor_config)
         filtered_candidate_count = len(candidates)
         candidates.sort(key=self._preliminary_priority, reverse=True)
         analysis_limit = self._FULL_ANALYSIS_LIMIT if mode == "full" else self._QUICK_ANALYSIS_LIMIT
@@ -1205,7 +1444,7 @@ class StockSelectionAgentService:
         is_realtime = (
             bool(source_realtime)
             if source_realtime is not None
-            else self._is_market_session() and source_name == "eastmoney"
+            else market_session and source_name == "eastmoney"
         )
         if source_name != "eastmoney":
             is_realtime = False
@@ -1237,13 +1476,18 @@ class StockSelectionAgentService:
             "value": sector_filter,
             "label": sector_filter or "全部行业",
             "code": sector_board_code or None,
-            "matched_candidates": filtered_candidate_count,
+            "matched_candidates": sector_candidate_count,
             "market_candidates": market_candidate_count,
             "directory_complete": (
                 bool(source_result.get("complete", True))
                 if sector_board_code and not isinstance(source_result, Exception)
                 else True
             ),
+        }
+        factor_metadata = {
+            **factor_metadata,
+            "schema": SELECTION_FACTOR_SCHEMA,
+            "presets": SELECTION_FACTOR_PRESETS,
         }
         macro_policy = {
             **news_context,
@@ -1257,11 +1501,12 @@ class StockSelectionAgentService:
         )
 
         if not analyzed:
-            empty_message = (
-                f"行业板块“{sector_filter}”当前未返回可交易候选股，请切换行业或稍后重试。"
-                if sector_filter
-                else "实时行情源当前未返回可交易候选股，系统不会以零价或退市记录生成选股结果。"
-            )
+            if factor_config["enabled"] and sector_candidate_count and not filtered_candidate_count:
+                empty_message = "当前候选全部未通过已启用的因子条件，请放宽阈值或关闭部分因子。"
+            elif sector_filter:
+                empty_message = f"行业板块“{sector_filter}”当前未返回可交易候选股，请切换行业或稍后重试。"
+            else:
+                empty_message = "行情源及最近有效缓存当前均未返回可交易候选股，系统不会以零价或退市记录生成结果。"
             return {
                 "available": False,
                 "source": source_name,
@@ -1281,6 +1526,9 @@ class StockSelectionAgentService:
                     "risk_excluded": 0,
                 },
                 "sector_filter": sector_metadata,
+                "factor_filter": factor_metadata,
+                "cache_used": bool(source_result.get("cache_used")) if not isinstance(source_result, Exception) else False,
+                "cache_reason": source_result.get("cache_reason") if not isinstance(source_result, Exception) else None,
                 "data_contract": A_STOCK_DATA_SKILL,
                 "macro_policy": macro_policy,
                 "feature_coverage": feature_coverage,
@@ -1332,6 +1580,9 @@ class StockSelectionAgentService:
                 "risk_excluded": risk_excluded_count,
             },
             "sector_filter": sector_metadata,
+            "factor_filter": factor_metadata,
+            "cache_used": bool(source_result.get("cache_used")) if not isinstance(source_result, Exception) else False,
+            "cache_reason": source_result.get("cache_reason") if not isinstance(source_result, Exception) else None,
             "data_contract": A_STOCK_DATA_SKILL,
             "macro_policy": macro_policy,
             "feature_coverage": feature_coverage,

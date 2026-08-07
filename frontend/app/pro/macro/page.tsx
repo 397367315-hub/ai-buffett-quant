@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, CalendarClock, Database, Globe2, Landmark, Loader2, RefreshCw, Waves } from 'lucide-react';
+import { AlertTriangle, CalendarClock, Compass, Database, Globe2, Landmark, Loader2, RefreshCw, Waves } from 'lucide-react';
 import PersonalWorkspaceNav from '@/components/PersonalWorkspaceNav';
 import { apiFetch } from '@/lib/api';
 
@@ -14,6 +14,12 @@ interface MacroData {
   domestic_liquidity: { northbound: { available: boolean; date: string | null; net_inflow: number | null; consecutive_inflow_days: number; source: string }; turnover: { available: boolean; date: string | null; sh_amount: number | null; sh_index: number | null; sh_change_pct: number | null; source: string }; margin_balance: { available: boolean; value: number | null; message: string } };
   policy: { available: boolean; summary: string | null; international_items: Array<Record<string, any>>; policy_items: Array<Record<string, any>> };
   premarket_questions: Array<{ id: string; question: string; answer: string; status: string }>;
+  a_share_outlook: {
+    stance: 'bullish' | 'neutral' | 'cautious'; label: string; score: number; confidence: number;
+    headline: string; summary: string; data_points: number; method: string;
+    drivers: Array<{ factor: string; direction: string; explanation: string; affected: string; score: number }>;
+    favored_sectors: string[]; pressured_sectors: string[];
+  };
   source_status: Record<string, string>;
   disclaimer: string;
 }
@@ -38,6 +44,12 @@ export default function MacroPage() {
     {error && <div className="mb-4 border border-up/50 bg-[#EF535014] rounded-md p-3 text-xs text-up flex gap-2"><AlertTriangle size={15} />{error}</div>}
     {loading && !data ? <div className="py-24 text-center"><Loader2 size={28} className="animate-spin text-accent mx-auto" /><div className="text-sm text-text mt-4">正在汇总国际市场与国内政策</div><div className="max-w-sm mx-auto h-1.5 bg-[#21262D] mt-5 rounded overflow-hidden"><div className="h-full bg-accent transition-all" style={{ width: `${progress}%` }} /></div><div className="text-xs font-mono text-text-secondary mt-2">{progress}%</div></div> : data && <>
       <section className="border border-border rounded-md px-3 py-2.5 mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-text-secondary"><span className={data.cache_used ? 'text-warn' : 'text-down'}>{data.cache_used ? '部分来源使用最近快照' : '本轮来源已返回'}</span><span>刷新：{time(data.updated_at)}</span>{data.snapshot_updated_at && <span>快照：{time(data.snapshot_updated_at)}</span>}<span className="sm:ml-auto flex items-center gap-1"><Database size={13} />不同市场按各自源时间展示</span></section>
+
+      <section className="border-y border-border py-4 mb-5">
+        <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="text-sm font-semibold text-text flex items-center gap-2"><Compass size={16} className="text-warn" />{data.a_share_outlook.headline}</h2><p className="text-xs text-text-secondary mt-1.5 leading-5">{data.a_share_outlook.summary}</p></div><div className="text-right shrink-0"><span className={`inline-block border rounded px-2 py-1 text-xs ${data.a_share_outlook.stance === 'bullish' ? 'border-up/50 text-up' : data.a_share_outlook.stance === 'cautious' ? 'border-down/50 text-down' : 'border-warn/50 text-warn'}`}>{data.a_share_outlook.label} · {data.a_share_outlook.score >= 0 ? '+' : ''}{data.a_share_outlook.score}</span><div className="text-[10px] text-text-secondary mt-1">置信度 {data.a_share_outlook.confidence.toFixed(0)}%</div></div></div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">{data.a_share_outlook.drivers.slice(0, 3).map((driver) => <div key={driver.factor} className="border-l-2 border-border pl-3"><div className={`text-xs ${driver.direction === 'positive' ? 'text-up' : driver.direction === 'negative' ? 'text-down' : 'text-text'}`}>{driver.factor}</div><p className="text-[11px] text-text-secondary leading-5 mt-1">{driver.explanation}</p><div className="text-[10px] text-text-secondary mt-1">影响：{driver.affected}</div></div>)}</div>
+        {(data.a_share_outlook.favored_sectors.length > 0 || data.a_share_outlook.pressured_sectors.length > 0) && <div className="flex flex-wrap gap-x-5 gap-y-1 mt-3 pt-3 border-t border-border text-[11px]"><span className="text-up">相对受益：{data.a_share_outlook.favored_sectors.join('、') || '--'}</span><span className="text-down">相对承压：{data.a_share_outlook.pressured_sectors.join('、') || '--'}</span></div>}
+      </section>
 
       <section className="mb-5"><h2 className="text-sm font-semibold text-text flex items-center gap-2 mb-3"><Globe2 size={16} className="text-accent" />全球市场</h2><div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 border border-border rounded-md divide-x divide-y lg:divide-y-0 divide-border">{data.global_markets.map((item) => <div key={item.key} className="p-3 min-w-0"><div className="text-[11px] text-text-secondary">{item.label}</div><div className="font-mono text-base text-text mt-1 truncate">{number(item.value, item.value && item.value < 1000 ? 2 : 1)}</div><div className={`font-mono text-xs mt-1 ${tone(item.change_pct)}`}>{signed(item.change_pct)}</div><div className="text-[10px] text-text-secondary mt-1 truncate" title={item.source_time || undefined}>{item.source_time || '源时间未返回'}</div></div>)}</div></section>
 

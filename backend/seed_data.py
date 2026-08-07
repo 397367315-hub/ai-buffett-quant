@@ -22,6 +22,7 @@ from services.data_collector import normalize_stock_code
 BASE_DIR = Path(__file__).resolve().parent
 LEGACY_BOARD_CODES = ("BK1187", "BK1188", "BK1189", "BK1190", "BK1191")
 PERSONAL_POOL_FILE = "seed_personal_pool.json"
+PERSONAL_DELETION_CONFIG_KEY = "personal_pool_deletions_v1"
 
 PERSONAL_POOL_KEYS = {
     "核心持仓池": "core",
@@ -136,11 +137,23 @@ async def _seed_personal_pool(session) -> tuple[int, int]:
                 "position": position,
             })
 
+    deletion_row = await session.get(PersonalSystemConfig, PERSONAL_DELETION_CONFIG_KEY)
+    deletion_payload = (
+        deletion_row.payload
+        if deletion_row and isinstance(deletion_row.payload, dict)
+        else {}
+    )
+    deleted_tokens = {
+        str(item) for item in deletion_payload.get("items") or [] if item
+    }
+
     inserted = 0
     valid = 0
     for item in candidates:
         valid += 1
         position = item.pop("position") or {}
+        if f"{item['pool_key']}:{item['code']}" in deleted_tokens:
+            continue
         query = await session.execute(
             select(PersonalPoolItem).where(
                 PersonalPoolItem.pool_key == item["pool_key"],

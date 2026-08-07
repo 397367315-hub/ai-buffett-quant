@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Clock3, Database, Loader2, LogOut, MoonStar, Play, RefreshCw, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock3, Database, GitCompareArrows, Loader2, LogOut, MoonStar, Play, RefreshCw, Save, Settings2, ShieldAlert } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import { apiFetch } from '@/lib/api';
 
@@ -80,6 +80,12 @@ interface Position {
 interface Dashboard {
   updated_at: string;
   strategy: Record<string, any>;
+  strategy_store: {
+    active_id: string;
+    strategies: Array<Record<string, any>>;
+    factor_schema: Array<Record<string, any>>;
+    validation_note: string;
+  };
   active_run: OvernightRun | null;
   latest_entry_run: OvernightRun | null;
   latest_preliminary_run: OvernightRun | null;
@@ -127,12 +133,19 @@ export default function OvernightPanel() {
   const [loadProgress, setLoadProgress] = useState(10);
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, any> | null>(null);
+  const [newName, setNewName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [comparison, setComparison] = useState<Record<string, any> | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     try {
       const response = await apiFetch<{ data: Dashboard }>('/quant/overnight');
       setData(response.data);
+      setDraft((current) => current || { ...response.data.strategy });
       setLoadProgress(100);
       setError(null);
     } catch (caught) {
@@ -157,7 +170,7 @@ export default function OvernightPanel() {
   const run = async (stage: string) => {
     setSubmitting(stage); setError(null);
     try {
-      await apiFetch('/quant/overnight/runs', { method: 'POST', body: JSON.stringify({ stage }) });
+      await apiFetch('/quant/overnight/runs', { method: 'POST', body: JSON.stringify({ stage, strategy_id: data?.strategy.id }) });
       await load(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '策略任务提交失败');
@@ -165,6 +178,57 @@ export default function OvernightPanel() {
       setSubmitting(null);
     }
   };
+
+  const activate = async (strategy: Record<string, any>) => {
+    setSaving(true); setError(null);
+    try {
+      await apiFetch(`/quant/overnight/strategies/${strategy.id}/activate`, { method: 'POST' });
+      setDraft({ ...strategy }); setComparison(null);
+      await load(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '策略切换失败');
+    } finally { setSaving(false); }
+  };
+
+  const saveStrategy = async (asNew: boolean) => {
+    if (!draft) return;
+    const name = asNew ? newName.trim() : String(draft.name || '').trim();
+    if (!name) { setError('请填写新策略名称'); return; }
+    setSaving(true); setError(null);
+    try {
+      const body: Record<string, any> = { ...draft, name };
+      delete body.id; delete body.is_builtin; delete body.updated_at;
+      const response = await apiFetch<{ data: Record<string, any> }>(
+        asNew ? '/quant/overnight/strategies' : `/quant/overnight/strategies/${draft.id}`,
+        { method: asNew ? 'POST' : 'PUT', body: JSON.stringify(body) },
+      );
+      await apiFetch(`/quant/overnight/strategies/${response.data.id}/activate`, { method: 'POST' });
+      setDraft({ ...response.data }); setNewName(''); setEditing(false); setComparison(null);
+      await load(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '策略保存失败');
+    } finally { setSaving(false); }
+  };
+
+  const compare = async () => {
+    if (compareIds.length < 2) { setError('至少选择两个策略进行对比'); return; }
+    setSaving(true); setError(null);
+    try {
+      const response = await apiFetch<{ data: Record<string, any> }>('/quant/overnight/compare', {
+        method: 'POST', body: JSON.stringify({ strategy_ids: compareIds }),
+      });
+      setComparison(response.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '策略对比失败');
+    } finally { setSaving(false); }
+  };
+
+  const setFactor = (key: string, value: unknown) => setDraft((current) => current ? ({ ...current, [key]: value }) : current);
+  const setRange = (key: string, index: number, value: number) => setDraft((current) => {
+    if (!current) return current;
+    const values = [...(current[key] || [0, 0])]; values[index] = value;
+    return { ...current, [key]: values };
+  });
 
   const latest = [data?.latest_entry_run, data?.latest_preliminary_run]
     .filter((item): item is OvernightRun => Boolean(item))
@@ -176,13 +240,47 @@ export default function OvernightPanel() {
 
   return <div className="space-y-4">
     <header className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-4">
-      <div><h2 className="text-base font-bold text-text flex items-center gap-2"><MoonStar size={18} className="text-accent" />一夜持股</h2><p className="text-xs text-text-secondary mt-1">交易日14:30预扫 · 14:50分钟复核 · 次日10:00前退出</p></div>
+      <div><h2 className="text-base font-bold text-text flex items-center gap-2"><MoonStar size={18} className="text-accent" />一夜持股</h2><p className="text-xs text-text-secondary mt-1">交易日14:30预扫 · 14:55分钟复核 · 次日10:00前退出</p></div>
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={() => run('preliminary')} disabled={Boolean(active) || Boolean(submitting)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-border text-text-secondary rounded-md hover:border-accent hover:text-text disabled:opacity-50"><RefreshCw size={14} className={submitting === 'preliminary' ? 'animate-spin' : ''} />预扫描</button>
         <button type="button" onClick={() => run('entry')} disabled={Boolean(active) || Boolean(submitting)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs bg-accent text-white rounded-md disabled:opacity-50"><Play size={14} />尾盘复核</button>
         <button type="button" onClick={() => run('exit')} disabled={Boolean(active) || Boolean(submitting)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-up/50 text-up rounded-md disabled:opacity-50"><LogOut size={14} />退出检查</button>
       </div>
     </header>
+
+    {data && draft && <section className="border border-border rounded-md overflow-hidden">
+      <div className="px-3 py-2.5 flex flex-wrap items-center gap-2 border-b border-border">
+        <Settings2 size={15} className="text-accent" />
+        <select value={data.strategy.id} onChange={(event) => { const strategy = data.strategy_store.strategies.find((item) => item.id === event.target.value); if (strategy) activate(strategy); }} disabled={saving} className="bg-[#0D1117] border border-border rounded-md px-2.5 py-1.5 text-xs text-text min-w-[210px]">
+          {data.strategy_store.strategies.map((strategy) => <option key={strategy.id} value={strategy.id}>{strategy.name}{strategy.is_builtin ? '（内置）' : ''}</option>)}
+        </select>
+        <button type="button" onClick={() => { setDraft({ ...data.strategy }); setEditing((value) => !value); }} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md text-xs text-text-secondary hover:text-text"><Settings2 size={13} />因子微调</button>
+        <div className="sm:ml-auto flex flex-wrap items-center gap-1.5">
+          {data.strategy_store.strategies.map((strategy) => <label key={strategy.id} className="inline-flex items-center gap-1 text-[11px] text-text-secondary"><input type="checkbox" checked={compareIds.includes(strategy.id)} onChange={(event) => setCompareIds((current) => event.target.checked ? [...current, strategy.id] : current.filter((item) => item !== strategy.id))} />{strategy.name}</label>)}
+          <button type="button" onClick={compare} disabled={saving || compareIds.length < 2} className="inline-flex items-center gap-1 px-2.5 py-1.5 border border-border rounded-md text-xs text-text-secondary disabled:opacity-40"><GitCompareArrows size={13} />对比</button>
+        </div>
+      </div>
+      {editing && <div className="p-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-xs">
+          <FactorRange label="当日涨幅" values={draft.change_pct} unit="%" onChange={(index, value) => setRange('change_pct', index, value)} />
+          <FactorNumber label="量比主阈值（严格大于）" value={draft.volume_ratio_min} step={0.1} onChange={(value) => setFactor('volume_ratio_min', value)} />
+          <FactorRange label="换手率" values={draft.turnover_pct} unit="%" onChange={(index, value) => setRange('turnover_pct', index, value)} />
+          <FactorRange label="总市值" values={draft.market_cap_yi} unit="亿元" onChange={(index, value) => setRange('market_cap_yi', index, value)} />
+          <FactorNumber label="最低相对强度" value={draft.relative_strength_min_pct} step={0.1} unit="%" onChange={(value) => setFactor('relative_strength_min_pct', value)} />
+          <FactorNumber label="尾盘5分钟最大涨幅" value={draft.last_five_minute_change_max} step={0.1} unit="%" onChange={(value) => setFactor('last_five_minute_change_max', value)} />
+          <FactorNumber label="最多持股数" value={draft.max_positions} step={1} unit="只" onChange={(value) => setFactor('max_positions', Math.round(value))} />
+          <div className="border border-border rounded-md p-2.5 space-y-2">
+            <FactorToggle label="排除科创板 688/689" checked={Boolean(draft.exclude_star_market)} onChange={(value) => setFactor('exclude_star_market', value)} />
+            <FactorToggle label="近3日台阶放量" checked={Boolean(draft.require_volume_staircase)} onChange={(value) => setFactor('require_volume_staircase', value)} />
+            <FactorToggle label="分时强于上证" checked={Boolean(draft.require_relative_strength)} onChange={(value) => setFactor('require_relative_strength', value)} />
+            <FactorToggle label="尾盘守住VWAP" checked={Boolean(draft.require_vwap_hold)} onChange={(value) => setFactor('require_vwap_hold', value)} />
+            <FactorToggle label="14:55新高回踩" checked={Boolean(draft.require_late_high_retest)} onChange={(value) => setFactor('require_late_high_retest', value)} />
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2"><input value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="新策略名称" className="bg-[#0D1117] border border-border rounded-md px-3 py-2 text-xs text-text min-w-[220px]" /><button type="button" onClick={() => saveStrategy(true)} disabled={saving || !newName.trim()} className="inline-flex items-center gap-1.5 px-3 py-2 bg-accent text-white rounded-md text-xs disabled:opacity-40"><Save size={13} />另存新策略</button>{!draft.is_builtin && <button type="button" onClick={() => saveStrategy(false)} disabled={saving} className="inline-flex items-center gap-1.5 px-3 py-2 border border-border text-text-secondary rounded-md text-xs"><Save size={13} />保存修改</button>}<span className="text-[11px] text-warn">{data.strategy_store.validation_note}</span></div>
+      </div>}
+      {comparison && <div className="border-t border-border overflow-x-auto"><table className="w-full min-w-[760px] text-xs"><thead className="text-text-secondary bg-[#161B22]"><tr><th className="text-left px-3 py-2">策略</th><th className="text-right px-3">运行</th><th className="text-right px-3">空仓日</th><th className="text-right px-3">已完成</th><th className="text-right px-3">胜率</th><th className="text-right px-3">收益率</th><th className="text-right px-3">累计盈亏</th></tr></thead><tbody>{(comparison.comparisons || []).map((item: Record<string, any>) => <tr key={item.strategy_id} className="border-t border-border"><td className="px-3 py-2 text-text">{item.name}</td><td className="px-3 py-2 text-right font-mono">{item.run_count}</td><td className="px-3 py-2 text-right font-mono">{item.cash_days}</td><td className="px-3 py-2 text-right font-mono">{item.closed_positions}</td><td className="px-3 py-2 text-right font-mono">{item.win_rate == null ? '--' : `${item.win_rate.toFixed(1)}%`}</td><td className={`px-3 py-2 text-right font-mono ${pnlClass(item.return_pct)}`}>{signed(item.return_pct)}</td><td className={`px-3 py-2 text-right font-mono ${pnlClass(item.total_pnl)}`}>{money(item.total_pnl)}</td></tr>)}</tbody></table><p className="px-3 py-2 text-[11px] text-warn">{comparison.limitation}</p></div>}
+    </section>}
 
     {error && <div className="border border-down/50 bg-[#EF535018] rounded-md p-3 text-xs text-down flex gap-2"><AlertTriangle size={15} className="shrink-0" />{error}</div>}
     {active && <section className="border border-accent/50 rounded-md p-3"><div className="flex justify-between gap-3 text-xs"><span className="text-text flex items-center gap-2"><Loader2 size={14} className="animate-spin text-accent" />{active.message}</span><span className="font-mono text-accent">{active.progress}%</span></div><div className="h-1.5 bg-[#21262D] mt-2 overflow-hidden rounded"><div className="h-full bg-accent transition-all" style={{ width: `${Math.max(3, active.progress)}%` }} /></div></section>}
@@ -199,10 +297,10 @@ export default function OvernightPanel() {
     <section className="border border-border rounded-md overflow-hidden">
       <div className="px-3 py-2.5 border-b border-border flex flex-wrap items-center gap-x-4 gap-y-1"><h3 className="text-sm font-semibold text-text">执行规则</h3><span className="text-[11px] text-text-secondary">参考资金100万 · 单股100股且不超过10% · 总仓位不超过50%</span></div>
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-border text-xs">
-        <RuleBand title="行情活跃度" text="涨幅3%-5% · 量比>1.2 · 换手3%-9%" />
-        <RuleBand title="规模与趋势" text="市值40-230亿 · MA10>MA20>MA30 · 站上MA5/MA10" />
+        <RuleBand title="行情活跃度" text={`涨幅${data?.strategy.change_pct?.[0] ?? 3}%-${data?.strategy.change_pct?.[1] ?? 5}% · 量比>${data?.strategy.volume_ratio_min ?? 1.2} · 换手${data?.strategy.turnover_pct?.[0] ?? 5}%-${data?.strategy.turnover_pct?.[1] ?? 10}%`} />
+        <RuleBand title="规模与趋势" text={`市值${data?.strategy.market_cap_yi?.[0] ?? 50}-${data?.strategy.market_cap_yi?.[1] ?? 200}亿 · 台阶放量 · MA多头`} />
         <RuleBand title="硬性排雷" text="ST/次新/近5日跌停/重大利空/财报前3日" />
-        <RuleBand title="分钟确认" text="最近5分钟涨幅<=2% · 排除脉冲爆量 · 0.618保护" />
+        <RuleBand title="分钟确认" text="强于上证 · 守住VWAP · 14:55新高回踩 · 排除急拉" />
       </div>
     </section>
 
@@ -235,6 +333,18 @@ function MetricInline({ label, value }: { label: string; value: string }) {
 
 function RuleBand({ title, text }: { title: string; text: string }) {
   return <div className="px-3 py-3"><div className="text-text font-medium">{title}</div><div className="text-text-secondary mt-1 leading-5">{text}</div></div>;
+}
+
+function FactorRange({ label, values, unit, onChange }: { label: string; values: number[]; unit: string; onChange: (index: number, value: number) => void }) {
+  return <label className="border border-border rounded-md p-2.5 text-text-secondary"><span>{label}</span><div className="mt-2 grid grid-cols-[1fr_auto_1fr_auto] items-center gap-1.5"><input type="number" value={values?.[0] ?? 0} onChange={(event) => onChange(0, Number(event.target.value))} className="min-w-0 bg-[#0D1117] border border-border rounded px-2 py-1.5 font-mono text-text" /><span>至</span><input type="number" value={values?.[1] ?? 0} onChange={(event) => onChange(1, Number(event.target.value))} className="min-w-0 bg-[#0D1117] border border-border rounded px-2 py-1.5 font-mono text-text" /><span>{unit}</span></div></label>;
+}
+
+function FactorNumber({ label, value, step, unit = '', onChange }: { label: string; value: number; step: number; unit?: string; onChange: (value: number) => void }) {
+  return <label className="border border-border rounded-md p-2.5 text-text-secondary"><span>{label}</span><div className="mt-2 flex items-center gap-1.5"><input type="number" step={step} value={value ?? 0} onChange={(event) => onChange(Number(event.target.value))} className="min-w-0 flex-1 bg-[#0D1117] border border-border rounded px-2 py-1.5 font-mono text-text" /><span>{unit}</span></div></label>;
+}
+
+function FactorToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return <label className="flex items-center justify-between gap-3 text-text-secondary"><span>{label}</span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="accent-[#2F81F7]" /></label>;
 }
 
 function Empty({ text }: { text: string }) {

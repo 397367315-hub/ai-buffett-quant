@@ -17,6 +17,7 @@ import {
   RefreshCw,
   SearchCheck,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Target,
   TrendingDown,
@@ -28,6 +29,30 @@ import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 type SelectionMode = 'quick' | 'full';
 type RiskProfile = 'conservative' | 'balanced' | 'aggressive';
 type ResearchHorizon = 'week' | 'half_month' | 'month';
+type FactorPreset = 'off' | 'short' | 'long' | 'custom';
+
+interface FactorConfig {
+  enabled: boolean;
+  preset: FactorPreset;
+  use_change_pct: boolean;
+  change_pct: number[];
+  use_volume_ratio: boolean;
+  volume_ratio_min: number;
+  use_turnover: boolean;
+  turnover_pct: number[];
+  use_market_cap: boolean;
+  market_cap_yi: number[];
+  use_pe: boolean;
+  pe_max: number;
+  use_roe: boolean;
+  roe_min: number;
+  use_main_inflow: boolean;
+  main_net_inflow_yi_min: number;
+  require_profitable: boolean;
+  exclude_star_market: boolean;
+  exclude_gem: boolean;
+  exclude_bse: boolean;
+}
 
 interface PipelineAgent {
   id: string;
@@ -270,6 +295,16 @@ interface SelectionResult {
     market_candidates: number;
     directory_complete?: boolean;
   };
+  factor_filter?: {
+    enabled: boolean;
+    config: FactorConfig;
+    before_count: number;
+    matched_count: number;
+    rejected_count: number;
+    rejection_counts: Record<string, number>;
+  };
+  cache_used?: boolean;
+  cache_reason?: 'market_closed' | 'upstream_unavailable' | null;
   data_contract?: {
     slug: string;
     version: string;
@@ -320,8 +355,85 @@ const horizons: Array<{ id: ResearchHorizon; label: string; detail: string }> = 
   { id: 'month', label: '一个月', detail: '20日' },
 ];
 
+const baseFactors: FactorConfig = {
+  enabled: false,
+  preset: 'off',
+  use_change_pct: true,
+  change_pct: [-3, 8],
+  use_volume_ratio: true,
+  volume_ratio_min: 1.2,
+  use_turnover: true,
+  turnover_pct: [1, 15],
+  use_market_cap: true,
+  market_cap_yi: [30, 3000],
+  use_pe: false,
+  pe_max: 80,
+  use_roe: false,
+  roe_min: 0,
+  use_main_inflow: false,
+  main_net_inflow_yi_min: 0,
+  require_profitable: false,
+  exclude_star_market: false,
+  exclude_gem: false,
+  exclude_bse: true,
+};
+
+const factorPresets: Record<'off' | 'short' | 'long', FactorConfig> = {
+  off: baseFactors,
+  short: {
+    ...baseFactors,
+    enabled: true,
+    preset: 'short',
+    change_pct: [0, 7],
+    volume_ratio_min: 1.2,
+    turnover_pct: [2, 15],
+    market_cap_yi: [30, 1200],
+    use_main_inflow: true,
+  },
+  long: {
+    ...baseFactors,
+    enabled: true,
+    preset: 'long',
+    change_pct: [-4, 6],
+    use_volume_ratio: false,
+    turnover_pct: [0.3, 10],
+    market_cap_yi: [50, 5000],
+    use_pe: true,
+    pe_max: 50,
+    use_roe: true,
+    roe_min: 8,
+    require_profitable: true,
+  },
+};
+
+const factorPresetOptions: Array<{ id: 'off' | 'short' | 'long'; label: string }> = [
+  { id: 'off', label: '关闭' },
+  { id: 'short', label: '短线' },
+  { id: 'long', label: '长期' },
+];
+
+const rejectionLabels: Record<string, string> = {
+  change_pct: '涨跌幅', change_pct_missing: '缺少涨跌幅',
+  volume_ratio: '量比', volume_ratio_missing: '缺少量比',
+  turnover: '换手率', turnover_missing: '缺少换手率',
+  market_cap: '市值', market_cap_missing: '缺少市值',
+  pe: 'PE', pe_missing: '缺少PE', profitable: '未盈利',
+  roe: 'ROE', roe_missing: '缺少ROE',
+  main_inflow: '主力净流入', main_inflow_missing: '缺少主力资金',
+  star_market: '科创板', gem: '创业板', bse: '北交所',
+};
+
+function cloneFactors(config: FactorConfig): FactorConfig {
+  return {
+    ...config,
+    change_pct: [...config.change_pct],
+    turnover_pct: [...config.turnover_pct],
+    market_cap_yi: [...config.market_cap_yi],
+  };
+}
+
 const analysisStages = [
-  { threshold: 0, label: '读取实时行情与候选池' },
+  { threshold: 0, label: '读取行情或最近有效缓存' },
   { threshold: 20, label: '计算技术、资金与财务排雷' },
   { threshold: 40, label: '分析宏观政策与公司公告' },
   { threshold: 62, label: '执行风险、成本与偏差审计' },
@@ -366,6 +478,7 @@ function sourceLabel(source: string): string {
 function marketSourceLabel(source: string): string {
   if (source === 'eastmoney') return '东方财富';
   if (source === 'ftshare_mcp') return 'FTShare MCP';
+  if (source === 'cache') return '系统缓存';
   return source;
 }
 
@@ -401,12 +514,58 @@ function moneyValue(value: number | null | undefined): string {
   return `¥${value.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
 }
 
+function FactorRangeControl({ label, unit, enabled, values, onToggle, onChange }: {
+  label: string;
+  unit: string;
+  enabled: boolean;
+  values: number[];
+  onToggle: (value: boolean) => void;
+  onChange: (index: number, value: number) => void;
+}) {
+  return (
+    <div className={enabled ? 'opacity-100' : 'opacity-55'}>
+      <label className="flex items-center gap-2 text-xs text-text-secondary"><input type="checkbox" checked={enabled} onChange={(event) => onToggle(event.target.checked)} className="accent-[#2F81F7]" />{label}</label>
+      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-center gap-1.5">
+        <input type="number" disabled={!enabled} value={values[0]} onChange={(event) => onChange(0, Number(event.target.value))} className="min-w-0 bg-[#0D1117] border border-border rounded px-2 py-1.5 text-xs font-mono text-text disabled:cursor-not-allowed" />
+        <span className="text-xs text-text-secondary">至</span>
+        <input type="number" disabled={!enabled} value={values[1]} onChange={(event) => onChange(1, Number(event.target.value))} className="min-w-0 bg-[#0D1117] border border-border rounded px-2 py-1.5 text-xs font-mono text-text disabled:cursor-not-allowed" />
+        <span className="text-xs text-text-secondary whitespace-nowrap">{unit}</span>
+      </div>
+    </div>
+  );
+}
+
+function FactorNumberControl({ label, unit = '', enabled, value, step, onToggle, onChange }: {
+  label: string;
+  unit?: string;
+  enabled: boolean;
+  value: number;
+  step: number;
+  onToggle: (value: boolean) => void;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className={enabled ? 'opacity-100' : 'opacity-55'}>
+      <label className="flex items-center gap-2 text-xs text-text-secondary"><input type="checkbox" checked={enabled} onChange={(event) => onToggle(event.target.checked)} className="accent-[#2F81F7]" />{label}</label>
+      <div className="mt-2 flex items-center gap-1.5">
+        <input type="number" disabled={!enabled} step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} className="min-w-0 flex-1 bg-[#0D1117] border border-border rounded px-2 py-1.5 text-xs font-mono text-text disabled:cursor-not-allowed" />
+        {unit && <span className="text-xs text-text-secondary whitespace-nowrap">{unit}</span>}
+      </div>
+    </div>
+  );
+}
+
+function FactorFlag({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return <label className="flex items-center gap-2 text-text-secondary"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="accent-[#2F81F7]" />{label}</label>;
+}
+
 export default function StockPickerPage() {
   const [mode, setMode] = useState<SelectionMode>('quick');
   const [riskProfile, setRiskProfile] = useState<RiskProfile>('balanced');
   const [horizon, setHorizon] = useState<ResearchHorizon>('week');
   const [topN, setTopN] = useState(5);
   const [sector, setSector] = useState('');
+  const [factorConfig, setFactorConfig] = useState<FactorConfig>(() => cloneFactors(factorPresets.off));
   const [sectors, setSectors] = useState<SectorOption[]>([]);
   const [sectorsLoading, setSectorsLoading] = useState(true);
   const [coveredStockCount, setCoveredStockCount] = useState<number | null>(null);
@@ -421,6 +580,19 @@ export default function StockPickerPage() {
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingElapsed, setLoadingElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem('stock_picker_factor_filters_v1');
+      if (stored) setFactorConfig({ ...cloneFactors(factorPresets.off), ...JSON.parse(stored) });
+    } catch (err) {
+      console.warn('Failed to restore stock-picker factors:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem('stock_picker_factor_filters_v1', JSON.stringify(factorConfig));
+  }, [factorConfig]);
 
   useEffect(() => {
     let active = true;
@@ -473,6 +645,22 @@ export default function StockPickerPage() {
 
   const selectedSector = sectors.find((item) => (item.code || item.name) === sector);
 
+  const applyFactorPreset = (preset: 'off' | 'short' | 'long') => {
+    setFactorConfig(cloneFactors(factorPresets[preset]));
+  };
+
+  function setFactor<K extends keyof FactorConfig>(key: K, value: FactorConfig[K]) {
+    setFactorConfig((current) => ({ ...current, enabled: true, preset: 'custom', [key]: value }));
+  }
+
+  const setFactorRange = (key: 'change_pct' | 'turnover_pct' | 'market_cap_yi', index: number, value: number) => {
+    setFactorConfig((current) => {
+      const range = [...current[key]];
+      range[index] = value;
+      return { ...current, enabled: true, preset: 'custom', [key]: range };
+    });
+  };
+
   const runSelection = async () => {
     setLoadingProgress(5);
     setLoadingElapsed(0);
@@ -488,6 +676,7 @@ export default function StockPickerPage() {
           top_n: topN,
           sector: selectedSector?.name,
           sector_code: selectedSector?.code || undefined,
+          factor_filters: factorConfig,
         }),
       });
       setResult(res.data);
@@ -496,7 +685,7 @@ export default function StockPickerPage() {
       await new Promise((resolve) => window.setTimeout(resolve, 180));
     } catch (err) {
       console.error('Failed to run stock selection:', err);
-      setError('实时选股暂时无法完成，请稍后重试。');
+      setError('智能选股暂时无法完成，请稍后重试。');
     } finally {
       setLoading(false);
     }
@@ -538,7 +727,13 @@ export default function StockPickerPage() {
           <div className="text-right text-xs text-text-secondary leading-5">
             <div className="flex items-center justify-end gap-1.5">
               <span className={`inline-block h-2 w-2 rounded-full ${result.is_realtime ? 'bg-down' : 'bg-warn'}`} />
-              {result.is_realtime ? '盘中实时行情' : result.data_date ? `最近交易快照 · 数据日期 ${result.data_date}` : '来源快照 · 未提供日期'}
+              {result.is_realtime
+                ? '盘中实时行情'
+                : result.cache_used && result.data_date
+                  ? `休市缓存快照 · 数据日期 ${result.data_date}`
+                  : result.data_date
+                    ? `最近交易快照 · 数据日期 ${result.data_date}`
+                    : '来源快照 · 未提供日期'}
             </div>
             <div>{marketSourceLabel(result.source)} · 本次运行 {formatTime(result.updated_at)}</div>
           </div>
@@ -638,8 +833,44 @@ export default function StockPickerPage() {
             className="min-h-10 px-4 py-2 bg-accent text-white text-sm rounded-md hover:opacity-90 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5"
           >
             {loading ? <RefreshCw size={15} className="animate-spin" /> : <Play size={15} />}
-            {loading ? `分析中 ${loadingProgress}%` : '开始实时选股'}
+            {loading ? `分析中 ${loadingProgress}%` : '开始智能选股'}
           </button>
+        </div>
+        <div className="mt-4 border-t border-border pt-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2 text-sm font-medium text-text"><SlidersHorizontal size={15} className="text-accent" />因子筛选</div>
+            <div className="flex rounded-md bg-[#0D1117] p-1" role="group" aria-label="因子筛选预设">
+              {factorPresetOptions.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => applyFactorPreset(item.id)}
+                  className={`px-3 py-1.5 text-xs rounded transition-colors ${factorConfig.preset === item.id ? 'bg-[#1F6FEB33] text-accent' : 'text-text-secondary hover:text-text'}`}
+                >
+                  {item.label}
+                </button>
+              ))}
+              {factorConfig.preset === 'custom' && <span className="px-3 py-1.5 text-xs rounded bg-[#1F6FEB33] text-accent">自定义</span>}
+            </div>
+            <span className="text-xs text-text-secondary">{factorConfig.enabled ? '已启用' : '未启用'}</span>
+          </div>
+          {factorConfig.enabled && (
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-x-5 gap-y-4">
+              <FactorRangeControl label="当日涨跌幅" unit="%" enabled={factorConfig.use_change_pct} values={factorConfig.change_pct} onToggle={(value) => setFactor('use_change_pct', value)} onChange={(index, value) => setFactorRange('change_pct', index, value)} />
+              <FactorNumberControl label="最低量比（严格大于）" enabled={factorConfig.use_volume_ratio} value={factorConfig.volume_ratio_min} step={0.1} onToggle={(value) => setFactor('use_volume_ratio', value)} onChange={(value) => setFactor('volume_ratio_min', value)} />
+              <FactorRangeControl label="换手率" unit="%" enabled={factorConfig.use_turnover} values={factorConfig.turnover_pct} onToggle={(value) => setFactor('use_turnover', value)} onChange={(index, value) => setFactorRange('turnover_pct', index, value)} />
+              <FactorRangeControl label="总市值" unit="亿元" enabled={factorConfig.use_market_cap} values={factorConfig.market_cap_yi} onToggle={(value) => setFactor('use_market_cap', value)} onChange={(index, value) => setFactorRange('market_cap_yi', index, value)} />
+              <FactorNumberControl label="最高 PE(TTM)" enabled={factorConfig.use_pe} value={factorConfig.pe_max} step={1} onToggle={(value) => setFactor('use_pe', value)} onChange={(value) => setFactor('pe_max', value)} />
+              <FactorNumberControl label="最低 ROE" unit="%" enabled={factorConfig.use_roe} value={factorConfig.roe_min} step={0.5} onToggle={(value) => setFactor('use_roe', value)} onChange={(value) => setFactor('roe_min', value)} />
+              <FactorNumberControl label="最低主力净流入" unit="亿元" enabled={factorConfig.use_main_inflow} value={factorConfig.main_net_inflow_yi_min} step={0.1} onToggle={(value) => setFactor('use_main_inflow', value)} onChange={(value) => setFactor('main_net_inflow_yi_min', value)} />
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2 content-start text-xs">
+                <FactorFlag label="要求盈利" checked={factorConfig.require_profitable} onChange={(value) => setFactor('require_profitable', value)} />
+                <FactorFlag label="排除科创板" checked={factorConfig.exclude_star_market} onChange={(value) => setFactor('exclude_star_market', value)} />
+                <FactorFlag label="排除创业板" checked={factorConfig.exclude_gem} onChange={(value) => setFactor('exclude_gem', value)} />
+                <FactorFlag label="排除北交所" checked={factorConfig.exclude_bse} onChange={(value) => setFactor('exclude_bse', value)} />
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -702,10 +933,12 @@ export default function StockPickerPage() {
                 <div className="text-xs text-text-secondary mt-1">置信度 {(result.market_regime.confidence * 100).toFixed(0)}%</div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
-                <div className="text-xs text-text-secondary">{result.sector_filter?.label || '全部行业'}候选</div>
+                <div className="text-xs text-text-secondary">{result.factor_filter?.enabled ? '因子后候选' : `${result.sector_filter?.label || '全部行业'}候选`}</div>
                 <div className="mt-1 text-lg font-mono font-bold text-text">{result.candidate_summary.live_candidates}</div>
                 <div className="text-xs text-text-secondary mt-1">
-                  {result.sector_filter?.code ? '行业成分' : '实时榜单池'} {result.sector_filter?.market_candidates ?? result.candidate_summary.market_candidates ?? result.candidate_summary.live_candidates} 只
+                  {result.factor_filter?.enabled
+                    ? `因子前 ${result.factor_filter.before_count} 只`
+                    : `${result.sector_filter?.code ? '行业成分' : result.cache_used ? '缓存候选池' : '行情候选池'} ${result.sector_filter?.market_candidates ?? result.candidate_summary.market_candidates ?? result.candidate_summary.live_candidates} 只`}
                 </div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
@@ -729,6 +962,17 @@ export default function StockPickerPage() {
           {Boolean(result.feature_warnings?.length) && (
             <section className="mb-6 border-l-2 border-warn pl-3 text-xs text-warn leading-5">
               {result.feature_warnings?.map((item) => <p key={item}>{item}</p>)}
+            </section>
+          )}
+
+          {result.factor_filter?.enabled && (
+            <section className="mb-6 border-l-2 border-accent pl-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                <span className="text-text">因子筛选 {result.factor_filter.before_count} → {result.factor_filter.matched_count} 只</span>
+                {Object.entries(result.factor_filter.rejection_counts).map(([reason, count]) => (
+                  <span key={reason} className="text-text-secondary">{rejectionLabels[reason] || reason} {count}</span>
+                ))}
+              </div>
             </section>
           )}
 

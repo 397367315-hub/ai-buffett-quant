@@ -193,6 +193,127 @@ class MacroDashboardService:
             })
         return sorted(result, key=lambda item: item["event_at"])
 
+    @staticmethod
+    def _a_share_outlook(global_markets: list[dict], domestic: dict, policy: dict) -> dict:
+        """Translate verified macro inputs into a plain-language A-share bias."""
+        market_by_key = {item.get("key"): item for item in global_markets}
+        score = 0.0
+        evidence_count = 0
+        drivers: list[dict] = []
+        favored: list[str] = []
+        pressured: list[str] = []
+
+        def add(factor: str, value: float, explanation: str, affected: str) -> None:
+            nonlocal score, evidence_count
+            score += value
+            evidence_count += 1
+            drivers.append({
+                "factor": factor,
+                "direction": "positive" if value > 0 else "negative" if value < 0 else "neutral",
+                "explanation": explanation,
+                "affected": affected,
+                "score": round(value, 1),
+            })
+
+        sp500_change = _float((market_by_key.get("sp500") or {}).get("change_pct"))
+        if sp500_change is not None:
+            contribution = max(-16.0, min(16.0, sp500_change * 8))
+            add(
+                "隔夜美股",
+                contribution,
+                f"标普500 {sp500_change:+.2f}%，{'改善' if contribution > 0 else '压低' if contribution < 0 else '未明显改变'}全球风险偏好。",
+                "成长、科技与外资偏好板块",
+            )
+
+        dxy_change = _float((market_by_key.get("dxy") or {}).get("change_pct"))
+        if dxy_change is not None:
+            contribution = max(-12.0, min(12.0, -dxy_change * 12))
+            add(
+                "美元指数",
+                contribution,
+                f"美元指数 {dxy_change:+.2f}%，{'人民币资产外部压力减轻' if contribution > 0 else '可能抑制外资风险偏好' if contribution < 0 else '影响中性'}。",
+                "北向偏好、港股映射与高估值成长",
+            )
+
+        north = (domestic.get("northbound") or {}).get("net_inflow")
+        north_value = _float(north)
+        if north_value is not None:
+            north_yi = north_value / 1e8
+            contribution = max(-18.0, min(18.0, north_yi / 3))
+            add(
+                "北向资金",
+                contribution,
+                f"最近可核验净流入 {north_yi:+.2f} 亿元，{'增添' if contribution > 0 else '削弱' if contribution < 0 else '未改变'}增量资金支持。",
+                "大盘权重、消费、金融与核心资产",
+            )
+
+        sh_change = _float((domestic.get("turnover") or {}).get("sh_change_pct"))
+        if sh_change is not None:
+            contribution = max(-18.0, min(18.0, sh_change * 9))
+            add(
+                "A股当下走势",
+                contribution,
+                f"上证指数最近变化 {sh_change:+.2f}%，市场自身趋势{'偏强' if contribution > 0 else '偏弱' if contribution < 0 else '震荡'}。",
+                "全市场风险偏好",
+            )
+
+        oil_change = _float((market_by_key.get("oil") or {}).get("change_pct"))
+        if oil_change is not None:
+            if oil_change >= 1.5:
+                add("国际原油", -4.0, f"原油上涨 {oil_change:+.2f}%，输入成本与通胀预期升温。", "航空、物流、化工下游")
+                favored.append("油气开采")
+                pressured.extend(["航空", "物流", "化工下游"])
+            elif oil_change <= -1.5:
+                add("国际原油", 3.0, f"原油下跌 {oil_change:+.2f}%，部分中下游成本压力缓和。", "航空、物流与制造中下游")
+                favored.extend(["航空", "物流", "制造中下游"])
+
+        gold_change = _float((market_by_key.get("gold") or {}).get("change_pct"))
+        if gold_change is not None and abs(gold_change) >= 1.0:
+            contribution = -3.0 if gold_change > 0 else 1.0
+            add("黄金", contribution, f"黄金 {gold_change:+.2f}%，{'避险需求升温' if gold_change > 0 else '避险交易降温'}。", "黄金、有色与高波动成长")
+            if gold_change > 0:
+                favored.append("黄金")
+
+        policy_adjustment = _float(policy.get("macro_adjustment")) if isinstance(policy, dict) else None
+        if policy_adjustment is not None and policy.get("available"):
+            contribution = max(-10.0, min(10.0, policy_adjustment))
+            add(
+                "国内政策",
+                contribution,
+                "已核验政策新闻的行业匹配结果偏支持。" if contribution > 0 else "已核验政策新闻暂未形成明显增量支持。",
+                "政策明确支持的行业",
+            )
+
+        score = round(max(-100.0, min(100.0, score)), 1)
+        if score >= 22:
+            stance, label = "bullish", "偏多"
+        elif score <= -22:
+            stance, label = "cautious", "偏谨慎"
+        else:
+            stance, label = "neutral", "震荡中性"
+        confidence = round(min(92.0, 28.0 + evidence_count * 10.0), 1) if evidence_count else 0.0
+        ranked_drivers = sorted(drivers, key=lambda item: abs(item["score"]), reverse=True)
+        key_text = "、".join(item["factor"] for item in ranked_drivers[:3]) or "可核验数据不足"
+        if stance == "bullish":
+            action = "风险偏好有支撑，但仍需等待成交额与板块资金同步确认。"
+        elif stance == "cautious":
+            action = "控制追高与总仓位，优先观察抗跌、低估值及政策有支撑方向。"
+        else:
+            action = "指数更可能维持结构性震荡，宜看板块资金而不是只看大盘涨跌。"
+        return {
+            "stance": stance,
+            "label": label,
+            "score": score,
+            "confidence": confidence,
+            "headline": f"A股综合方向：{label}。主要由{key_text}共同决定。",
+            "summary": action,
+            "drivers": ranked_drivers,
+            "favored_sectors": list(dict.fromkeys(favored))[:6],
+            "pressured_sectors": list(dict.fromkeys(pressured))[:6],
+            "data_points": evidence_count,
+            "method": "基于可核验海外市场、美元、商品、北向资金、A股走势与政策信号的规则加权；不是收益预测。",
+        }
+
     async def dashboard(self) -> dict:
         cached = await self._load_cache()
         global_result, calendar_result, north_result, turnover_result, policy_result = await asyncio.gather(
@@ -334,6 +455,7 @@ class MacroDashboardService:
                 "policy_items": policy.get("policy_items") or [],
             },
             "premarket_questions": premarket_questions,
+            "a_share_outlook": self._a_share_outlook(global_markets, domestic, policy),
             "source_status": source_status,
             "cache_used": cache_used,
             "snapshot_updated_at": (

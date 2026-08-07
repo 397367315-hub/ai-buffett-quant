@@ -3,6 +3,7 @@ node_modules/
 *.db
 __pycache__/
 *.pyc
+*.tsbuildinfo
 .env
 .DS_Store
 AI巴菲特量化分析系统-完整交接文档.md
