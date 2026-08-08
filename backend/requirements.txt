@@ -6,7 +6,7 @@ greenlet
 aiosqlite
 asyncpg
 redis
-apscheduler
+apscheduler==3.10.4
 python-dotenv
 openai
 pydantic

@@ -4,6 +4,7 @@ on:
   schedule:
     # GitHub cron uses UTC. Times below map to Asia/Shanghai (UTC+8).
     - cron: '20 1 * * 1-5'      # 09:20 warmup
+    - cron: '24,25,26,27 1 * * 1-5' # 09:24-09:27 AI auction watch
     - cron: '31,40,50 1 * * 1-5' # 09:31/09:40/09:50 exit checks
     - cron: '0 2 * * 1-5'       # 10:00 forced exit
     - cron: '20 6 * * 1-5'      # 14:20 warmup
@@ -20,6 +21,7 @@ on:
           - warmup
           - preliminary
           - entry
+          - auction
           - exit
           - force_exit
 
@@ -49,6 +51,7 @@ jobs:
           else
             case "$SCHEDULE" in
               '20 1 * * 1-5'|'20 6 * * 1-5') stage='warmup' ;;
+              '24,25,26,27 1 * * 1-5') stage='auction' ;;
               '31,40,50 1 * * 1-5') stage='exit' ;;
               '0 2 * * 1-5') stage='force_exit' ;;
               '30 6 * * 1-5') stage='preliminary' ;;

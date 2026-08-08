@@ -107,6 +107,18 @@ async def run_overnight_entry_scan():
         return None
 
 
+async def run_overnight_auction_watch():
+    from services.overnight_strategy import overnight_strategy_service
+
+    try:
+        return await overnight_strategy_service.start(
+            "auction", trigger="schedule", background=False,
+        )
+    except Exception as exc:
+        print(f"[Scheduler] 一夜持股09:25竞价盯盘失败: {type(exc).__name__}")
+        return None
+
+
 async def monitor_overnight_exits():
     from services.overnight_strategy import overnight_strategy_service
 
@@ -269,6 +281,12 @@ async def start_scheduler(data_collector=None, db_session=None):
         CronTrigger(hour=14, minute=55, day_of_week="mon-fri"),
         id="overnight_entry_scan", name="一夜持股14:55入场复核", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        run_overnight_auction_watch,
+        CronTrigger(hour=9, minute="24,25,26,27", day_of_week="mon-fri"),
+        id="overnight_auction_watch", name="一夜持股09:25 AI竞价盯盘", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=60,
     )
     scheduler.add_job(
         monitor_overnight_exits,

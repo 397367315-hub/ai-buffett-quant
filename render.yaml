@@ -24,6 +24,12 @@ services:
         value: "true"
       - key: FTSHARE_MCP_TIMEOUT
         value: "10"
+      - key: OPENCLAW_ENABLED
+        value: "true"
+      - key: OPENCLAW_API_KEY
+        sync: false
+      - key: OPENCLAW_TOOL_TIMEOUT
+        value: "45"
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: ADMIN_USERNAME

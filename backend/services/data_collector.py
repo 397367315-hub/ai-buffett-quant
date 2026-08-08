@@ -478,7 +478,7 @@ class EastMoneyDataCollector:
                 "market_cap": as_int(item.get("f20")),
                 "total_market_cap": as_int(item.get("f20")),
                 "float_market_cap": as_int(item.get("f21")),
-                "volume_ratio": as_float(item.get("f10")),
+                "volume_ratio": as_optional_float(item.get("f10")),
                 "main_net_inflow": as_int(item.get("f62")),
                 "main_net_inflow_pct": as_float(item.get("f184")),
                 "open": as_optional_float(item.get("f17")),
@@ -1163,6 +1163,81 @@ class EastMoneyDataCollector:
             "complete": len(stocks) == len(codes),
         }
 
+    async def fetch_stock_auction_quotes(self, stock_codes: list[str]) -> dict:
+        """Return timestamp-verified 09:24-09:27 call-auction observations.
+
+        The quote endpoint is the source of the auction matched price and
+        accumulated auction volume.  ``f10``/the Tencent compact field is
+        retained as the provider's volume-ratio field; missing provider data
+        stays missing instead of being inferred from a stale daily quote.
+        """
+        codes = list(dict.fromkeys(normalize_stock_code(code) for code in stock_codes))
+        if not codes:
+            return {
+                "stocks": [], "total": 0, "requested": 0, "complete": True,
+                "is_realtime": False, "data_date": None, "source": "unavailable",
+            }
+
+        payload = await self.fetch_stock_quotes(codes)
+        now = shanghai_now()
+        rows: list[dict] = []
+        for stock in payload.get("stocks") or []:
+            quote_at = self._quote_timestamp_datetime(stock.get("quote_timestamp"))
+            previous_close = as_optional_float(stock.get("previous_close"))
+            auction_price = as_optional_float(stock.get("price"))
+            if auction_price is None or auction_price <= 0:
+                auction_price = as_optional_float(stock.get("open"))
+            auction_volume = as_optional_float(stock.get("volume"))
+            auction_ratio = as_optional_float(stock.get("volume_ratio"))
+            high_open_pct = (
+                (auction_price / previous_close - 1) * 100
+                if auction_price is not None and previous_close not in (None, 0)
+                else None
+            )
+            quote_minute = quote_at.hour * 60 + quote_at.minute if quote_at else None
+            fresh = bool(
+                payload.get("is_realtime")
+                and quote_at
+                and quote_at.date() == now.date()
+                and 9 * 60 + 24 <= quote_minute <= 9 * 60 + 27
+                and 0 <= (now - quote_at).total_seconds() <= 5 * 60
+            )
+            rows.append({
+                "code": str(stock.get("code") or ""),
+                "name": str(stock.get("name") or ""),
+                "auction_price": auction_price,
+                "auction_volume": int(auction_volume) if auction_volume is not None else None,
+                "auction_volume_ratio": auction_ratio,
+                "high_open_pct": high_open_pct,
+                "previous_close": previous_close,
+                "quote_at": quote_at.isoformat() if quote_at else None,
+                "source": str(stock.get("quote_source") or payload.get("source") or "unavailable"),
+                "is_realtime": fresh,
+            })
+        by_code = {item["code"]: item for item in rows if item.get("code")}
+        ordered = [by_code[code] for code in codes if code in by_code]
+        complete = len(ordered) == len(codes) and all(item["is_realtime"] for item in ordered)
+        return {
+            "stocks": ordered,
+            "total": len(ordered),
+            "requested": len(codes),
+            "complete": complete,
+            "is_realtime": complete,
+            "data_date": now.date().isoformat() if ordered else None,
+            "source": payload.get("source") or "unavailable",
+            "source_updated_at": max(
+                (item["quote_at"] for item in ordered if item.get("quote_at")),
+                default=None,
+            ),
+            "field_coverage": {
+                "auction_price": sum(item.get("auction_price") is not None for item in ordered),
+                "auction_volume": sum(item.get("auction_volume") is not None for item in ordered),
+                "auction_volume_ratio": sum(item.get("auction_volume_ratio") is not None for item in ordered),
+                "high_open_pct": sum(item.get("high_open_pct") is not None for item in ordered),
+            },
+            "fetched_at": now.isoformat(),
+        }
+
     async def fetch_tencent_quotes(self, stock_codes: list[str]) -> dict:
         """Fetch and normalize Tencent's compact, batch A-share quote feed."""
         codes = list(dict.fromkeys(normalize_stock_code(code) for code in stock_codes))
@@ -1482,7 +1557,7 @@ class EastMoneyDataCollector:
             "pe": "" if pe is None else pe,
             "pb": item.get("f23") if item.get("f23") not in (None, "-") else "",
             "roe": item.get("f37") if item.get("f37") not in (None, "-") else "",
-            "volume_ratio": as_float(item.get("f10")),
+            "volume_ratio": as_optional_float(item.get("f10")),
             "market_cap": as_int(item.get("f20")),
             "sector": str(item.get("f100") or "").strip(),
             "main_net_inflow": as_int(item.get("f62")),

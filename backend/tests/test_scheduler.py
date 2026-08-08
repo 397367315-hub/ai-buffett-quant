@@ -54,6 +54,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             "personal_report_calendar",
             "overnight_preliminary_scan",
             "overnight_entry_scan",
+            "overnight_auction_watch",
             "overnight_exit_monitor",
             "overnight_force_exit",
         }
@@ -64,6 +65,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(calls["personal_report_calendar"].args[0], scheduler_module.refresh_personal_report_calendar)
         self.assertIs(calls["overnight_preliminary_scan"].args[0], scheduler_module.run_overnight_preliminary_scan)
         self.assertIs(calls["overnight_entry_scan"].args[0], scheduler_module.run_overnight_entry_scan)
+        self.assertIs(calls["overnight_auction_watch"].args[0], scheduler_module.run_overnight_auction_watch)
         self.assertIs(calls["overnight_exit_monitor"].args[0], scheduler_module.monitor_overnight_exits)
         self.assertIs(calls["overnight_force_exit"].args[0], scheduler_module.force_overnight_exits)
 

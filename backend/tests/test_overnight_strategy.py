@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from database import Base
 from models import OvernightPosition, OvernightStrategyRun, StockDailyBar
 from services.data_collector import EastMoneyDataCollector
-from services.overnight_strategy import OvernightStrategyService
+from services.overnight_strategy import AUCTION_STRATEGY_CONFIG, OvernightStrategyService
 
 
 def daily_bars(count: int = 80) -> list[dict]:
@@ -216,6 +216,37 @@ class OvernightRuleTests(unittest.TestCase):
         self.assertFalse(decision["ready"])
         self.assertEqual(decision["data_status"], "outside_window")
 
+    def test_auction_requires_strict_volume_ratio_and_inclusive_high_open_range(self):
+        candidate = {"code": "600000", "previous_close": 100.0}
+        quote = {
+            "auction_price": 102.0,
+            "previous_close": 100.0,
+            "auction_volume_ratio": 3.01,
+            "quote_at": "2026-08-05T09:25:00+08:00",
+            "source": "eastmoney",
+            "is_realtime": True,
+        }
+        now = datetime(2026, 8, 5, 9, 25, tzinfo=ZoneInfo("Asia/Shanghai"))
+        passed = self.service._auction_audit(candidate, quote, now, AUCTION_STRATEGY_CONFIG)
+        self.assertTrue(passed["auction_passed"])
+
+        at_ratio = self.service._auction_audit(
+            candidate, {**quote, "auction_volume_ratio": 3.0}, now, AUCTION_STRATEGY_CONFIG,
+        )
+        self.assertFalse(at_ratio["auction_passed"])
+        self.assertIn("竞价量比", at_ratio["failed_reasons"])
+
+        at_upper_bound = self.service._auction_audit(
+            candidate, {**quote, "auction_price": 105.0, "high_open_pct": 5.0}, now, AUCTION_STRATEGY_CONFIG,
+        )
+        self.assertTrue(at_upper_bound["auction_passed"])
+
+        stale = self.service._auction_audit(
+            candidate, {**quote, "quote_at": "2026-08-05T09:18:00+08:00"}, now, AUCTION_STRATEGY_CONFIG,
+        )
+        self.assertFalse(stale["auction_passed"])
+        self.assertIn("竞价实时数据", stale["unavailable_reasons"])
+
 
 class OvernightCollectorTests(unittest.IsolatedAsyncioTestCase):
     async def test_minute_trends_preserve_timestamp_and_convert_lots_to_shares(self):
@@ -324,6 +355,68 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
         manual, manual_created = await self.service._create_run("entry", "manual")
         self.assertTrue(manual_created)
         self.assertNotEqual(manual.id, first.id)
+
+    async def test_auction_run_uses_previous_tail_candidate_and_buys_only_after_confirmation(self):
+        previous_run = OvernightStrategyRun(
+            stage="entry",
+            trigger="schedule",
+            status="completed",
+            progress=100,
+            message="尾盘候选完成",
+            data_date=date(2026, 8, 4),
+            is_realtime=True,
+            scanned_count=1,
+            prefiltered_count=1,
+            qualified_count=1,
+            candidates=[{
+                "code": "600000", "name": "浦发银行", "sector": "银行", "score": 88.0,
+                "previous_close": 17.5, "qualified": True, "tail_qualified": True,
+                "awaiting_auction": True, "auction_passed": None, "selected_for_entry": False,
+                "failed_reasons": [], "unavailable_reasons": [], "conditions": [],
+                "minute": {"latest_bar_at": "2026-08-04T14:55", "market_price": 18.0, "entry_price": 18.018},
+                "signal_at": "2026-08-04T14:55",
+            }],
+            data_quality={
+                "strategy_id": AUCTION_STRATEGY_CONFIG["id"],
+                "strategy": AUCTION_STRATEGY_CONFIG,
+                "cash_day": False,
+            },
+        )
+        async with self.session_factory() as session:
+            session.add(previous_run)
+            await session.commit()
+
+        now = datetime(2026, 8, 5, 9, 25, tzinfo=ZoneInfo("Asia/Shanghai"))
+        auction_payload = {
+            "stocks": [{
+                "code": "600000", "name": "浦发银行", "auction_price": 18.0,
+                "auction_volume": 320_000, "auction_volume_ratio": 3.2,
+                "high_open_pct": 2.857, "previous_close": 17.5,
+                "quote_at": "2026-08-05T09:25:00+08:00", "source": "eastmoney",
+                "is_realtime": True,
+            }],
+            "complete": True, "is_realtime": True, "data_date": "2026-08-05",
+            "source": "eastmoney", "field_coverage": {"auction_volume_ratio": 1},
+        }
+        with (
+            patch("services.overnight_strategy.shanghai_now", return_value=now),
+            patch("services.overnight_strategy.collector.fetch_stock_auction_quotes", new_callable=AsyncMock, return_value=auction_payload),
+        ):
+            result = await self.service.start(
+                "auction", strategy_id=AUCTION_STRATEGY_CONFIG["id"], background=False,
+            )
+
+        self.assertEqual(result["run"]["status"], "completed")
+        self.assertEqual(result["run"]["qualified_count"], 1)
+        self.assertIn("AI竞价盯盘Agent", result["run"]["message"])
+        async with self.session_factory() as session:
+            positions = (await session.execute(select(OvernightPosition))).scalars().all()
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0].shares, 100)
+        self.assertEqual(positions[0].audit["auction_confirmed"], True)
+        self.assertEqual(positions[0].audit["entry_source"], "call_auction")
+        self.assertEqual(positions[0].entry_at, datetime(2026, 8, 5, 9, 25))
+        self.assertEqual(positions[0].entry_price, 18.018)
 
 
 if __name__ == "__main__":

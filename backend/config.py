@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     ftshare_mcp_url: str = "https://market.ft.tech/gateway/mcp"
     ftshare_mcp_timeout: float = 10.0
 
+    # OpenClaw/MCP read and controlled-action gateway.
+    openclaw_enabled: bool = False
+    openclaw_api_key: str = ""
+    openclaw_tool_timeout: float = 45.0
+
     # 可视化量化策略模块。生产环境可将目录指向 Render 持久化磁盘；
     # 未配置时使用仓库内的 JSON 数据目录，适合本地开发和单进程部署。
     quant_data_dir: str = ""
