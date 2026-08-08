@@ -17,7 +17,7 @@ def _fail_orphaned_jobs() -> None:
     """A queued/running task cannot survive a web-process restart."""
     def mutate(document: dict) -> None:
         now = shanghai_now().isoformat()
-        for kind in ("scan", "backtest"):
+        for kind in ("scan", "backtest", "fqe"):
             for job in document.setdefault(kind, {}).values():
                 if job.get("status") in {"queued", "running"}:
                     job.update({
@@ -30,7 +30,7 @@ def _fail_orphaned_jobs() -> None:
 
 
 def create_job(kind: str, prefix: str, metadata: dict | None = None) -> dict:
-    if kind not in {"scan", "backtest"}:
+    if kind not in {"scan", "backtest", "fqe"}:
         raise ValueError("未知任务类型")
     job = {
         "job_id": f"{prefix}_{uuid.uuid4().hex[:12]}",

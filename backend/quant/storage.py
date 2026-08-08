@@ -43,7 +43,7 @@ DEFAULT_DOCUMENTS: dict[str, dict] = {
         "price_is_realtime": False,
         "price_warning": None,
     },
-    "jobs": {"version": 1, "scan": {}, "backtest": {}},
+    "jobs": {"version": 1, "scan": {}, "backtest": {}, "fqe": {}},
     "market_snapshot": {
         "version": 1,
         "stocks": [],

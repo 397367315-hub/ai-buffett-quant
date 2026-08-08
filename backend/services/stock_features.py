@@ -25,6 +25,11 @@ FINANCIAL_FIELDS = frozenset({
     "revenue_growth",
     "deducted_profit_growth",
     "ocf_to_profit",
+    "revenue_ttm",
+    "net_profit_ttm",
+    "deducted_profit_ttm",
+    "operating_cf_ttm",
+    "ocf_to_profit_ttm",
     "debt_ratio",
     "receivable_to_revenue",
     "net_profit",
@@ -100,6 +105,33 @@ def _a_share_code(value: Any) -> str | None:
         return None
 
 
+TTM_VALUE_FIELDS = ("revenue", "net_profit", "deducted_profit", "operating_cf")
+
+
+def _ttm_value(
+    rows_by_period: dict[date, dict],
+    current_period: date,
+    field: str,
+) -> float | None:
+    """Convert cumulative quarterly disclosures into a point-in-time TTM value."""
+    current = _number((rows_by_period.get(current_period) or {}).get(field))
+    if current is None:
+        return None
+    if current_period.month == 12:
+        return current
+
+    try:
+        prior_year_total_period = date(current_period.year - 1, 12, 31)
+        prior_year_same_period = date(current_period.year - 1, current_period.month, current_period.day)
+    except ValueError:
+        return None
+    prior_year_total = _number((rows_by_period.get(prior_year_total_period) or {}).get(field))
+    prior_year_same = _number((rows_by_period.get(prior_year_same_period) or {}).get(field))
+    if prior_year_total is None or prior_year_same is None:
+        return None
+    return current + prior_year_total - prior_year_same
+
+
 class StockFeatureService:
     """Fetch, cache and merge slow-moving feature datasets."""
 
@@ -110,9 +142,13 @@ class StockFeatureService:
     _LOCKUP_COVERAGE_DAYS = 365
 
     def __init__(self) -> None:
-        self._memory_cache: dict | None = None
+        self._memory_cache: dict[str, dict] = {}
         self._cache_lock = asyncio.Lock()
         self._sector_cache: tuple[float, list[dict]] | None = None
+
+    @classmethod
+    def _cache_key(cls, as_of: date) -> str:
+        return f"{cls._CACHE_KEY}:{as_of.isoformat()}"
 
     @staticmethod
     def _cache_fresh(payload: dict, as_of: date) -> bool:
@@ -128,27 +164,44 @@ class StockFeatureService:
         return 0 <= (now - fetched_at).total_seconds() <= StockFeatureService._CACHE_SECONDS
 
     async def _read_cache(self, as_of: date) -> dict:
-        if self._memory_cache and self._cache_fresh(self._memory_cache, as_of):
-            return dict(self._memory_cache)
+        cache_key = self._cache_key(as_of)
+        cached = self._memory_cache.get(cache_key)
+        if cached and self._cache_fresh(cached, as_of):
+            return dict(cached)
         try:
             async with async_session() as session:
-                row = await session.get(MarketDataCache, self._CACHE_KEY)
+                row = await session.get(MarketDataCache, cache_key)
+                # Read the old singleton key only for backward compatibility;
+                # a snapshot for another research date is never a valid fallback.
+                if row is None:
+                    row = await session.get(MarketDataCache, self._CACHE_KEY)
             payload = row.payload if row and isinstance(row.payload, dict) else {}
-            if payload:
-                self._memory_cache = payload
+            if payload and payload.get("as_of_date") == as_of.isoformat():
+                self._memory_cache[cache_key] = payload
                 return dict(payload)
         except Exception as exc:
             print(f"Stock feature cache load failed: {type(exc).__name__}")
         return {}
 
     async def _write_cache(self, payload: dict) -> None:
-        self._memory_cache = payload
+        as_of = _date(payload.get("as_of_date"))
+        if as_of is None:
+            return
+        cache_key = self._cache_key(as_of)
+        self._memory_cache[cache_key] = payload
         try:
             async with async_session() as session:
-                row = await session.get(MarketDataCache, self._CACHE_KEY)
+                row = await session.get(MarketDataCache, cache_key)
                 if row:
                     row.payload = payload
                     row.updated_at = datetime.utcnow()
+                else:
+                    session.add(MarketDataCache(key=cache_key, payload=payload))
+                # Keep the legacy key as a latest-snapshot compatibility view.
+                legacy = await session.get(MarketDataCache, self._CACHE_KEY)
+                if legacy:
+                    legacy.payload = payload
+                    legacy.updated_at = datetime.utcnow()
                 else:
                     session.add(MarketDataCache(key=self._CACHE_KEY, payload=payload))
                 await session.commit()
@@ -206,13 +259,13 @@ class StockFeatureService:
         return rows
 
     async def _financial_snapshot(self, codes: set[str], as_of: date) -> dict[str, dict]:
-        output: dict[str, dict] = {}
+        history: dict[str, dict[date, dict]] = defaultdict(dict)
         columns = (
             "SECURITY_CODE,SECURITY_NAME_ABBR,REPORT_DATE,NOTICE_DATE,"
             "TOTALOPERATEREVE,TOTALOPERATEREVETZ,KCFJCXSYJLR,KCFJCXSYJLRTZ,"
             "ROEJQ,XSMLL,ZCFZL,YSZKYYSR,PARENTNETPROFIT,NETCASH_OPERATE_PK,NCO_NETPROFIT"
         )
-        for report_date in _recent_quarter_ends(as_of):
+        for report_date in _recent_quarter_ends(as_of, count=6):
             rows = await self._fetch_report(
                 report_name="RPT_F10_FINANCE_MAINFINADATA",
                 columns=columns,
@@ -225,7 +278,7 @@ class StockFeatureService:
             )
             for row in rows:
                 code = _a_share_code(row.get("SECURITY_CODE"))
-                if not code or code in output:
+                if not code:
                     continue
                 report_day = _date(row.get("REPORT_DATE"))
                 disclosed_at = _date(row.get("NOTICE_DATE"))
@@ -236,7 +289,7 @@ class StockFeatureService:
                 ocf_to_profit = _number(row.get("NCO_NETPROFIT"))
                 if ocf_to_profit is None and net_profit not in (None, 0) and operating_cf is not None:
                     ocf_to_profit = operating_cf / net_profit
-                output[code] = {
+                record = {
                     "roe": _number(row.get("ROEJQ")),
                     "gross_margin": _number(row.get("XSMLL")),
                     "revenue_growth": _number(row.get("TOTALOPERATEREVETZ")),
@@ -248,11 +301,47 @@ class StockFeatureService:
                     "deducted_profit": _number(row.get("KCFJCXSYJLR")),
                     "net_profit": net_profit,
                     "operating_cf": operating_cf,
-                    "financial_report_date": report_day.isoformat(),
-                    "financial_disclosed_at": disclosed_at.isoformat(),
+                    "report_date": report_day,
+                    "disclosed_at": disclosed_at,
                 }
-            if len(output) >= 5000:
+                previous = history[code].get(report_day)
+                if previous is None or disclosed_at >= previous["disclosed_at"]:
+                    history[code][report_day] = record
+            if len(history) >= 5000:
                 break
+
+        output: dict[str, dict] = {}
+        for code, rows_by_period in history.items():
+            if not rows_by_period:
+                continue
+            current_period = max(rows_by_period)
+            latest = rows_by_period[current_period]
+            ttm_values = {
+                f"{field}_ttm": _ttm_value(rows_by_period, current_period, field)
+                for field in TTM_VALUE_FIELDS
+            }
+            available_ttm = [
+                field for field in TTM_VALUE_FIELDS
+                if ttm_values.get(f"{field}_ttm") is not None
+            ]
+            ttm_profit = ttm_values.get("net_profit_ttm")
+            ttm_cashflow = ttm_values.get("operating_cf_ttm")
+            ttm_ratio = (
+                ttm_cashflow / ttm_profit
+                if ttm_cashflow is not None and ttm_profit not in (None, 0)
+                else None
+            )
+            output[code] = {
+                **{key: value for key, value in latest.items() if key not in {"report_date", "disclosed_at"}},
+                **ttm_values,
+                "ocf_to_profit_ttm": ttm_ratio,
+                "ttm_available": bool(available_ttm),
+                "ttm_available_fields": available_ttm,
+                "financial_period_count": len(rows_by_period),
+                "financial_report_date": current_period.isoformat(),
+                "financial_disclosed_at": latest["disclosed_at"].isoformat(),
+                "ttm_formula": "current_period + prior_year_full_year - prior_year_same_period",
+            }
         return output
 
     async def _shareholder_snapshot(self, codes: set[str], as_of: date) -> dict[str, dict]:

@@ -1,5 +1,6 @@
 {
   "version": 1,
   "scan": {},
-  "backtest": {}
+  "backtest": {},
+  "fqe": {}
 }

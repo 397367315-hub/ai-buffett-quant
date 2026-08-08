@@ -87,6 +87,13 @@ class ScanRequest(BaseModel):
     force: bool = False
 
 
+class FQERequest(BaseModel):
+    top_n: int = Field(default=10, ge=5, le=15)
+    candidate_pool: int = Field(default=60, ge=20, le=120)
+    mode: Literal["strict", "pragmatic"] = "pragmatic"
+    force: bool = False
+
+
 class BacktestRequest(BaseModel):
     start_date: date = Field(default_factory=lambda: date.today() - timedelta(days=365))
     end_date: date = Field(default_factory=date.today)

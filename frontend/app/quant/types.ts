@@ -146,6 +146,88 @@ export interface BackgroundJob {
   result?: Record<string, unknown> | null;
 }
 
+export interface FQEHolding {
+  code: string;
+  name: string;
+  industry: string;
+  score?: number;
+  peg?: number;
+  roe_ttm?: number;
+  ocf_to_profit_ttm?: number;
+  debt_ratio?: number;
+  market_cap_yi?: number;
+  pe_ttm?: number;
+  alpha_raw?: number;
+  alpha_neutral?: number;
+  weight: number;
+  weight_pct: number;
+  engine_type: 'Retail_Light' | 'Institutional_Heavy';
+  financial_disclosed_at?: string | null;
+  data_warnings?: string[];
+}
+
+export interface FQEPortfolio {
+  engine_type: 'Retail_Light' | 'Institutional_Heavy';
+  label: string;
+  count: number;
+  holdings: FQEHolding[];
+  eligible_count: number;
+  candidate_pool_count?: number;
+  rejection_counts?: Array<[string, number]>;
+  excluded_examples?: Array<{ code: string; name: string; reasons: string[] }>;
+  warnings: string[];
+  method: string;
+  data_quality: {
+    status: 'ready' | 'research_only' | 'insufficient' | string;
+    auditable: boolean;
+    mode?: string;
+    notes?: string[];
+  };
+  optimizer?: {
+    gamma: number;
+    lower_weight: number;
+    upper_weight: number;
+    industry_cap: number;
+    constraint_audit: {
+      weight_sum: number;
+      min_weight: number;
+      max_weight: number;
+      max_industry_weight: number;
+      industry_weights: Record<string, number>;
+      violations: string[];
+    };
+  };
+  covariance?: {
+    available: boolean;
+    usable_days?: number;
+    stock_count?: number;
+    warning?: string | null;
+  };
+}
+
+export interface FQEResult {
+  version: number;
+  engine_mode: 'COMPARE_DUAL_ENGINE' | string;
+  generated_at: string;
+  as_of_date: string;
+  data_date?: string | null;
+  source: string;
+  is_realtime: boolean;
+  cache_used: boolean;
+  retail_portfolio: FQEPortfolio;
+  institutional_portfolio: FQEPortfolio;
+  data_contract: Record<string, {
+    status: string;
+    covered?: number;
+    total?: number;
+    note?: string;
+    formula?: string;
+  }>;
+  feature_coverage?: Record<string, unknown>;
+  warnings: string[];
+  disclaimer: string;
+}
+
 export interface BacktestTrade {
   date: string;
   signal_date: string;

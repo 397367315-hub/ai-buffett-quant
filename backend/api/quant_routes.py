@@ -19,6 +19,7 @@ from quant.rules import public_rule_catalog
 from quant.schemas import (
     BacktestRequest,
     CompareRequest,
+    FQERequest,
     PaperBuyRequest,
     PaperResetRequest,
     PaperSellRequest,
@@ -34,6 +35,7 @@ from services.data_collector import collector
 from database import async_session
 from services.quote_cache import quote_snapshot_service
 from services.overnight_strategy import overnight_strategy_service
+from services.fqe_engine import fqe_compare_service
 
 
 router = APIRouter(prefix="/api/v1/quant", tags=["量化策略"])
@@ -177,6 +179,34 @@ async def get_scan_status(job_id: str):
     if job is None:
         raise HTTPException(status_code=404, detail="扫描任务不存在")
     return {"code": 0, "data": job}
+
+
+@router.post("/fqe/compare", status_code=status.HTTP_202_ACCEPTED)
+async def start_fqe_compare(payload: FQERequest):
+    """Start the auditable fundamental dual-engine comparison."""
+    try:
+        job = await fqe_compare_service.start(
+            top_n=payload.top_n,
+            candidate_pool=payload.candidate_pool,
+            mode=payload.mode,
+            force=payload.force,
+        )
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    return {"code": 0, "data": job}
+
+
+@router.get("/fqe/status/{job_id}")
+async def get_fqe_status(job_id: str):
+    job = fqe_compare_service.get_status(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="FQE任务不存在")
+    return {"code": 0, "data": job}
+
+
+@router.get("/fqe/latest")
+async def get_latest_fqe():
+    return {"code": 0, "data": fqe_compare_service.get_latest()}
 
 
 @router.get("/signals")
