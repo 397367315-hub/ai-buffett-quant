@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import httpx
 from sqlalchemy import delete, func, select, update
@@ -27,7 +28,15 @@ from models import (
     NorthboundDealDaily,
     StockDailyBar,
 )
-from services.data_collector import as_int, collector, normalize_stock_code, shanghai_now
+from services.data_collector import (
+    as_int,
+    as_optional_float,
+    collector,
+    normalize_board_code,
+    normalize_stock_code,
+    shanghai_now,
+)
+from services.ftshare_mcp import FTShareMCPError, ftshare_mcp_client
 
 
 def _parse_date(value: str) -> date:
@@ -37,6 +46,17 @@ def _parse_date(value: str) -> date:
 def _chunks(items: list, size: int) -> Iterable[list]:
     for start in range(0, len(items), size):
         yield items[start:start + size]
+
+
+def _ftshare_yi_to_yuan(value: object) -> int | None:
+    """Normalize FTShare sector-flow amounts, which are returned in 亿元."""
+    if value in (None, "", "-"):
+        return None
+    try:
+        amount = Decimal(str(value)) * Decimal("100000000")
+        return int(amount.to_integral_value(rounding=ROUND_HALF_UP))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 class HistoryCacheService:
@@ -281,6 +301,16 @@ class HistoryCacheService:
                 warnings.append("板块资金流上游仅返回当日快照，未将其标记为一年历史")
             elif board_history_issue == "request_failed":
                 warnings.append("板块资金流历史上游请求失败，已保留当日完整快照")
+            elif board_history_issue and board_history_issue.startswith("ftshare_partial:"):
+                available_from = board_history_issue.partition(":")[2]
+                warnings.append(
+                    f"FTShare板块资金流可核验历史最早为 {available_from}，上游未提供更早记录"
+                )
+            elif board_history_issue and board_history_issue.startswith("ftshare_partial_failed:"):
+                available_from = board_history_issue.partition(":")[2]
+                warnings.append(
+                    f"FTShare板块资金流已补到 {available_from}，但部分板块类型请求失败且更早记录不可用"
+                )
             elif board_failures:
                 warnings.append(f"板块资金流历史未完成 {board_failures} 个")
             if not north_written:
@@ -359,19 +389,25 @@ class HistoryCacheService:
         probe_type, probe_board = board_jobs[probe_index]
         _, probe_payload, probe_error = await fetch_one(probe_type, probe_board)
         if probe_error:
+            fallback_written, fallback_issue = await self._backfill_boards_from_ftshare(days)
             await self._set_run(
                 run_id,
                 completed_tasks=completed_offset + len(board_jobs),
-                records_written=initial_records_written,
+                records_written=initial_records_written + fallback_written,
             )
-            return 0, len(board_jobs), "request_failed"
+            if fallback_issue != "request_failed":
+                return fallback_written, 0, fallback_issue
+            return fallback_written, len(board_jobs), "request_failed"
         if not self._board_history_covers_window(probe_payload, days):
+            fallback_written, fallback_issue = await self._backfill_boards_from_ftshare(days)
             await self._set_run(
                 run_id,
                 completed_tasks=completed_offset + len(board_jobs),
-                records_written=initial_records_written,
+                records_written=initial_records_written + fallback_written,
             )
-            return 0, 0, "snapshot_only"
+            if fallback_issue != "request_failed":
+                return fallback_written, 0, fallback_issue
+            return fallback_written, 0, "snapshot_only"
 
         prefetched = {(probe_type, str(probe_board.get("code"))): probe_payload}
 
@@ -423,6 +459,93 @@ class HistoryCacheService:
                 records_written=initial_records_written + written,
             )
         return written, failures, None
+
+    async def _earliest_board_date(self, model) -> date | None:
+        async def read_date():
+            async with async_session() as session:
+                return (await session.execute(select(func.min(model.trade_date)))).scalar_one()
+
+        return await self._with_database_retry(read_date)
+
+    async def _backfill_boards_from_ftshare(self, days: int) -> tuple[int, str | None]:
+        """Fill the verified prefix missing before the local board cache.
+
+        The public FTShare dataset currently starts later than a full year.
+        Keeping the original requested boundary makes that limitation visible
+        while avoiding repeated downloads of dates already held locally.
+        """
+        if not ftshare_mcp_client._enabled():
+            return 0, "request_failed"
+
+        target_end = shanghai_now().date()
+        target_start = target_end - timedelta(days=max(int(days), 1))
+        datasets = (
+            ("concept", ConceptFundFlowDaily),
+            ("industry", IndustryFundFlowDaily),
+        )
+        written = 0
+        attempted_requests = 0
+        failed_requests = 0
+
+        for board_type, model in datasets:
+            earliest = await self._earliest_board_date(model)
+            fetch_end = min(target_end, earliest - timedelta(days=1)) if earliest else target_end
+            if fetch_end < target_start:
+                continue
+            attempted_requests += 1
+            try:
+                source_rows = await ftshare_mcp_client.get_sector_flow_history(
+                    board_type,
+                    target_start.isoformat(),
+                    fetch_end.isoformat(),
+                )
+            except (FTShareMCPError, httpx.HTTPError, OSError, asyncio.TimeoutError) as exc:
+                print(f"FTShare {board_type} flow backfill failed: {type(exc).__name__}")
+                failed_requests += 1
+                continue
+
+            rows: list[dict] = []
+            for item in source_rows:
+                try:
+                    board_code = normalize_board_code(item.get("sector_code"))
+                    trade_date = _parse_date(str(item.get("trade_date") or ""))
+                except (TypeError, ValueError):
+                    continue
+                if trade_date < target_start or trade_date > fetch_end:
+                    continue
+                record = {
+                    "board_code": board_code,
+                    "trade_date": trade_date,
+                    "close_price": None,
+                    "change_pct": None,
+                    "main_net_inflow": _ftshare_yi_to_yuan(item.get("main_net")),
+                    "main_net_inflow_pct": as_optional_float(item.get("main_pct")),
+                    "super_large_net_inflow": _ftshare_yi_to_yuan(item.get("super_large_net")),
+                    "large_net_inflow": _ftshare_yi_to_yuan(item.get("large_net")),
+                    "medium_net_inflow": _ftshare_yi_to_yuan(item.get("medium_net")),
+                    "small_net_inflow": _ftshare_yi_to_yuan(item.get("small_net")),
+                    "up_count": None,
+                    "down_count": None,
+                }
+                if board_type == "concept":
+                    record["leading_stock"] = None
+                rows.append(record)
+            written += await self._upsert(model, rows, ["board_code", "trade_date"])
+
+        if attempted_requests and failed_requests == attempted_requests:
+            return written, "request_failed"
+
+        coverage_dates = [
+            await self._earliest_board_date(ConceptFundFlowDaily),
+            await self._earliest_board_date(IndustryFundFlowDaily),
+        ]
+        if all(coverage_dates):
+            common_start = max(value for value in coverage_dates if value is not None)
+            if common_start > target_start:
+                prefix = "ftshare_partial_failed" if failed_requests else "ftshare_partial"
+                return written, f"{prefix}:{common_start.isoformat()}"
+            return written, None
+        return written, "request_failed"
 
     @staticmethod
     def _board_history_covers_window(payload: dict | None, days: int) -> bool:

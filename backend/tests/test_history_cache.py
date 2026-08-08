@@ -8,7 +8,8 @@ from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy.exc import OperationalError
 
-from services.history_cache import HistoryCacheService, collector, engine
+from services.history_cache import HistoryCacheService, _ftshare_yi_to_yuan, collector, engine
+from services.ftshare_mcp import ftshare_mcp_client
 from services.data_sync import DataSyncService, history_cache
 from models import ConceptFundFlowDaily
 
@@ -39,6 +40,11 @@ class _QueryResult:
 
 
 class HistoryCacheTests(unittest.TestCase):
+    def test_ftshare_sector_amounts_are_normalized_from_yi_to_yuan(self):
+        self.assertEqual(_ftshare_yi_to_yuan("124.3138"), 12_431_380_000)
+        self.assertEqual(_ftshare_yi_to_yuan("-0.1529"), -15_290_000)
+        self.assertIsNone(_ftshare_yi_to_yuan("-"))
+
     def test_postgres_stock_bar_batch_stays_below_asyncpg_bind_limit(self):
         row = {
             "stock_code": "600519",
@@ -305,6 +311,56 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
         row = captured["industry_fund_flow_daily"][0]
         self.assertNotIn("leading_stock", row)
         self.assertEqual(row["board_code"], "BK0475")
+
+    async def test_ftshare_backfill_fills_only_the_missing_verified_prefix(self):
+        service = HistoryCacheService()
+        captured: dict[str, list[dict]] = {}
+
+        async def capture_upsert(model, rows, keys):
+            del keys
+            captured[model.__tablename__] = rows
+            return len(rows)
+
+        async def sector_history(board_type, start_date, end_date):
+            self.assertEqual(start_date, "2025-08-08")
+            self.assertEqual(end_date, "2026-07-29")
+            return [{
+                "sector_code": "BK0001" if board_type == "concept" else "BK0002",
+                "trade_date": "2026-01-12",
+                "main_net": "2.5",
+                "main_pct": "1.2",
+                "super_large_net": "1.5",
+                "large_net": "1.0",
+                "medium_net": "-0.5",
+                "small_net": "-2.0",
+            }]
+
+        service._upsert = capture_upsert
+        service._earliest_board_date = AsyncMock(side_effect=[
+            date(2026, 7, 30),
+            date(2026, 7, 30),
+            date(2026, 1, 12),
+            date(2026, 1, 12),
+        ])
+        with (
+            patch.object(ftshare_mcp_client, "_enabled", return_value=True),
+            patch.object(
+                ftshare_mcp_client,
+                "get_sector_flow_history",
+                new=AsyncMock(side_effect=sector_history),
+            ),
+            patch("services.history_cache.shanghai_now", return_value=datetime(2026, 8, 8)),
+        ):
+            written, issue = await service._backfill_boards_from_ftshare(365)
+
+        self.assertEqual(written, 2)
+        self.assertEqual(issue, "ftshare_partial:2026-01-12")
+        concept = captured["concept_fund_flow_daily"][0]
+        industry = captured["industry_fund_flow_daily"][0]
+        self.assertEqual(concept["main_net_inflow"], 250_000_000)
+        self.assertEqual(industry["small_net_inflow"], -200_000_000)
+        self.assertIn("leading_stock", concept)
+        self.assertNotIn("leading_stock", industry)
 
     async def test_board_backfill_retries_transient_network_failure(self):
         service = HistoryCacheService()

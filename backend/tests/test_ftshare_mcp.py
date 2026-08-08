@@ -1,7 +1,7 @@
 import asyncio
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -66,3 +66,89 @@ class FTShareMCPClientTests(unittest.TestCase):
         self.assertEqual(received["body"]["headers"]["Mcp-Session-Id"], "upstream-session")
         self.assertEqual(message["result"], {"ok": True})
         self.assertEqual(headers.get("Mcp-Session-Id"), "proxy-session")
+
+    def test_paginated_tool_reads_every_non_truncated_page(self):
+        requested_pages = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            method = payload.get("method")
+            if method == "initialize":
+                return httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"protocolVersion": "2025-03-26"},
+                    },
+                    headers={"Mcp-Session-Id": "history-session"},
+                )
+            if method == "notifications/initialized":
+                return httpx.Response(202)
+
+            page = payload["params"]["arguments"]["page"]
+            requested_pages.append(page)
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": page + 1,
+                    "result": {
+                        "structuredContent": {
+                            "data": [{"page": page}],
+                            "metadata": {
+                                "pagination": {"pages": 3},
+                                "truncated": False,
+                            },
+                        },
+                    },
+                },
+            )
+
+        original_async_client = httpx.AsyncClient
+
+        def client_factory(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return original_async_client(*args, **kwargs)
+
+        async def run():
+            return await FTShareMCPClient().call_paginated_tool(
+                "ft_get_eastmoney_sector_flow",
+                {"sector_type": "industry"},
+                page_size=2,
+                concurrency=2,
+            )
+
+        with (
+            patch("services.ftshare_mcp.settings.ftshare_mcp_enabled", True),
+            patch("services.ftshare_mcp.settings.data_proxy_base_url", ""),
+            patch("services.ftshare_mcp.httpx.AsyncClient", side_effect=client_factory),
+        ):
+            result = asyncio.run(run())
+
+        self.assertEqual(sorted(requested_pages), [1, 2, 3])
+        self.assertEqual(sorted(item["page"] for item in result["data"]), [1, 2, 3])
+        self.assertEqual(result["metadata"]["returned"], 3)
+
+    def test_sector_history_uses_verified_iso_date_contract(self):
+        client = FTShareMCPClient()
+        client.call_paginated_tool = AsyncMock(return_value={
+            "data": [{"sector_code": "BK0475"}],
+            "metadata": {},
+        })
+
+        rows = asyncio.run(client.get_sector_flow_history(
+            "industry",
+            "2025-08-08",
+            "2026-08-08",
+        ))
+
+        self.assertEqual(rows, [{"sector_code": "BK0475"}])
+        client.call_paginated_tool.assert_awaited_once_with(
+            "ft_get_eastmoney_sector_flow",
+            {
+                "sector_type": "industry",
+                "start_date": "2025-08-08",
+                "end_date": "2026-08-08",
+            },
+        )

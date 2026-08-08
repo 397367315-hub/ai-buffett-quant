@@ -269,8 +269,8 @@ export default function DragonBoardPage() {
                 </div>
                 {(analysis.ai_narrative || analysis.analysis.suggestions.length > 0 || analysis.analysis.risks.length > 0) && (
                   <div className="grid gap-4 mt-4 border-t border-border pt-4 lg:grid-cols-2">
-                    <div className="text-xs leading-6 text-text-secondary whitespace-pre-line">{analysis.ai_narrative || analysis.analysis.suggestions.join('\n')}</div>
-                    <div className="text-xs leading-6 text-text-secondary">{analysis.analysis.risks.length ? analysis.analysis.risks.join('\n') : '未识别到额外周期风险；仍需结合公告、量价位置和后续承接。'}</div>
+                    <NarrativeText text={analysis.ai_narrative || analysis.analysis.suggestions.join('\n')} />
+                    <NarrativeText text={analysis.analysis.risks.length ? analysis.analysis.risks.join('\n') : '未识别到额外周期风险；仍需结合公告、量价位置和后续承接。'} />
                   </div>
                 )}
               </div>
@@ -344,6 +344,28 @@ function RankList({ title, rows }: { title: string; rows: RankedStock[] }) {
         ))}
         {!rows.length && <div className="text-xs text-text-secondary">暂无符合项</div>}
       </div>
+    </div>
+  );
+}
+
+function NarrativeText({ text }: { text: string }) {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  return (
+    <div className="space-y-1.5 text-xs leading-6 text-text-secondary">
+      {lines.map((line, index) => {
+        const heading = line.match(/^#{1,6}\s+(.+)$/);
+        const bullet = line.match(/^(?:[-*]|\d+[.)])\s+(.+)$/);
+        const value = (heading?.[1] || bullet?.[1] || line)
+          .replace(/\*\*(.*?)\*\*/g, '$1')
+          .replace(/`([^`]+)`/g, '$1');
+        if (heading) {
+          return <div key={`${index}-${line}`} className="pt-1 font-semibold text-text">{value}</div>;
+        }
+        if (bullet) {
+          return <div key={`${index}-${line}`} className="grid grid-cols-[6px_1fr] gap-2"><span className="mt-[10px] h-1 w-1 rounded-full bg-accent" /><span>{value}</span></div>;
+        }
+        return <p key={`${index}-${line}`}>{value}</p>;
+      })}
     </div>
   );
 }

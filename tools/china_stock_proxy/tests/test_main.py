@@ -58,7 +58,10 @@ class ProxyRequestTests(unittest.IsolatedAsyncioTestCase):
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": {"name": "ft_stock_filter", "arguments": {"page": 1}},
+                "params": {
+                    "name": "ft_get_eastmoney_sector_flow",
+                    "arguments": {"sector_type": "industry", "page": 1},
+                },
             },
             headers={"Mcp-Session-Id": "caller-session"},
         )

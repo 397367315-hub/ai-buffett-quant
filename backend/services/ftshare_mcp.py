@@ -6,6 +6,7 @@ client here avoids adding an MCP runtime dependency to the production API.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -81,13 +82,13 @@ class FTShareMCPClient:
             return str(error.get("message") or error.get("code") or "unknown MCP error")
         return None
 
-    async def _post(
+    async def _send(
         self,
         client: httpx.AsyncClient,
         url: str,
         payload: dict[str, Any],
         headers: dict[str, str],
-    ) -> tuple[dict[str, Any], httpx.Headers]:
+    ) -> httpx.Response:
         proxy_url = self._proxy_url()
         if proxy_url:
             proxy_headers: dict[str, str] = {}
@@ -101,6 +102,16 @@ class FTShareMCPClient:
         else:
             response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
+        return response
+
+    async def _post(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> tuple[dict[str, Any], httpx.Headers]:
+        response = await self._send(client, url, payload, headers)
         message = self._parse_rpc_response(response.text)
         error = self._rpc_error(message)
         if error:
@@ -145,8 +156,7 @@ class FTShareMCPClient:
                 "MCP-Protocol-Version": protocol_version,
             }
             notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-            notification_response = await client.post(url, json=notification, headers=session_headers)
-            notification_response.raise_for_status()
+            await self._send(client, url, notification, session_headers)
             called, _ = await self._post(
                 client,
                 url,
@@ -159,6 +169,10 @@ class FTShareMCPClient:
                 session_headers,
             )
 
+        return self._extract_tool_result(called, name)
+
+    @staticmethod
+    def _extract_tool_result(called: dict[str, Any], name: str) -> dict[str, Any]:
         result = called.get("result")
         if not isinstance(result, dict):
             raise FTShareMCPError("FTShare MCP tool response is missing a result")
@@ -176,6 +190,118 @@ class FTShareMCPClient:
                 if isinstance(parsed, dict):
                     return parsed
         raise FTShareMCPError(f"FTShare MCP tool {name} returned no structured data")
+
+    async def call_paginated_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        page_size: int = 90,
+        concurrency: int = 4,
+        max_pages: int = 2_000,
+    ) -> dict[str, Any]:
+        """Read every page in one bounded MCP session.
+
+        FTShare truncates large tool responses by serialized size. A page size
+        below that limit keeps every row while a small amount of concurrency
+        makes historical backfills practical on Render.
+        """
+        if not self._enabled():
+            raise FTShareMCPError("FTShare MCP fallback is disabled")
+
+        normalized_page_size = min(max(int(page_size), 1), 90)
+        normalized_concurrency = min(max(int(concurrency), 1), 6)
+        url = self._url()
+        common_headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+        initialize_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": self._DEFAULT_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "ai-buffett-backend", "version": "1.0"},
+            },
+        }
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self._timeout()), follow_redirects=True) as client:
+            initialized, response_headers = await self._post(client, url, initialize_payload, common_headers)
+            session_id = response_headers.get("Mcp-Session-Id")
+            if not session_id:
+                raise FTShareMCPError("FTShare MCP did not return a session ID")
+
+            initialize_result = initialized.get("result")
+            protocol_version = (
+                str(initialize_result.get("protocolVersion") or self._DEFAULT_PROTOCOL_VERSION)
+                if isinstance(initialize_result, dict)
+                else self._DEFAULT_PROTOCOL_VERSION
+            )
+            session_headers = {
+                **common_headers,
+                "Mcp-Session-Id": session_id,
+                "MCP-Protocol-Version": protocol_version,
+            }
+            notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+            await self._send(client, url, notification, session_headers)
+
+            async def fetch_page(page: int) -> dict[str, Any]:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": page + 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": name,
+                        "arguments": {
+                            **arguments,
+                            "page": page,
+                            "page_size": normalized_page_size,
+                        },
+                    },
+                }
+                last_error: Exception | None = None
+                for attempt in range(3):
+                    try:
+                        called, _ = await self._post(client, url, payload, session_headers)
+                        result = self._extract_tool_result(called, name)
+                        metadata = result.get("metadata") if isinstance(result, dict) else None
+                        if isinstance(metadata, dict) and metadata.get("truncated"):
+                            raise FTShareMCPError(f"FTShare MCP tool {name} truncated page {page}")
+                        return result
+                    except (httpx.HTTPError, FTShareMCPError) as exc:
+                        last_error = exc
+                        if attempt < 2:
+                            await asyncio.sleep(0.35 * (attempt + 1))
+                raise FTShareMCPError(f"FTShare MCP tool {name} failed on page {page}") from last_error
+
+            first = await fetch_page(1)
+            first_metadata = first.get("metadata") if isinstance(first, dict) else {}
+            pagination = first_metadata.get("pagination") if isinstance(first_metadata, dict) else {}
+            try:
+                pages = int(pagination.get("pages") or 0)
+            except (TypeError, ValueError):
+                pages = 0
+            if pages > max_pages:
+                raise FTShareMCPError(f"FTShare MCP tool {name} exceeded the page safety limit")
+
+            rows = list(first.get("data") or [])
+            for start in range(2, pages + 1, normalized_concurrency):
+                batch = await asyncio.gather(
+                    *(fetch_page(page) for page in range(start, min(start + normalized_concurrency, pages + 1)))
+                )
+                for result in batch:
+                    rows.extend(result.get("data") or [])
+
+        return {
+            "data": [item for item in rows if isinstance(item, dict)],
+            "metadata": {
+                **(first_metadata if isinstance(first_metadata, dict) else {}),
+                "returned": len(rows),
+                "truncated": False,
+            },
+        }
 
     @classmethod
     def stock_symbol(cls, stock_code: str) -> str:
@@ -217,6 +343,28 @@ class FTShareMCPClient:
         result = await self.call_tool(
             "ft_stock_filter",
             {"page": 1, "page_size": min(max(int(page_size), 50), 500)},
+        )
+        data = result.get("data")
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+    async def get_sector_flow_history(
+        self,
+        sector_type: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, Any]]:
+        normalized_type = str(sector_type or "").strip().lower()
+        if normalized_type not in {"industry", "concept"}:
+            raise FTShareMCPError("FTShare sector flow requires industry or concept")
+        result = await self.call_paginated_tool(
+            "ft_get_eastmoney_sector_flow",
+            {
+                "sector_type": normalized_type,
+                # The live service accepts ISO dates even though an older
+                # public document still describes compact YYYYMMDD values.
+                "start_date": str(start_date),
+                "end_date": str(end_date),
+            },
         )
         data = result.get("data")
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
