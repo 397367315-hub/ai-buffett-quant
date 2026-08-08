@@ -162,6 +162,19 @@ def _normalize_market_overview_payload(payload: dict) -> dict:
     }
 
 
+def _cached_market_overview_payload(payload: dict) -> dict:
+    """Annotate a verified snapshot without implying it is a live quote."""
+    cached = _normalize_market_overview_payload(payload)
+    cached.update({
+        "update_time": shanghai_now().isoformat(),
+        "available": True,
+        "source": "cache",
+        "is_realtime": False,
+        "cache_used": True,
+    })
+    return cached
+
+
 def _flow_ranking(item: dict, rank: int) -> dict:
     return {
         "rank": rank,
@@ -1469,6 +1482,16 @@ async def get_stock_selection_run(run_id: int):
 @router.get("/market/overview")
 async def get_market_overview():
     """今日速览：聚合所有看板的核心数据（小白友好首页）"""
+    cache_key = "market_overview_v1"
+    # During evenings, weekends, and holidays the live endpoints can spend
+    # several seconds timing out even though the last verified snapshot is
+    # already available. Return that snapshot first; scheduled cache jobs keep
+    # it current and live sessions still use the source-backed path below.
+    if not is_a_share_market_session(shanghai_now()):
+        cached = await _read_json_snapshot(cache_key)
+        if cached:
+            return {"code": 0, "data": _cached_market_overview_payload(cached)}
+
     north, concept_inflow, concept_outflow, limit_up, limit_down, breadth, turnover = await asyncio.gather(
         _fetch_market_component("northbound", collector.fetch_north_bound_daily(days=5), []),
         _fetch_market_component("concept-inflow", collector.fetch_concept_flow(page_size=20), []),
@@ -1531,7 +1554,6 @@ async def get_market_overview():
             **_quote_metadata(available=available, data_date=data_date if available else None),
         }),
     }
-    cache_key = "market_overview_v1"
     source_status = response["data"]["source_status"]
     turnover_complete = all(
         key in turnover
@@ -1547,15 +1569,7 @@ async def get_market_overview():
         return response
     cached = await _read_json_snapshot(cache_key)
     if cached:
-        cached = _normalize_market_overview_payload(cached)
-        cached.update({
-            "update_time": shanghai_now().isoformat(),
-            "available": True,
-            "source": "cache",
-            "is_realtime": False,
-            "cache_used": True,
-        })
-        return {"code": 0, "data": cached}
+        return {"code": 0, "data": _cached_market_overview_payload(cached)}
     return response
 
 

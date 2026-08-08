@@ -19,6 +19,28 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"available": False})
 
+    async def test_closed_market_returns_verified_overview_cache_before_live_calls(self):
+        cached = {
+            "market_index": {"sh_index": 3804.69, "sh_change_pct": 0.42},
+            "north_bound": {"latest_deal_amount": 12_000_000_000},
+            "fund_flow": {"top_inflow": [{"name": "缓存板块", "inflow": 100}]},
+            "limit_board": {"limit_up": 10, "limit_down": 3},
+            "hot_sectors": [],
+            "data_date": "2026-08-07",
+        }
+
+        with (
+            patch.object(routes, "shanghai_now", return_value=datetime(2026, 8, 8, 10, 0)),
+            patch.object(routes, "_read_json_snapshot", new=AsyncMock(return_value=cached)) as read_snapshot,
+            patch.object(routes.collector, "fetch_market_turnover", new=AsyncMock(side_effect=AssertionError("live call should not run"))),
+        ):
+            response = await routes.get_market_overview()
+
+        self.assertEqual(response["data"]["source"], "cache")
+        self.assertFalse(response["data"]["is_realtime"])
+        self.assertEqual(response["data"]["data_date"], "2026-08-07")
+        read_snapshot.assert_awaited_once_with("market_overview_v1")
+
     async def test_overview_uses_the_actual_lowest_flow_ranking(self):
         async def fetch_concept_flow(*, sort_order=0, **kwargs):
             del kwargs

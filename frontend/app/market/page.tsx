@@ -125,8 +125,10 @@ export default function MarketOverviewPage() {
   const [cacheStats, setCacheStats] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [isEmpty, setIsEmpty] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(8);
 
   const fetchOverview = useCallback(async () => {
+    setLoadProgress(8);
     try {
       const res = await apiFetch<OverviewResponse>('/market/overview');
       if (res.code === 0 && res.data) {
@@ -139,6 +141,7 @@ export default function MarketOverviewPage() {
         setData(null);
         setIsEmpty(true);
       }
+      setLoadProgress(100);
     } catch (err) {
       setError('数据加载失败，请检查网络连接后重试');
       setData(null);
@@ -153,6 +156,14 @@ export default function MarketOverviewPage() {
     const interval = setInterval(fetchOverview, 60000);
     return () => clearInterval(interval);
   }, [fetchOverview]);
+
+  useEffect(() => {
+    if (!loading) return undefined;
+    const timer = window.setInterval(() => {
+      setLoadProgress((value) => Math.min(88, value + 6));
+    }, 450);
+    return () => window.clearInterval(timer);
+  }, [loading]);
 
   const fetchCacheStats = async () => {
     try {
@@ -178,6 +189,10 @@ export default function MarketOverviewPage() {
           <Loader2 size={32} className="animate-spin mx-auto mb-3 text-accent" />
           <div className="text-base">正在读取市场行情...</div>
           <div className="text-xs mt-1 text-text-secondary/70">盘中读取实时源，休市读取最近有效缓存</div>
+          <div className="w-56 max-w-full h-1.5 mx-auto mt-4 bg-[#21262D] rounded-full overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={loadProgress}>
+            <div className="h-full bg-accent transition-[width] duration-300" style={{ width: `${loadProgress}%` }} />
+          </div>
+          <div className="text-[11px] mt-1.5 font-mono text-text-secondary">{loadProgress}%</div>
         </div>
       </div>
     );
