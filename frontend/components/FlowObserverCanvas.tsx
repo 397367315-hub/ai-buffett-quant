@@ -707,6 +707,7 @@ function drawTimeline(
   width: number,
   progress: number,
   mode: FlowObserverMode,
+  isRealtime: boolean,
   historyDates: string[],
 ): void {
   const liveLabels = width < 500
@@ -758,9 +759,13 @@ function drawTimeline(
   });
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillStyle = mode === 'live' ? OUTFLOW_COLOR : MUTED;
+  ctx.fillStyle = isRealtime ? OUTFLOW_COLOR : MUTED;
   ctx.font = '11px PingFang SC, Microsoft YaHei, sans-serif';
-  ctx.fillText(mode === 'live' ? '盘中实时进度' : '历史日级回放', left, y + 17);
+  ctx.fillText(
+    isRealtime ? '盘中实时进度' : mode === 'history' ? '历史日级回放' : '休市缓存 · 最近交易日收盘',
+    left,
+    y + 17,
+  );
   ctx.restore();
 }
 
@@ -815,11 +820,16 @@ function renderCanvas(
     return null;
   }
 
-  const progress = mode === 'live' ? shanghaiSessionProgress() : clamp(playbackProgress, 0, 1);
+  const isRealtimeSnapshot = data.is_realtime === true;
+  const progress = isRealtimeSnapshot
+    ? shanghaiSessionProgress()
+    : mode === 'history'
+      ? clamp(playbackProgress, 0, 1)
+      : 1;
   const scene = buildScene(width, height, data);
   const sourceLabel = data.source === 'cache' ? '本地缓存' : data.source === 'eastmoney' ? '东方财富' : data.source;
 
-  drawTimeline(ctx, width, progress, mode, historyDates);
+  drawTimeline(ctx, width, progress, mode, isRealtimeSnapshot, historyDates);
   ctx.save();
   ctx.strokeStyle = 'rgba(255,255,255,0.12)';
   ctx.lineWidth = 1;
@@ -834,14 +844,18 @@ function renderCanvas(
   ctx.fillText(`${data.board_label || '板块'}资金迁移`, 24, 124);
   ctx.fillStyle = MUTED;
   ctx.font = '11px PingFang SC, Microsoft YaHei, sans-serif';
-  ctx.fillText(`${sourceLabel} · ${mode === 'live' ? '实时快照' : '日级缓存'}`, 24, 148);
+  ctx.fillText(
+    `${sourceLabel} · ${isRealtimeSnapshot ? '实时快照' : mode === 'history' ? '日级缓存' : '最近收盘快照'}`,
+    24,
+    148,
+  );
   ctx.textAlign = 'right';
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '600 12px JetBrains Mono, SFMono-Regular, monospace';
   ctx.fillText(data.data_date || '--', width - 24, 126);
   ctx.fillStyle = MUTED;
   ctx.font = '11px PingFang SC, Microsoft YaHei, sans-serif';
-  ctx.fillText(mode === 'live' ? '每15秒刷新' : '历史回放', width - 24, 148);
+  ctx.fillText(isRealtimeSnapshot ? '每15秒刷新' : mode === 'history' ? '历史回放' : '已收盘', width - 24, 148);
   ctx.restore();
 
   const leftHeadingX = width * 0.30 + 8;

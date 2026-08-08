@@ -341,8 +341,19 @@ export default function FlowObserverPage() {
     setPlaying(true);
   };
 
-  const statusLabel = mode === 'live' ? '实时' : '历史缓存';
-  const sourceLabel = mode === 'history' ? '本地缓存' : '东方财富实时源';
+  const isRealtimeSnapshot = observer?.is_realtime === true;
+  const statusLabel = observer
+    ? isRealtimeSnapshot
+      ? '实时'
+      : mode === 'history'
+        ? '历史缓存'
+        : '休市缓存'
+    : mode === 'history' ? '历史缓存' : '行情加载中';
+  const sourceLabel = observer
+    ? isRealtimeSnapshot
+      ? observer.source === 'eastmoney' ? '东方财富实时源' : `${observer.source}实时源`
+      : mode === 'history' ? '本地缓存' : '最近有效缓存'
+    : mode === 'history' ? '本地缓存' : '等待数据源';
 
   const summaryCards = [
     {
@@ -384,7 +395,7 @@ export default function FlowObserverPage() {
         </h1>
         <div className="text-right text-xs text-text-secondary">
           <div className="flex items-center justify-end gap-1.5">
-            <span className={`inline-block h-2 w-2 rounded-full ${mode === 'live' ? 'bg-down' : 'bg-accent'}`} />
+            <span className={`inline-block h-2 w-2 rounded-full ${isRealtimeSnapshot ? 'bg-down' : mode === 'history' ? 'bg-accent' : 'bg-warn'}`} />
             {statusLabel} · {sourceLabel}
           </div>
           <div>更新 {formatTime(observer?.updated_at)}</div>
@@ -503,8 +514,8 @@ export default function FlowObserverPage() {
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
-          <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 ${mode === 'live' ? 'border-[#26A69A44] bg-[#26A69A18] text-down' : 'border-[#58A6FF44] bg-[#58A6FF18] text-accent'}`}>
-            {mode === 'live' ? <Zap size={12} /> : <Database size={12} />}
+          <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 ${isRealtimeSnapshot ? 'border-[#26A69A44] bg-[#26A69A18] text-down' : mode === 'history' ? 'border-[#58A6FF44] bg-[#58A6FF18] text-accent' : 'border-[#D2992244] bg-[#D2992218] text-warn'}`}>
+            {isRealtimeSnapshot ? <Zap size={12} /> : <Database size={12} />}
             {statusLabel}
           </span>
           <span className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1">
@@ -518,7 +529,7 @@ export default function FlowObserverPage() {
           {mode === 'live' ? (
             <span className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1">
               <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
-              15 秒自动刷新
+              {isRealtimeSnapshot ? '15 秒自动刷新' : '15 秒自动检查'}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1">
