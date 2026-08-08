@@ -335,10 +335,12 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
                 "small_net": "-2.0",
             }]
 
-        service._upsert = capture_upsert
+        service._insert_missing = capture_upsert
+        service._board_history_profile = AsyncMock(side_effect=[
+            {date(2026, 7, 30): 504},
+            {date(2026, 7, 30): 496},
+        ])
         service._earliest_board_date = AsyncMock(side_effect=[
-            date(2026, 7, 30),
-            date(2026, 7, 30),
             date(2026, 1, 12),
             date(2026, 1, 12),
         ])

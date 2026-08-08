@@ -78,6 +78,8 @@ class HistoryCacheService:
     # retry window to recover a transient DNS resolution failure.
     _DATABASE_OPERATION_ATTEMPTS = 8
     _BOARD_HISTORY_PROBE_CODE = "BK1034"
+    _FTSHARE_MIN_DENSE_BOARDS = {"concept": 300, "industry": 100}
+    _FTSHARE_MIN_DENSE_HISTORY_DAYS = 150
 
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
@@ -133,6 +135,25 @@ class HistoryCacheService:
                     await session.execute(statement)
                 await session.commit()
             return len(rows)
+
+        return await self._with_database_retry(write_rows)
+
+    async def _insert_missing(self, model, rows: list[dict], keys: list[str]) -> int:
+        """Insert fallback rows without replacing richer records already cached."""
+        if not rows:
+            return 0
+
+        async def write_rows():
+            written = 0
+            async with async_session() as session:
+                for batch in _chunks(rows, self._upsert_batch_size(session, rows)):
+                    statement = self._insert_for(session, model).values(batch)
+                    statement = statement.on_conflict_do_nothing(index_elements=keys)
+                    result = await session.execute(statement)
+                    row_count = getattr(result, "rowcount", -1)
+                    written += row_count if isinstance(row_count, int) and row_count >= 0 else len(batch)
+                await session.commit()
+            return written
 
         return await self._with_database_retry(write_rows)
 
@@ -467,12 +488,24 @@ class HistoryCacheService:
 
         return await self._with_database_retry(read_date)
 
+    async def _board_history_profile(self, model, target_start: date) -> dict[date, int]:
+        async def read_profile():
+            async with async_session() as session:
+                rows = (await session.execute(
+                    select(model.trade_date, func.count(func.distinct(model.board_code)))
+                    .where(model.trade_date >= target_start)
+                    .group_by(model.trade_date)
+                )).all()
+            return {trade_date: int(board_count or 0) for trade_date, board_count in rows}
+
+        return await self._with_database_retry(read_profile)
+
     async def _backfill_boards_from_ftshare(self, days: int) -> tuple[int, str | None]:
-        """Fill the verified prefix missing before the local board cache.
+        """Fill sparse verified history before the complete current snapshots.
 
         The public FTShare dataset currently starts later than a full year.
         Keeping the original requested boundary makes that limitation visible
-        while avoiding repeated downloads of dates already held locally.
+        while density checks avoid repeatedly downloading an established cache.
         """
         if not ftshare_mcp_client._enabled():
             return 0, "request_failed"
@@ -488,8 +521,32 @@ class HistoryCacheService:
         failed_requests = 0
 
         for board_type, model in datasets:
-            earliest = await self._earliest_board_date(model)
-            fetch_end = min(target_end, earliest - timedelta(days=1)) if earliest else target_end
+            profile = await self._board_history_profile(model, target_start)
+            minimum_dense_boards = self._FTSHARE_MIN_DENSE_BOARDS[board_type]
+            dense_dates = [
+                trade_date
+                for trade_date, board_count in profile.items()
+                if board_count >= minimum_dense_boards
+            ]
+            dense_cutoff = target_end - timedelta(days=self._FTSHARE_MIN_DENSE_HISTORY_DAYS)
+            if dense_dates and min(dense_dates) <= dense_cutoff:
+                continue
+
+            peak_board_count = max(profile.values(), default=0)
+            complete_snapshot_threshold = max(
+                minimum_dense_boards,
+                int(peak_board_count * 0.9),
+            )
+            complete_snapshot_dates = [
+                trade_date
+                for trade_date, board_count in profile.items()
+                if board_count >= complete_snapshot_threshold
+            ]
+            fetch_end = (
+                min(target_end, min(complete_snapshot_dates) - timedelta(days=1))
+                if complete_snapshot_dates
+                else target_end
+            )
             if fetch_end < target_start:
                 continue
             attempted_requests += 1
@@ -530,7 +587,7 @@ class HistoryCacheService:
                 if board_type == "concept":
                     record["leading_stock"] = None
                 rows.append(record)
-            written += await self._upsert(model, rows, ["board_code", "trade_date"])
+            written += await self._insert_missing(model, rows, ["board_code", "trade_date"])
 
         if attempted_requests and failed_requests == attempted_requests:
             return written, "request_failed"
