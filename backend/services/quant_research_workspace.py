@@ -114,6 +114,11 @@ FACTOR_CATALOG: list[dict[str, Any]] = [
     _factor("auction_volume_ratio", "竞价量比", "竞价/事件", "auction_volume / average_auction_volume", "positive", ["auction_volume"], "09:25", "竞价分钟缓存", "竞价成交确认。", frequency="intraday", blocker="历史竞价分钟数据覆盖不足"),
     _factor("auction_amount_ratio", "竞价金额比", "竞价/事件", "auction_amount / average_amount", "positive", ["auction_amount"], "09:25", "竞价分钟缓存", "资金参与强度确认。", frequency="intraday", blocker="历史竞价分钟数据覆盖不足"),
     _factor("sector_auction_breadth", "板块竞价广度", "竞价/事件", "auction_up_count / sector_member_count", "positive", ["auction_snapshot", "sector_membership"], "09:25", "竞价与历史股票池", "板块共振确认。", frequency="intraday", blocker="历史竞价分钟与历史股票池覆盖不足"),
+    _factor("market_regime_score", "市场状态分", "战略状态机", "weighted(index_vs_MA20, index_vs_MA60, market_breadth, amount_trend)", "contextual", ["index_close", "market_breadth", "market_amount"], "T close", "指数日线与市场快照", "区分战略防御、相持和反攻阶段，不单用当日涨跌判牛熊。", blocker="真实市场宽度和成交额历史分位尚未完整"),
+    _factor("sector_leadership_score", "板块主线强度", "战略状态机", "weighted(sector_relative_return_5d, sector_relative_return_20d, sector_breadth, sector_flow)", "positive", ["sector_flow", "sector_history", "sector_membership"], "T close", "板块资金流与历史成分股", "识别连续强于指数且宽度扩散的主线，避免只追单日热点。", blocker="历史板块成分与上涨比例覆盖不完整"),
+    _factor("crowd_extreme_score", "大众情绪极值", "战略状态机", "weighted(limit_breadth, failed_breakout_rate, turnover_percentile, streak_height)", "contextual", ["limit_pool", "failed_breakout_rate", "market_turnover_percentile"], "T close", "涨跌停与情绪历史快照", "识别情绪从升温到极盛的过程；极值不等于立即反转。", blocker="炸板率、连板高度和历史分位尚未形成完整点时库"),
+    _factor("supply_exhaustion_score", "抛压衰竭确认", "战略状态机", "weighted(pullback_days, volume_contraction, lower_shadow, distance_to_support)", "positive", ["close_price", "volume", "open_price", "high_price", "low_price"], "T close", "A股日线缓存", "将敌疲我打转为缩量回调、支撑距离和承接确认的可证伪条件。"),
+    _factor("breakout_confirmation_score", "突破共振确认", "战略状态机", "weighted(breakout_20d, volume_ratio_5d, close_location, sector_breadth)", "positive", ["high_price", "close_price", "volume", "sector_membership"], "T close", "日线与板块快照", "将敌退我追限定为量价与板块共振后的条件跟随，不追孤立突破。", blocker="历史板块成分宽度不完整"),
 ]
 
 FACTOR_BY_ID = {item["id"]: item for item in FACTOR_CATALOG}
@@ -152,6 +157,25 @@ EXPERIMENT_CATALOG: list[dict[str, Any]] = [
         "factor_ids": ["roe", "revenue_yoy", "peg", "pe_percentile", "debt_ratio"],
         "description": "基本面质量、成长和估值的行业中性研究模板。",
         "blockers": ["历史公告日财务快照尚未形成完整点时库", "历史行业与市值中性数据不足"],
+    },
+    {
+        "id": "mao_five_struggles_v1",
+        "name": "五个斗争智慧状态机研究",
+        "family": "weekly",
+        "cadence": "阶段过滤 + 2至5个交易日",
+        "status": "BLOCKED_DATA",
+        "supported": False,
+        "factor_ids": [
+            "market_regime_score", "sector_leadership_score", "crowd_extreme_score",
+            "supply_exhaustion_score", "breakout_confirmation_score",
+        ],
+        "description": "验证敌疲我打、敌退我追、极盛转衰、游击优于硬扛与限额主线集中五类可证伪假设。",
+        "hypotheses": ["H1 敌疲我打", "H2 敌退我追", "H3 极盛转衰", "H4 游击优于硬扛", "H5 主线集中但不重仓赌博"],
+        "blockers": [
+            "市场宽度、炸板率、连板高度和换手分位的历史点时库不完整",
+            "历史板块成分与板块上涨比例不完整",
+            "未满足样本外、交易成本压力测试和至少8周模拟盘门槛",
+        ],
     },
 ]
 

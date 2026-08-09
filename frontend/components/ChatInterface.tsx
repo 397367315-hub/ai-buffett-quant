@@ -4,19 +4,22 @@ import { useEffect, useRef, useState } from 'react';
 import { Bot, Database, Loader2, Send, Trash2, User } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import { readAuthSession } from '@/lib/authSession';
+import MaoStrategyReportView, { type MaoStrategyReport } from '@/components/MaoStrategyReport';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 const USER_ID = 'web_user';
 const WELCOME = '你好，我是小财。可以问我投资概念，也可以直接问股票代码、近期走势、板块资金、龙虎榜、宏观数据或你的个人股票池。';
 const SUGGESTIONS = ['600519近一个月走势怎样？', '今天哪些板块资金流入？', '最近龙虎榜机构在买什么？', '结合宏观数据分析当前A股'];
 
-type Mode = 'beginner' | 'professional';
+type Mode = 'beginner' | 'professional' | 'mao_strategy';
 
 interface UIMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   sources?: string[];
+  strategyReport?: MaoStrategyReport;
+  progress?: { value: number; label: string };
 }
 
 interface HistoryMessage {
@@ -76,6 +79,20 @@ export default function ChatInterface() {
       const event = JSON.parse(payload);
       if (event.type === 'start') {
         updateLastAssistant((message) => ({ ...message, sources: Array.isArray(event.sources) ? event.sources : [] }));
+      } else if (event.type === 'progress') {
+        updateLastAssistant((message) => ({
+          ...message,
+          progress: {
+            value: Math.max(0, Math.min(100, Number(event.progress) || 0)),
+            label: String(event.label || '正在分析'),
+          },
+        }));
+      } else if (event.type === 'strategy_report' && event.report) {
+        updateLastAssistant((message) => ({
+          ...message,
+          strategyReport: event.report as MaoStrategyReport,
+          sources: Array.isArray(event.sources) ? event.sources : message.sources,
+        }));
       } else if (event.type === 'text') {
         updateLastAssistant((message) => ({ ...message, content: message.content + String(event.content || '') }));
       } else if (event.type === 'error') {
@@ -93,7 +110,13 @@ export default function ChatInterface() {
     setMessages((previous) => [
       ...previous,
       { id: `user-${stamp}`, role: 'user', content: text },
-      { id: `assistant-${stamp}`, role: 'assistant', content: '', sources: [] },
+      {
+        id: `assistant-${stamp}`,
+        role: 'assistant',
+        content: '',
+        sources: [],
+        progress: mode === 'mao_strategy' ? { value: 4, label: '正在建立证据请求' } : undefined,
+      },
     ]);
     setInput('');
     setStreaming(true);
@@ -157,9 +180,9 @@ export default function ChatInterface() {
     <div className="border border-border bg-card rounded-md flex flex-col h-[min(720px,calc(100vh-210px))] min-h-[520px] overflow-hidden">
       <div className="h-12 shrink-0 border-b border-border px-3 flex items-center justify-between gap-3 bg-[#0D1117]">
         <div className="inline-flex h-8 border border-border rounded-md overflow-hidden">
-          {(['beginner', 'professional'] as Mode[]).map((item) => (
+          {(['beginner', 'professional', 'mao_strategy'] as Mode[]).map((item) => (
             <button key={item} type="button" onClick={() => setMode(item)} className={`px-3 text-xs ${mode === item ? 'bg-accent text-white' : 'text-text-secondary hover:text-text'}`}>
-              {item === 'beginner' ? '入门' : '专业'}
+              {item === 'beginner' ? '入门' : item === 'professional' ? '专业' : '战略'}
             </button>
           ))}
         </div>
@@ -175,11 +198,21 @@ export default function ChatInterface() {
           <>
             {messages.map((message, index) => (
               <div key={message.id} className={`flex gap-3 ${message.role === 'user' ? 'justify-end' : ''}`}>
-                {message.role === 'assistant' && <Avatar role="assistant" />}
-                <div className={`max-w-[min(82%,760px)] min-w-0 rounded-md px-3.5 py-3 text-sm leading-7 ${message.role === 'user' ? 'bg-accent text-white' : 'bg-[#161B22] border border-border text-text'}`}>
-                  <div className="whitespace-pre-wrap break-words">{message.content}</div>
-                  {streaming && index === messages.length - 1 && message.role === 'assistant' && !message.content && <Loader2 size={15} className="animate-spin text-accent" />}
-                  {message.role === 'assistant' && Boolean(message.sources?.length) && (
+                {message.role === 'assistant' && !message.strategyReport && <Avatar role="assistant" />}
+                <div className={`${message.strategyReport ? 'w-[min(100%,920px)]' : 'max-w-[min(82%,760px)]'} min-w-0 rounded-md ${message.strategyReport ? '' : 'px-3.5 py-3'} text-sm leading-7 ${message.role === 'user' ? 'bg-accent text-white' : message.strategyReport ? 'text-text' : 'bg-[#161B22] border border-border text-text'}`}>
+                  {message.strategyReport ? <MaoStrategyReportView report={message.strategyReport} /> : <div className="whitespace-pre-wrap break-words">{message.content}</div>}
+                  {streaming && index === messages.length - 1 && message.role === 'assistant' && !message.content && !message.progress && <Loader2 size={15} className="animate-spin text-accent" />}
+                  {streaming && index === messages.length - 1 && message.role === 'assistant' && message.progress && !message.strategyReport && (
+                    <div className="min-w-[240px] py-1">
+                      <div className="flex items-center justify-between gap-3 text-[11px] text-text-secondary">
+                        <span>{message.progress.label}</span><span className="font-mono">{message.progress.value.toFixed(0)}%</span>
+                      </div>
+                      <div className="mt-2 h-1 overflow-hidden rounded-full bg-border">
+                        <div className="h-full bg-accent transition-[width] duration-300" style={{ width: `${message.progress.value}%` }} />
+                      </div>
+                    </div>
+                  )}
+                  {message.role === 'assistant' && !message.strategyReport && Boolean(message.sources?.length) && (
                     <div className="mt-2 pt-2 border-t border-border/70 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-text-secondary">
                       <Database size={11} />{message.sources?.map((source) => <span key={source}>{source}</span>)}
                     </div>
@@ -209,7 +242,7 @@ export default function ChatInterface() {
                 void send();
               }
             }}
-            placeholder="输入股票代码或投资问题"
+            placeholder={mode === 'mao_strategy' ? '输入股票代码或大盘战略研判问题' : '输入股票代码或投资问题'}
             rows={2}
             maxLength={4000}
             className="flex-1 resize-none bg-card border border-border rounded-md px-3 py-2 text-sm leading-6 text-text placeholder:text-text-secondary focus:outline-none focus:border-accent"

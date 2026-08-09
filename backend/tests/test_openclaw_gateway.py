@@ -22,6 +22,7 @@ class OpenClawGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("get_stock_quote", names)
         self.assertIn("run_overnight_strategy", names)
         self.assertIn("add_to_personal_pool", names)
+        self.assertIn("analyze_mao_strategy", names)
 
     async def test_tool_call_is_allowlisted_and_returns_structured_content(self):
         with patch(

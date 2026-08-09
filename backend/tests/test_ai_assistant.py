@@ -76,6 +76,31 @@ class AIAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(context["stocks"]["daily_bars"]["600519"]), 30)
         self.assertEqual(context["stocks"]["daily_bars"]["600519"][-1]["close"], 1434)
 
+    async def test_quote_failure_falls_back_to_labelled_daily_cache(self):
+        async with self.session_factory() as session:
+            session.add(StockDailyBar(
+                stock_code="600519", stock_name="贵州茅台", market="SH",
+                trade_date=date(2026, 8, 7), close_price=1488.0,
+                change_pct=-0.4, volume=9000, amount=13_000_000,
+                source="test_cache",
+            ))
+            await session.commit()
+
+        with patch(
+            "services.ai_assistant.quote_snapshot_service.fetch",
+            new_callable=AsyncMock,
+            side_effect=TimeoutError,
+        ):
+            context = await self.service.build_context("分析600519")
+
+        stock_context = context["stocks"]
+        self.assertEqual(stock_context["quotes"][0]["price"], 1488.0)
+        self.assertEqual(stock_context["quotes"][0]["name"], "贵州茅台")
+        self.assertEqual(stock_context["quote_metadata"]["source"], "database_cache")
+        self.assertEqual(stock_context["quote_metadata"]["data_date"], "2026-08-07")
+        self.assertFalse(stock_context["quote_metadata"]["is_realtime"])
+        self.assertTrue(stock_context["quote_metadata"]["cache_used"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,12 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        market_session_patcher = patch(
+            "services.stock_selection_agents.StockSelectionAgentService._is_market_session",
+            return_value=True,
+        )
+        market_session_patcher.start()
+        self.addCleanup(market_session_patcher.stop)
 
     async def test_pipeline_ranks_source_backed_candidate_and_exposes_agent_trace(self):
         service = StockSelectionAgentService()

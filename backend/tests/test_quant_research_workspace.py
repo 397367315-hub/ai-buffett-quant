@@ -22,9 +22,14 @@ def _dsl() -> dict:
 
 class QuantResearchWorkspaceTests(unittest.TestCase):
     def test_factor_catalog_is_complete_and_registered(self):
-        self.assertEqual(len(FACTOR_CATALOG), 44)
-        self.assertEqual(len({item["id"] for item in FACTOR_CATALOG}), 44)
+        self.assertEqual(len(FACTOR_CATALOG), 49)
+        self.assertEqual(len({item["id"] for item in FACTOR_CATALOG}), 49)
         self.assertTrue(all(item["registered"] for item in FACTOR_CATALOG))
+        factor_ids = {item["id"] for item in FACTOR_CATALOG}
+        self.assertTrue({
+            "market_regime_score", "sector_leadership_score", "crowd_extreme_score",
+            "supply_exhaustion_score", "breakout_confirmation_score",
+        }.issubset(factor_ids))
 
     def test_dsl_accepts_registered_factor_and_rejects_unknown_or_code(self):
         valid = quant_research_workspace.validate_dsl(_dsl())

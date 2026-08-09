@@ -17,6 +17,7 @@ from quant.market_cache import load_quant_market_snapshot
 from services.data_collector import collector, normalize_stock_code
 from services.dragon_board import dragon_board_service
 from services.flow_analysis import flow_analysis_service
+from services.mao_strategy_agent import mao_strategy_agent
 from services.macro_dashboard import macro_dashboard_service
 from services.openclaw_database import query_system_database
 from services.overnight_strategy import overnight_strategy_service
@@ -162,6 +163,22 @@ async def _macro_dashboard(arguments: dict[str, Any]) -> dict[str, Any]:
     return await macro_dashboard_service.dashboard()
 
 
+async def _mao_strategy(arguments: dict[str, Any]) -> dict[str, Any]:
+    message = str(arguments.get("message") or "").strip()
+    stock_code = arguments.get("stock_code") or arguments.get("code")
+    if stock_code:
+        code = normalize_stock_code(stock_code)
+        if not message:
+            message = f"请对{code}做毛选战略研判"
+        elif code not in message:
+            message = f"{message}（标的：{code}）"
+    if not message:
+        message = "请对当前A股市场做毛选战略研判"
+    if len(message) > 4000:
+        raise ValueError("message不能超过4000字")
+    return await mao_strategy_agent.analyze(message)
+
+
 async def _data_source_health(arguments: dict[str, Any]) -> dict[str, Any]:
     return await collector.check_data_source()
 
@@ -206,6 +223,18 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "get_macro_dashboard",
         "description": "读取国际经济、国内政策、A股行情和可解释综合方向分析。",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "analyze_mao_strategy",
+        "description": "按主要矛盾、资金阵营、周期阶段、战术红线和闭环复盘分析A股或指定个股；缺数据时只返回观察结论。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "maxLength": 4000},
+                "stock_code": {"type": "string", "description": "可选的六位A股代码"},
+            },
+            "additionalProperties": False,
+        },
     },
     {
         "name": "analyze_fund_flow",
@@ -287,6 +316,7 @@ HANDLERS: dict[str, ToolHandler] = {
     "run_smart_stock_selection": _smart_selection,
     "run_technical_screen": _technical_screen,
     "get_macro_dashboard": _macro_dashboard,
+    "analyze_mao_strategy": _mao_strategy,
     "analyze_fund_flow": _flow_analysis,
     "analyze_dragon_board": _dragon_analysis,
     "get_overnight_dashboard": _overnight_dashboard,
@@ -305,7 +335,7 @@ class OpenClawGateway:
     def manifest() -> dict[str, Any]:
         return {
             "name": "ai-buffett-openclaw",
-            "version": "1.1.0",
+            "version": "1.2.0",
             "protocol": "MCP JSON-RPC 2.0 over stateless HTTP",
             "endpoint": "/api/v1/openclaw/mcp",
             "enabled": bool(settings.openclaw_enabled),
@@ -346,7 +376,7 @@ class OpenClawGateway:
                 "result": {
                     "protocolVersion": self.protocol_version,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "ai-buffett-openclaw", "version": "1.1.0"},
+                    "serverInfo": {"name": "ai-buffett-openclaw", "version": "1.2.0"},
                 },
             }
         if method == "ping":

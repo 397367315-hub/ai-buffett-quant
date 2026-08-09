@@ -21,6 +21,7 @@ from config import settings
 from services.ai_service import ai_service
 from services.ai_assistant import MAX_HISTORY_MESSAGES, ai_assistant_service
 from services.ai_prompts import BEGINNER_SYSTEM_PROMPT, PROFESSIONAL_SYSTEM_PROMPT, DAILY_REPORT_PROMPT_TEMPLATE
+from services.mao_strategy_agent import mao_strategy_agent
 from services.stock_selection_agents import (
     VALID_RISK_PROFILES,
     VALID_SELECTION_MODES,
@@ -2017,6 +2018,17 @@ async def get_board_encyclopedia(board_code: str):
 # ── AI 助手接口 ──
 
 
+@router.post("/ai/mao-strategy/analyze")
+async def analyze_mao_strategy(request: dict):
+    message = str(request.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="消息不能为空")
+    if len(message) > 4000:
+        raise HTTPException(status_code=422, detail="单条消息不能超过4000字")
+    report = await mao_strategy_agent.analyze(message)
+    return {"code": 0, "data": report}
+
+
 @router.post("/ai/chat")
 async def ai_chat(request: dict):
     user_id = ai_assistant_service.normalize_user_id(request.get("user_id", "web_user"))
@@ -2026,7 +2038,51 @@ async def ai_chat(request: dict):
     if len(message) > 4000:
         raise HTTPException(status_code=422, detail="单条消息不能超过4000字")
     context = request.get("context") if isinstance(request.get("context"), dict) else {}
-    mode = "beginner" if context.get("mode", "beginner") == "beginner" else "professional"
+    raw_mode = str(context.get("mode") or "beginner").strip().lower()
+    mode_aliases = {"strategy": "mao_strategy", "mao": "mao_strategy"}
+    mode = mode_aliases.get(raw_mode, raw_mode)
+    if mode not in {"beginner", "professional", "mao_strategy"}:
+        mode = "professional"
+
+    if mode == "mao_strategy":
+        async def generate_strategy():
+            yield f"data: {json.dumps({'type': 'start', 'message_id': f'msg_{datetime.now().timestamp()}', 'mode': mode, 'sources': []}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'progress', 'progress': 8, 'label': '正在识别标的与对话上下文'}, ensure_ascii=False)}\n\n"
+            try:
+                history = await ai_assistant_service.history(user_id, MAX_HISTORY_MESSAGES)
+                await ai_assistant_service.save_message(user_id, "user", message, mode)
+            except Exception as exc:
+                print(f"AI strategy history load failed: {type(exc).__name__}")
+                history = []
+            try:
+                yield f"data: {json.dumps({'type': 'progress', 'progress': 22, 'label': '正在读取实时行情与最近有效缓存'}, ensure_ascii=False)}\n\n"
+                report = await mao_strategy_agent.analyze(message)
+                sources = [
+                    str(item.get("name"))
+                    for item in report.get("data_audit", {}).get("sources", [])
+                    if item.get("available") and item.get("name")
+                ]
+                yield f"data: {json.dumps({'type': 'progress', 'progress': 78, 'label': '正在审计主要矛盾、阵营与周期'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'strategy_report', 'report': report, 'sources': sources, 'history_messages': len(history)}, ensure_ascii=False, default=str)}\n\n"
+                content = mao_strategy_agent.render_report(report)
+                yield f"data: {json.dumps({'type': 'text', 'content': content}, ensure_ascii=False)}\n\n"
+                try:
+                    await ai_assistant_service.save_message(user_id, "assistant", content, mode)
+                except Exception as exc:
+                    print(f"AI strategy history save failed: {type(exc).__name__}")
+                yield f"data: {json.dumps({'type': 'progress', 'progress': 100, 'label': '战略报告已完成'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps({'type': 'end', 'content': content}, ensure_ascii=False)}\n\n"
+            except Exception as exc:
+                print(f"Mao strategy analysis failed: {type(exc).__name__}")
+                yield f"data: {json.dumps({'type': 'error', 'content': f'战略研判失败：{type(exc).__name__}'}, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            generate_strategy(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
     is_beginner = mode == "beginner"
     system_prompt = BEGINNER_SYSTEM_PROMPT if is_beginner else PROFESSIONAL_SYSTEM_PROMPT
     try:
