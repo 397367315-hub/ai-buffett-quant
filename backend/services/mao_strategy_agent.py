@@ -207,9 +207,11 @@ class MaoStrategyAgent:
         latest = valid[-1] if valid else {}
 
         def sum_window(window: int) -> float | None:
+            if len(valid) < window:
+                return None
             values = [_number(row.get("main_net_inflow")) for row in valid[-window:]]
             numbers = [value for value in values if value is not None]
-            return sum(numbers) if numbers else None
+            return sum(numbers) if len(numbers) == window else None
 
         latest_main = _number(latest.get("main_net_inflow"))
         flow_5d = sum_window(5)
@@ -217,7 +219,7 @@ class MaoStrategyAgent:
         positive_days = sum(
             1 for row in valid[-5:]
             if (_number(row.get("main_net_inflow")) or 0) > 0
-        )
+        ) if len(valid) >= 5 else None
         score = 0.0
         evidence: list[str] = []
         risks: list[str] = []
@@ -234,7 +236,7 @@ class MaoStrategyAgent:
             "latest_main_net_inflow": latest_main,
             "main_net_inflow_5d": flow_5d,
             "main_net_inflow_10d": flow_10d,
-            "positive_days_5d": positive_days if valid else None,
+            "positive_days_5d": positive_days,
             "history_count": len(valid),
             "score": round(_clamp(score, -100, 100), 1),
             "evidence": evidence,
@@ -368,15 +370,23 @@ class MaoStrategyAgent:
                 "板块资金流": 25, "龙虎榜": 5, "宏观与政策": 20,
             }
         score = sum(weight for name, weight in weights.items() if by_name.get(name, {}).get("available"))
+        missing = [name for name in weights if not by_name.get(name, {}).get("available")]
         if stock_reports:
             minimum_history = min((item["technical"]["history_count"] for item in stock_reports), default=0)
             if minimum_history < 20:
                 score -= 12
             elif minimum_history < 60:
                 score -= 5
+            incomplete_flow = [
+                item["code"]
+                for item in stock_reports
+                if int(item["capital"].get("history_count") or 0) < 5
+            ]
+            if incomplete_flow:
+                score = min(score, 70)
+                missing.extend(f"{code}至少5日主力资金流" for code in incomplete_flow)
         score = round(_clamp(float(score), 0, 100), 1)
         grade = "充分" if score >= 75 else "一般" if score >= 50 else "不足"
-        missing = [name for name in weights if not by_name.get(name, {}).get("available")]
         if stock_reports:
             for item in stock_reports:
                 if item["technical"]["history_count"] < 20:

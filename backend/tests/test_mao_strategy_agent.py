@@ -193,6 +193,24 @@ class MaoStrategyAgentTests(unittest.TestCase):
         self.assertEqual(report["data_audit"]["data_mode"], "cache_or_history")
         self.assertFalse(report["stock_reports"][0]["is_realtime"])
 
+    def test_one_day_fund_flow_is_not_presented_as_a_five_day_signal(self):
+        context = _complete_context()
+        context["stock_fund_flow"]["series"]["600519"] = context["stock_fund_flow"]["series"]["600519"][-1:]
+
+        report = self.service.analyze_context(
+            "600519",
+            context,
+            regime={"regime": "牛市", "bias": "bullish", "confidence": 0.8},
+        )
+
+        capital = report["stock_reports"][0]["capital"]
+        self.assertIsNone(capital["main_net_inflow_5d"])
+        self.assertIsNone(capital["positive_days_5d"])
+        self.assertFalse(any("近5日主力累计" in item for item in capital["evidence"]))
+        self.assertEqual(report["data_audit"]["grade"], "一般")
+        self.assertEqual(report["data_audit"]["score"], 70)
+        self.assertIn("600519至少5日主力资金流", report["data_audit"]["missing"])
+
     def test_text_report_contains_required_structure_and_new_hypotheses(self):
         report = self.service.analyze_context("A股大盘", _complete_context(), regime={"regime": "牛市", "bias": "bullish", "confidence": 0.8})
         rendered = self.service.render_report(report)
