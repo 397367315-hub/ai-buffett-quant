@@ -1,11 +1,12 @@
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import Base
-from models import AIChatHistory, StockDailyBar
+from models import AIChatHistory, StockDailyBar, StockFundFlowDaily
 from services.ai_assistant import AIAssistantService, MAX_HISTORY_MESSAGES
 
 
@@ -133,6 +134,115 @@ class AIAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(context["daily_bars"]["600519"]), 30)
         self.assertTrue(context["history_coverage"]["600519"]["sufficient"])
         self.assertTrue(context["history_coverage"]["600519"]["refresh_attempted"])
+
+    async def test_non_trading_context_backfills_incomplete_fund_flow_history(self):
+        async with self.session_factory() as session:
+            session.add(StockFundFlowDaily(
+                stock_code="600519", stock_name="贵州茅台",
+                trade_date=date(2026, 8, 7), main_net_inflow=100.0,
+            ))
+            await session.commit()
+        history = [{
+            "date": (date(2026, 7, 27) + timedelta(days=index)).isoformat(),
+            "main_net_inflow": float(index + 1),
+        } for index in range(12)]
+
+        with (
+            patch(
+                "services.ai_assistant.shanghai_now",
+                return_value=datetime(2026, 8, 9, 12, tzinfo=ZoneInfo("Asia/Shanghai")),
+            ),
+            patch(
+                "services.ai_assistant.collector.fetch_stock_fund_flow",
+                new=AsyncMock(return_value=history),
+            ) as fetch,
+        ):
+            context = await self.service._stock_flow_context(["600519"])
+
+        fetch.assert_awaited_once_with("600519")
+        self.assertGreaterEqual(len(context["series"]["600519"]), 10)
+        self.assertEqual(context["source"], "eastmoney")
+
+    async def test_non_trading_context_uses_ftshare_when_eastmoney_has_only_latest_day(self):
+        start = date(2026, 7, 27)
+        async with self.session_factory() as session:
+            session.add_all([
+                StockDailyBar(
+                    stock_code="600519", stock_name="贵州茅台", market="SH",
+                    trade_date=start + timedelta(days=index), close_price=1400 + index,
+                    change_pct=0.1, volume=1000, amount=1_000_000, source="test_cache",
+                )
+                for index in range(10)
+            ])
+            session.add(StockFundFlowDaily(
+                stock_code="600519", stock_name="贵州茅台",
+                trade_date=start + timedelta(days=9), main_net_inflow=100.0,
+            ))
+            await session.commit()
+
+        eastmoney_latest = [{
+            "date": (start + timedelta(days=9)).isoformat(),
+            "main_net_inflow": 100,
+        }]
+
+        async def ftshare_day(code: str, trade_date: str):
+            return {
+                "date": trade_date,
+                "main_net_inflow": 200,
+                "super_large_net_inflow": 80,
+                "large_net_inflow": 120,
+                "medium_net_inflow": -40,
+                "small_net_inflow": -160,
+            }
+
+        with (
+            patch(
+                "services.ai_assistant.shanghai_now",
+                return_value=datetime(2026, 8, 9, 12, tzinfo=ZoneInfo("Asia/Shanghai")),
+            ),
+            patch(
+                "services.ai_assistant.collector.fetch_stock_fund_flow",
+                new=AsyncMock(return_value=eastmoney_latest),
+            ),
+            patch(
+                "services.ai_assistant.ftshare_mcp_client.get_stock_capital_flow",
+                new=AsyncMock(side_effect=ftshare_day),
+            ) as ftshare,
+        ):
+            context = await self.service._stock_flow_context(["600519"])
+
+        self.assertEqual(ftshare.await_count, 9)
+        self.assertEqual(len(context["series"]["600519"]), 10)
+        self.assertEqual(context["source"], "eastmoney+ftshare_mcp")
+        self.assertNotIn("600519", context["errors"])
+
+    async def test_non_trading_context_reuses_complete_fund_flow_history(self):
+        async with self.session_factory() as session:
+            session.add_all([
+                StockFundFlowDaily(
+                    stock_code="600519", stock_name="贵州茅台",
+                    trade_date=date(2026, 7, 27) + timedelta(days=index),
+                    main_net_inflow=float(index + 1),
+                )
+                for index in range(12)
+            ])
+            await session.commit()
+
+        with (
+            patch(
+                "services.ai_assistant.shanghai_now",
+                return_value=datetime(2026, 8, 9, 12, tzinfo=ZoneInfo("Asia/Shanghai")),
+            ),
+            patch(
+                "services.ai_assistant.collector.fetch_stock_fund_flow",
+                new_callable=AsyncMock,
+            ) as fetch,
+        ):
+            context = await self.service._stock_flow_context(["600519"])
+
+        fetch.assert_not_awaited()
+        self.assertEqual(len(context["series"]["600519"]), 12)
+        self.assertEqual(context["source"], "database_cache")
 
 
 if __name__ == "__main__":

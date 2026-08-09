@@ -347,6 +347,45 @@ class FTShareMCPClient:
         data = result.get("data")
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
+    async def get_stock_capital_flow(self, stock_code: str, trade_date: str) -> dict[str, Any] | None:
+        compact_date = str(trade_date or "").replace("-", "")
+        if not re.fullmatch(r"\d{8}", compact_date):
+            raise FTShareMCPError("FTShare capital flow requires YYYYMMDD")
+        result = await self.call_tool(
+            "capital_flow",
+            {
+                "type": "stock",
+                "symbol": self.stock_symbol(stock_code),
+                "date": compact_date,
+                "page": 1,
+                "page_size": 5,
+            },
+        )
+        rows = result.get("data")
+        row = next((item for item in rows if isinstance(item, dict)), None) if isinstance(rows, list) else None
+        if row is None:
+            return None
+        returned_code = str(row.get("symbol") or "").split(".", 1)[0]
+        if returned_code and returned_code != str(stock_code):
+            return None
+
+        def amount(key: str) -> int | None:
+            try:
+                return round(float(row[key])) if row.get(key) not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        super_large = amount("net_inflow_extra_large")
+        large = amount("net_inflow_large")
+        return {
+            "date": f"{compact_date[:4]}-{compact_date[4:6]}-{compact_date[6:]}",
+            "main_net_inflow": super_large + large if super_large is not None and large is not None else None,
+            "super_large_net_inflow": super_large,
+            "large_net_inflow": large,
+            "medium_net_inflow": amount("net_inflow_medium"),
+            "small_net_inflow": amount("net_inflow_small"),
+        }
+
     async def get_full_stock_filter(self) -> list[dict[str, Any]]:
         """Read the complete current A-share directory with listing dates."""
         result = await self.call_paginated_tool(

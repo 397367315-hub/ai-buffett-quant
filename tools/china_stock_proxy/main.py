@@ -49,6 +49,7 @@ FTSHARE_ALLOWED_METHODS = frozenset({
     "tools/call",
 })
 FTSHARE_ALLOWED_TOOLS = frozenset({
+    "capital_flow",
     "daily_ohlc",
     "ft_get_eastmoney_stock_valuation",
     "ft_get_eastmoney_sector_flow",

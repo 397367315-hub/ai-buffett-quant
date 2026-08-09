@@ -31,6 +31,7 @@ from services.data_collector import (
     normalize_stock_code,
     shanghai_now,
 )
+from services.ftshare_mcp import ftshare_mcp_client
 from services.macro_dashboard import macro_dashboard_service
 from services.macro_policy_news import macro_policy_news_collector
 from services.quote_cache import quote_snapshot_service
@@ -394,6 +395,21 @@ class AIAssistantService:
             series.reverse()
         return output
 
+    async def _load_stock_trade_dates(self, codes: list[str], limit: int = 10) -> dict[str, list[str]]:
+        output: dict[str, list[str]] = {code: [] for code in codes}
+        if not codes:
+            return output
+        async with async_session() as session:
+            for code in codes:
+                dates = list((await session.execute(
+                    select(StockDailyBar.trade_date)
+                    .where(StockDailyBar.stock_code == code)
+                    .order_by(desc(StockDailyBar.trade_date))
+                    .limit(limit)
+                )).scalars().all())
+                output[code] = [item.isoformat() for item in dates]
+        return output
+
     async def _persist_stock_flow(self, code: str, rows: list[dict[str, Any]], stock_name: str = "") -> int:
         records = []
         for item in rows:
@@ -439,15 +455,48 @@ class AIAssistantService:
         names = names or {}
         cached = await self._load_stock_flow_cache(codes)
         now = shanghai_now()
-        cached_codes = {code for code, rows in cached.items() if rows}
-        requested_codes = codes if is_a_share_market_session(now) else [code for code in codes if code not in cached_codes]
+        # One cached point is enough for a quote fallback, but not for the
+        # strategy agent's five- and ten-day capital-flow evidence.
+        complete_cached_codes = {code for code, rows in cached.items() if len(rows) >= 10}
+        requested_codes = (
+            codes
+            if is_a_share_market_session(now)
+            else [code for code in codes if code not in complete_cached_codes]
+        )
+        recent_trade_dates = await self._load_stock_trade_dates(requested_codes)
         fetched_codes: set[str] = set()
+        eastmoney_codes: set[str] = set()
+        ftshare_codes: set[str] = set()
         errors: dict[str, str] = {}
         timeout = min(max(float(settings.market_aggregate_timeout), 2.0), 8.0)
+        ftshare_semaphore = asyncio.Semaphore(4)
 
-        async def fetch_one(code: str) -> tuple[str, list[dict[str, Any]]]:
+        async def fetch_ftshare_day(code: str, trade_date: str) -> dict[str, Any] | None:
+            async with ftshare_semaphore:
+                try:
+                    return await asyncio.wait_for(
+                        ftshare_mcp_client.get_stock_capital_flow(code, trade_date),
+                        timeout=12,
+                    )
+                except Exception:
+                    return None
+
+        async def fetch_one(code: str) -> tuple[str, list[dict[str, Any]], bool, bool]:
             rows = await asyncio.wait_for(collector.fetch_stock_fund_flow(code), timeout=timeout)
-            return code, rows
+            known_dates = {
+                str(item.get("date") or "")[:10]
+                for item in [*(cached.get(code) or []), *rows]
+                if item.get("date")
+            }
+            missing_dates = [
+                item for item in recent_trade_dates.get(code) or []
+                if item not in known_dates
+            ][:max(0, 10 - len(known_dates))]
+            supplements = await asyncio.gather(*(
+                fetch_ftshare_day(code, item) for item in missing_dates
+            )) if missing_dates else []
+            verified = [item for item in supplements if isinstance(item, dict)]
+            return code, [*rows, *verified], bool(rows), bool(verified)
 
         if requested_codes:
             results = await asyncio.gather(*(fetch_one(code) for code in requested_codes), return_exceptions=True)
@@ -455,16 +504,23 @@ class AIAssistantService:
                 if isinstance(result, Exception):
                     errors[code] = type(result).__name__
                     continue
-                _, rows = result
+                _, rows, used_eastmoney, used_ftshare = result
                 if not rows:
                     errors[code] = "EmptySource"
                     continue
                 try:
                     await self._persist_stock_flow(code, rows, names.get(code, ""))
                     fetched_codes.add(code)
+                    if used_eastmoney:
+                        eastmoney_codes.add(code)
+                    if used_ftshare:
+                        ftshare_codes.add(code)
                 except Exception as exc:
                     errors[code] = f"CacheWrite:{type(exc).__name__}"
         series = await self._load_stock_flow_cache(codes)
+        for code, rows in series.items():
+            if rows and len(rows) < 10:
+                errors.setdefault(code, "InsufficientHistory")
         latest_dates = [rows[-1]["date"] for rows in series.values() if rows]
         data_date = max(latest_dates, default=None)
         is_realtime = bool(
@@ -474,7 +530,13 @@ class AIAssistantService:
         )
         return {
             "series": series,
-            "source": "eastmoney" if fetched_codes else "database_cache" if latest_dates else "unavailable",
+            "source": (
+                "eastmoney+ftshare_mcp"
+                if ftshare_codes and eastmoney_codes
+                else "ftshare_mcp" if ftshare_codes
+                else "eastmoney" if eastmoney_codes
+                else "database_cache" if latest_dates else "unavailable"
+            ),
             "data_date": data_date,
             "fetched_at": now.isoformat(),
             "is_realtime": is_realtime,

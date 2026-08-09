@@ -171,6 +171,31 @@ class FTShareMCPClientTests(unittest.TestCase):
             max_pages=250,
         )
 
+    def test_stock_capital_flow_maps_ftshare_daily_snapshot(self):
+        client = FTShareMCPClient()
+        client.call_tool = AsyncMock(return_value={
+            "data": [{
+                "net_inflow_extra_large": "-116260.18",
+                "net_inflow_large": "-114211532.40",
+                "net_inflow_medium": "114580351.72",
+                "net_inflow_small": "-252559.14",
+            }],
+            "metadata": {},
+        })
+
+        row = asyncio.run(client.get_stock_capital_flow("600519", "2026-08-07"))
+
+        self.assertEqual(row["date"], "2026-08-07")
+        self.assertEqual(row["main_net_inflow"], -114327792)
+        self.assertEqual(row["large_net_inflow"], -114211532)
+        client.call_tool.assert_awaited_once_with(
+            "capital_flow",
+            {
+                "type": "stock", "symbol": "600519.SH", "date": "20260807",
+                "page": 1, "page_size": 5,
+            },
+        )
+
     def test_valuation_history_uses_exchange_symbol_and_compact_dates(self):
         client = FTShareMCPClient()
         client.call_paginated_tool = AsyncMock(return_value={"data": [{"PE_TTM": 20}], "metadata": {}})
