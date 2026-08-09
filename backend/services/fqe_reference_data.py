@@ -460,25 +460,6 @@ class FQEReferenceDataService:
             "updated_at": datetime.utcnow(),
         }
 
-    async def _infer_master_dates(self, records: list[dict[str, Any]], active: dict[str, bool]) -> None:
-        async with async_session() as session:
-            for record in records:
-                code = record["stock_code"]
-                values: dict[str, Any] = {}
-                master = await session.get(SecurityMaster, code)
-                if master is None:
-                    continue
-                if master.list_date is None and record.get("history_start"):
-                    values["list_date"] = record["history_start"]
-                    values["date_quality"] = "market_history_inferred"
-                if not active.get(code, True) and master.delist_date is None and record.get("history_end"):
-                    values["delist_date"] = record["history_end"]
-                    values["date_quality"] = "market_history_inferred"
-                if values:
-                    values["updated_at"] = datetime.utcnow()
-                    await session.execute(update(SecurityMaster).where(SecurityMaster.stock_code == code).values(**values))
-            await session.commit()
-
     async def _sync_full_valuations(self, run_id: int, years: int, force: bool) -> list[str]:
         end = shanghai_now().date()
         start = end - timedelta(days=365 * years + 10)
@@ -495,7 +476,6 @@ class FQEReferenceDataService:
                     )
                 )).scalars().all())
         pending = [row for row in masters if row.stock_code not in complete_codes]
-        active = {row.stock_code: bool(row.is_currently_listed) for row in masters}
         completed = len(masters) - len(pending)
         failures: list[str] = []
         await self._set_run(
@@ -546,7 +526,6 @@ class FQEReferenceDataService:
                     records.append(result)
             if records:
                 await self._upsert(StockValuationHistory, records, ["stock_code"])
-                await self._infer_master_dates(records, active)
             await self._set_run(
                 run_id,
                 completed_securities=completed,

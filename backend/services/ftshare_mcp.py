@@ -352,9 +352,11 @@ class FTShareMCPClient:
         result = await self.call_paginated_tool(
             "ft_stock_filter",
             {},
-            page_size=60,
+            # The stock-filter rows are wide. FTShare currently truncates a
+            # 40-row page by response size, while 30 rows remain complete.
+            page_size=30,
             concurrency=4,
-            max_pages=200,
+            max_pages=250,
         )
         data = result.get("data")
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []

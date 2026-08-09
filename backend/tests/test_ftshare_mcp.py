@@ -153,6 +153,24 @@ class FTShareMCPClientTests(unittest.TestCase):
             },
         )
 
+    def test_full_stock_filter_uses_a_non_truncating_page_size(self):
+        client = FTShareMCPClient()
+        client.call_paginated_tool = AsyncMock(return_value={
+            "data": [{"symbol": "600519.XSHG", "listing_date": "2001-08-27"}],
+            "metadata": {"truncated": False},
+        })
+
+        rows = asyncio.run(client.get_full_stock_filter())
+
+        self.assertEqual(rows[0]["listing_date"], "2001-08-27")
+        client.call_paginated_tool.assert_awaited_once_with(
+            "ft_stock_filter",
+            {},
+            page_size=30,
+            concurrency=4,
+            max_pages=250,
+        )
+
     def test_valuation_history_uses_exchange_symbol_and_compact_dates(self):
         client = FTShareMCPClient()
         client.call_paginated_tool = AsyncMock(return_value={"data": [{"PE_TTM": 20}], "metadata": {}})
