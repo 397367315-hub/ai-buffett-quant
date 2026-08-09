@@ -24,6 +24,8 @@ from quant.schemas import (
     PaperResetRequest,
     PaperSellRequest,
     PreviewRequest,
+    ResearchDslValidateRequest,
+    ResearchRunRequest,
     ScanRequest,
     StrategyCreate,
     StrategyUpdate,
@@ -36,6 +38,7 @@ from database import async_session
 from services.quote_cache import quote_snapshot_service
 from services.overnight_strategy import overnight_strategy_service
 from services.fqe_engine import fqe_compare_service
+from services.quant_research_workspace import quant_research_workspace
 
 
 router = APIRouter(prefix="/api/v1/quant", tags=["量化策略"])
@@ -217,6 +220,27 @@ async def get_signals(strategy_id: str | None = None):
 @router.get("/signals/history")
 async def get_signal_history(limit: int = Query(20, ge=1, le=100)):
     return {"code": 0, "data": quant_signal_service.get_history(limit)}
+
+
+@router.get("/research/workspace")
+async def get_quant_research_workspace():
+    return {"code": 0, "data": await quant_research_workspace.workspace()}
+
+
+@router.post("/research/run")
+async def run_quant_research(payload: ResearchRunRequest):
+    try:
+        report = await quant_research_workspace.run_experiment(payload.model_dump(mode="json"))
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"研究任务暂时不可用：{type(exc).__name__}") from exc
+    return {"code": 0, "data": report}
+
+
+@router.post("/research/dsl/validate")
+async def validate_quant_research_dsl(payload: ResearchDslValidateRequest):
+    return {"code": 0, "data": quant_research_workspace.validate_dsl(payload.definition)}
 
 
 @router.get("/overnight")

@@ -228,6 +228,156 @@ export interface FQEResult {
   disclaimer: string;
 }
 
+export interface ResearchFactor {
+  id: string;
+  name: string;
+  category: string;
+  version: string;
+  formula: string;
+  direction: string;
+  frequency: string;
+  required_fields: string[];
+  available_at: string;
+  source: string;
+  economic_logic: string;
+  status: string;
+  status_label: string;
+  blocker?: string | null;
+  registered: boolean;
+}
+
+export interface ResearchExperiment {
+  id: string;
+  name: string;
+  family: string;
+  cadence: string;
+  status: string;
+  supported: boolean;
+  factor_ids: string[];
+  factor_names: string[];
+  description: string;
+  blockers: string[];
+}
+
+export interface ResearchDataset {
+  available: boolean;
+  dataset_id: string;
+  source?: string[];
+  date_range?: [string | null, string | null];
+  record_count?: number;
+  stock_count?: number;
+  manifest_hash?: string;
+  error?: string;
+  warnings?: string[];
+  cache_used?: boolean;
+  universe?: {
+    status: string;
+    historical_membership: boolean;
+    note?: string;
+  };
+  point_in_time?: {
+    status: string;
+    observation_time?: string;
+    available_time_field?: string | null;
+    note?: string;
+  };
+}
+
+export interface ResearchPartition {
+  trading_periods: number;
+  from: string | null;
+  to: string | null;
+  total_return: number;
+  win_rate: number;
+  profit_factor: number;
+  max_drawdown: number;
+  data_sufficient: boolean;
+}
+
+export interface ResearchResult {
+  available?: boolean;
+  error?: string;
+  trading_periods?: number;
+  trading_days?: number;
+  total_return?: number;
+  benchmark_return?: number;
+  win_rate?: number;
+  max_drawdown?: number;
+  sharpe_ratio?: number;
+  information_coefficient?: number;
+  data_quality?: {
+    grade?: string;
+    bar_count?: number;
+    stock_count?: number;
+    candidate_observations?: number;
+    warnings?: string[];
+  };
+  parameter_sensitivity?: Array<{
+    lookback_days: number;
+    trading_periods: number;
+    total_return: number;
+    information_coefficient: number;
+  }>;
+  daily_details?: Array<Record<string, unknown>>;
+}
+
+export interface ResearchGate {
+  id: string;
+  label: string;
+  threshold: string;
+  actual?: number | string | null;
+  passed: boolean;
+  reason?: string;
+}
+
+export interface ResearchReport {
+  report_version: string;
+  experiment_id: string;
+  experiment: ResearchExperiment;
+  status: string;
+  promotion_stage: string;
+  strategy_lock_hash: string;
+  dataset: ResearchDataset;
+  parameters: {
+    days: number;
+    top_n: number;
+    lookback_days: number;
+    holding_days: number;
+    capital: number;
+  };
+  result: ResearchResult;
+  partitions: Record<string, ResearchPartition>;
+  stress_tests: Record<string, {
+    available: boolean;
+    total_return?: number;
+    max_drawdown?: number;
+    trading_periods?: number;
+    note: string;
+  }>;
+  gates: ResearchGate[];
+  audit_log: string[];
+  next_actions: string[];
+  result_hash: string;
+  persistence_warning?: string;
+}
+
+export interface ResearchWorkspace {
+  version: string;
+  generated_at: string;
+  factor_catalog: ResearchFactor[];
+  factor_summary: {
+    total: number;
+    by_status: Record<string, number>;
+    by_category: Record<string, number>;
+  };
+  experiments: ResearchExperiment[];
+  lifecycle: Array<{ id: string; label: string; description: string }>;
+  hard_gates: Array<{ id: string; label: string; threshold: string }>;
+  dataset: ResearchDataset;
+  latest_report?: ResearchReport | null;
+  research_contract: Record<string, string>;
+}
+
 export interface BacktestTrade {
   date: string;
   signal_date: string;

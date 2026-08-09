@@ -94,6 +94,29 @@ class FQERequest(BaseModel):
     force: bool = False
 
 
+class ResearchRunRequest(BaseModel):
+    """Bounded parameters for a reproducible research experiment."""
+
+    experiment_id: str = Field(default="weekly_momentum_baseline_v1", min_length=1, max_length=80)
+    days: int = Field(default=365, ge=30, le=730)
+    top_n: int = Field(default=10, ge=1, le=50)
+    lookback_days: int = Field(default=20, ge=10, le=120)
+    holding_days: int = Field(default=5, ge=1, le=20)
+    capital: float = Field(default=400000.0, ge=10000, le=100000000)
+
+    @field_validator("experiment_id")
+    @classmethod
+    def clean_experiment_id(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("实验编号不能为空")
+        return cleaned
+
+
+class ResearchDslValidateRequest(BaseModel):
+    definition: dict[str, Any]
+
+
 class BacktestRequest(BaseModel):
     start_date: date = Field(default_factory=lambda: date.today() - timedelta(days=365))
     end_date: date = Field(default_factory=date.today)

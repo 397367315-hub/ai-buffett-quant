@@ -204,7 +204,13 @@ class QuantResearchEngine:
         capital: float,
     ) -> dict:
         if not grouped:
-            return {"daily_results": [], "candidate_count": 0, "stock_count": 0, "ic_values": []}
+            return {
+                "daily_results": [],
+                "_daily_results_internal": [],
+                "candidate_count": 0,
+                "stock_count": 0,
+                "ic_values": [],
+            }
 
         date_set = sorted({bar["date"] for bars in grouped.values() for bar in bars})
         date_index = {trade_date: index for index, trade_date in enumerate(date_set)}
@@ -269,6 +275,7 @@ class QuantResearchEngine:
             trade_returns: list[float] = []
             gross_selected: list[float] = []
             cost_rates: list[float] = []
+            impact_rates: list[float] = []
             for item in selected:
                 friction, impact = cls._cost_rate(capital_per_position, item["average_amount"])
                 item["friction_rate"] = friction
@@ -277,6 +284,7 @@ class QuantResearchEngine:
                 trade_returns.append(item["net_return"])
                 gross_selected.append(item["gross_return"])
                 cost_rates.append(friction)
+                impact_rates.append(impact)
 
             benchmark_gross = _mean(future_returns)
             benchmark_cost, _ = cls._cost_rate(capital / max(1, len(eligible)), _mean([
@@ -285,6 +293,9 @@ class QuantResearchEngine:
             benchmark_net = benchmark_gross - benchmark_cost
             portfolio_return = _mean(trade_returns)
             gross_return = _mean(gross_selected)
+            commission_cost = ResearchProtocol.COMMISSION_RATE * 2
+            stamp_tax_cost = ResearchProtocol.STAMP_TAX_RATE
+            slippage_cost = ResearchProtocol.SLIPPAGE_RATE * 2
             previous = portfolio_rows[-1]["cumulative_return_pct"] if portfolio_rows else 0.0
             cumulative = ((1 + previous / 100) * (1 + portfolio_return) - 1) * 100
             benchmark_previous = portfolio_rows[-1]["cumulative_benchmark_pct"] if portfolio_rows else 0.0
@@ -300,6 +311,10 @@ class QuantResearchEngine:
                 "benchmark_return_pct": round(benchmark_gross * 100, 3),
                 "benchmark_net_return_pct": round(benchmark_net * 100, 3),
                 "average_cost_pct": round(_mean(cost_rates) * 100, 3),
+                "commission_cost_pct": round(commission_cost * 100, 3),
+                "stamp_tax_cost_pct": round(stamp_tax_cost * 100, 3),
+                "slippage_cost_pct": round(slippage_cost * 100, 3),
+                "impact_cost_pct": round(_mean(impact_rates) * 100, 3),
                 "cumulative_return_pct": round(cumulative, 3),
                 "cumulative_benchmark_pct": round(cumulative_benchmark, 3),
                 "selected_codes": [item["code"] for item in selected],
@@ -308,6 +323,10 @@ class QuantResearchEngine:
 
         return {
             "daily_results": portfolio_rows,
+            # Kept private by the workspace service so the API does not grow
+            # with every historical period while partition metrics remain
+            # reproducible inside the same locked run.
+            "_daily_results_internal": list(portfolio_rows),
             "candidate_count": sum(row["valid_count"] for row in portfolio_rows),
             "stock_count": len(grouped),
             "ic_values": ic_values,
