@@ -376,7 +376,8 @@ class EastMoneyDataCollector:
         return results
 
     def _pool_item(self, item: dict, direction: str) -> dict:
-        limit_days = item.get("zttj", {}).get("days") if isinstance(item.get("zttj"), dict) else item.get("days")
+        limit_stats = item.get("zttj") if isinstance(item.get("zttj"), dict) else {}
+        streak_height = item.get("lbc") if direction == "up" else None
         return {
             "code": str(item.get("c", "")),
             "name": item.get("n", ""),
@@ -389,7 +390,10 @@ class EastMoneyDataCollector:
             "turnover": as_float(item.get("hs")),
             "pe": as_float(item.get("pe")),
             "market_cap": as_int(item.get("ltsz")),
-            "continuous_days": as_int(limit_days),
+            "continuous_days": as_int(streak_height),
+            "limit_days_in_window": as_int(limit_stats.get("days")),
+            "limit_count_in_window": as_int(limit_stats.get("ct")),
+            "failed_attempts": as_int(item.get("zbc")),
             "sector": item.get("hybk", ""),
             "main_net_inflow": as_int(item.get("fund")),
             "first_limit_time": item.get("fbt"),
@@ -397,14 +401,26 @@ class EastMoneyDataCollector:
             "limit_direction": direction,
         }
 
-    async def _fetch_limit_pool(self, endpoint: str, direction: str, page: int, page_size: int) -> dict:
+    async def _fetch_limit_pool(
+        self,
+        endpoint: str,
+        direction: str,
+        page: int,
+        page_size: int,
+        target_date: date | str | None = None,
+    ) -> dict:
+        requested_date = (
+            target_date.strftime("%Y%m%d")
+            if isinstance(target_date, date)
+            else str(target_date or shanghai_now().strftime("%Y%m%d")).replace("-", "")[:8]
+        )
         params = {
             "ut": "7eea3edcaed734bea9cbfc24409ed989",
             "dpt": "wz.ztzt",
             "Pageindex": str(max(page - 1, 0)),
             "pagesize": str(page_size),
             "sort": "fbt:asc" if direction == "up" else "fund:asc",
-            "date": shanghai_now().strftime("%Y%m%d"),
+            "date": requested_date,
         }
         try:
             data = await self.fetch_json(endpoint, params)
@@ -418,11 +434,35 @@ class EastMoneyDataCollector:
             "trade_date": str(payload.get("qdate") or "") or None,
         }
 
-    async def fetch_limit_up_pool(self, page: int = 1, page_size: int = 200) -> dict:
-        return await self._fetch_limit_pool("https://push2ex.eastmoney.com/getTopicZTPool", "up", page, page_size)
+    async def fetch_limit_up_pool(
+        self,
+        page: int = 1,
+        page_size: int = 200,
+        target_date: date | str | None = None,
+    ) -> dict:
+        return await self._fetch_limit_pool(
+            "https://push2ex.eastmoney.com/getTopicZTPool", "up", page, page_size, target_date,
+        )
 
-    async def fetch_limit_down_pool(self, page: int = 1, page_size: int = 200) -> dict:
-        return await self._fetch_limit_pool("https://push2ex.eastmoney.com/getTopicDTPool", "down", page, page_size)
+    async def fetch_limit_down_pool(
+        self,
+        page: int = 1,
+        page_size: int = 200,
+        target_date: date | str | None = None,
+    ) -> dict:
+        return await self._fetch_limit_pool(
+            "https://push2ex.eastmoney.com/getTopicDTPool", "down", page, page_size, target_date,
+        )
+
+    async def fetch_failed_limit_pool(
+        self,
+        page: int = 1,
+        page_size: int = 200,
+        target_date: date | str | None = None,
+    ) -> dict:
+        return await self._fetch_limit_pool(
+            "https://push2ex.eastmoney.com/getTopicZBPool", "failed", page, page_size, target_date,
+        )
 
     async def fetch_limit_up_stocks(self, page: int = 1, page_size: int = 200) -> list[dict]:
         return (await self.fetch_limit_up_pool(page, page_size))["stocks"]
@@ -730,7 +770,8 @@ class EastMoneyDataCollector:
             for item in self._history_in_window(history, days)
         ]
 
-    async def fetch_stock_universe(self) -> list[dict]:
+    async def fetch_security_directory(self) -> list[dict]:
+        """Return the complete A-share directory, retaining inactive symbols."""
         page_size = self.MAX_LIST_PAGE_SIZE
 
         async def fetch_page(page: int) -> tuple[list[dict], int]:
@@ -766,12 +807,7 @@ class EastMoneyDataCollector:
                 code = normalize_stock_code(item.get("f12"))
             except ValueError:
                 continue
-            # EastMoney's broad A-share filters retain delisted symbols such
-            # as PT金田A and 邯郸钢铁. A zero/missing current price identifies
-            # them without excluding suspended securities with a last close.
             price = as_optional_float(item.get("f2"))
-            if price is None or price <= 0:
-                continue
             if code in seen_codes:
                 continue
             seen_codes.add(code)
@@ -780,8 +816,25 @@ class EastMoneyDataCollector:
                 "name": item.get("f14", ""),
                 "market": item.get("f13"),
                 "sector": str(item.get("f100") or "").strip(),
+                # Suspended securities retain a positive last close. Long-
+                # inactive and delisted directory records are zero/missing.
+                "is_currently_listed": bool(price is not None and price > 0),
+                "last_price": price,
             })
         return records
+
+    async def fetch_stock_universe(self) -> list[dict]:
+        directory = await self.fetch_security_directory()
+        return [
+            {
+                "code": item["code"],
+                "name": item["name"],
+                "market": item["market"],
+                "sector": item["sector"],
+            }
+            for item in directory
+            if item.get("is_currently_listed")
+        ]
 
     async def fetch_north_bound_daily(self, days: int = 365) -> list[dict]:
         params = {
@@ -863,15 +916,45 @@ class EastMoneyDataCollector:
         return int(lots * 100) if lots is not None else None
 
     async def fetch_market_breadth(self) -> dict:
-        """Return only verified market breadth data.
+        """Derive true advance/decline breadth from one complete stock snapshot."""
+        from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
 
-        EastMoney's public stock-list endpoint exposes ``f104``/``f105`` for
-        boards, but returns zeroes for individual stock rows. Treating those
-        zeroes as the market advance/decline count created a false breadth
-        signal, so this remains explicitly unavailable until a source with an
-        all-market aggregate is configured.
-        """
-        return {}
+        snapshot = await load_quant_market_snapshot()
+        if not snapshot.get("stocks"):
+            try:
+                snapshot = await self.fetch_quant_market_snapshot(include_special=True)
+                await save_quant_market_snapshot(snapshot)
+            except Exception as exc:
+                print(f"Error fetching market breadth snapshot: {type(exc).__name__}")
+                return {}
+        groups: dict[str, list[dict]] = {"全市场": [], "沪市": [], "深市": [], "北交所": []}
+        for stock in snapshot.get("stocks") or []:
+            code = str(stock.get("code") or "")
+            price = as_optional_float(stock.get("price"))
+            change = as_optional_float(stock.get("change_pct"))
+            if not code or price is None or price <= 0 or change is None:
+                continue
+            groups["全市场"].append(stock)
+            market = "北交所" if code.startswith(BEIJING_PREFIXES) else "沪市" if code.startswith(SHANGHAI_PREFIXES) else "深市"
+            groups[market].append(stock)
+        output = {}
+        for name, rows in groups.items():
+            if not rows:
+                continue
+            up_count = sum(as_float(item.get("change_pct")) > 0 for item in rows)
+            down_count = sum(as_float(item.get("change_pct")) < 0 for item in rows)
+            flat_count = len(rows) - up_count - down_count
+            directional = up_count + down_count
+            output[name] = {
+                "up": up_count,
+                "down": down_count,
+                "flat": flat_count,
+                "total": len(rows),
+                "ratio": round(up_count / directional * 100, 2) if directional else 50.0,
+                "data_date": snapshot.get("data_date"),
+                "source": "complete_market_snapshot",
+            }
+        return output
 
     async def fetch_market_turnover(self) -> dict:
         url = "https://push2.eastmoney.com/api/qt/stock/get"

@@ -16,6 +16,17 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed, [3])
         resume.assert_awaited_once()
 
+    async def test_resume_incomplete_fqe_syncs_restarts_persisted_work(self):
+        with patch(
+            "services.fqe_reference_data.fqe_reference_data.resume_incomplete_runs",
+            new_callable=AsyncMock,
+            return_value=[7],
+        ) as resume:
+            resumed = await scheduler_module.resume_incomplete_fqe_syncs()
+
+        self.assertEqual(resumed, [7])
+        resume.assert_awaited_once()
+
     async def test_scheduler_registers_single_instance_backfill_recovery_job(self):
         fake_scheduler = MagicMock()
         fake_scheduler.running = True
@@ -57,6 +68,8 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             "overnight_auction_watch",
             "overnight_exit_monitor",
             "overnight_force_exit",
+            "resume_fqe_data_sync",
+            "fqe_audit_data_close",
         }
         self.assertTrue(expected.issubset(calls))
         self.assertIs(calls["ai_robot_short_daily"].args[0], scheduler_module.refresh_ai_robot_short)
@@ -68,6 +81,8 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(calls["overnight_auction_watch"].args[0], scheduler_module.run_overnight_auction_watch)
         self.assertIs(calls["overnight_exit_monitor"].args[0], scheduler_module.monitor_overnight_exits)
         self.assertIs(calls["overnight_force_exit"].args[0], scheduler_module.force_overnight_exits)
+        self.assertIs(calls["resume_fqe_data_sync"].args[0], scheduler_module.resume_incomplete_fqe_syncs)
+        self.assertIs(calls["fqe_audit_data_close"].args[0], scheduler_module.refresh_fqe_audit_data)
 
 
 if __name__ == "__main__":

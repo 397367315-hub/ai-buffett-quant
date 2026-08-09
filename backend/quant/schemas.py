@@ -94,6 +94,12 @@ class FQERequest(BaseModel):
     force: bool = False
 
 
+class FQEDataSyncRequest(BaseModel):
+    full: bool = True
+    years: int = Field(default=3, ge=1, le=5)
+    force: bool = False
+
+
 class ResearchRunRequest(BaseModel):
     """Bounded parameters for a reproducible research experiment."""
 

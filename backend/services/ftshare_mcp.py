@@ -347,6 +347,47 @@ class FTShareMCPClient:
         data = result.get("data")
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
+    async def get_full_stock_filter(self) -> list[dict[str, Any]]:
+        """Read the complete current A-share directory with listing dates."""
+        result = await self.call_paginated_tool(
+            "ft_stock_filter",
+            {},
+            page_size=60,
+            concurrency=4,
+            max_pages=200,
+        )
+        data = result.get("data")
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+    async def get_stock_status_changes(self, stock_codes: list[str]) -> dict[str, Any]:
+        symbols = [self.stock_symbol(code) for code in stock_codes]
+        if not symbols:
+            return {"data": [], "metadata": {"truncated": False}}
+        return await self.call_tool(
+            "ft_get_stk_status_change",
+            {"trade_code": ",".join(symbols)},
+        )
+
+    async def get_stock_valuation_history(
+        self,
+        stock_code: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, Any]]:
+        result = await self.call_paginated_tool(
+            "ft_get_eastmoney_stock_valuation",
+            {
+                "symbol": self.stock_symbol(stock_code),
+                "start_date": str(start_date).replace("-", ""),
+                "end_date": str(end_date).replace("-", ""),
+            },
+            page_size=60,
+            concurrency=4,
+            max_pages=30,
+        )
+        data = result.get("data")
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
     async def get_sector_flow_history(
         self,
         sector_type: str,

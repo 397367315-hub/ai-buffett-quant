@@ -152,3 +152,31 @@ class FTShareMCPClientTests(unittest.TestCase):
                 "end_date": "2026-08-08",
             },
         )
+
+    def test_valuation_history_uses_exchange_symbol_and_compact_dates(self):
+        client = FTShareMCPClient()
+        client.call_paginated_tool = AsyncMock(return_value={"data": [{"PE_TTM": 20}], "metadata": {}})
+
+        rows = asyncio.run(client.get_stock_valuation_history(
+            "600519", "2023-08-01", "2026-08-07",
+        ))
+
+        self.assertEqual(rows, [{"PE_TTM": 20}])
+        client.call_paginated_tool.assert_awaited_once_with(
+            "ft_get_eastmoney_stock_valuation",
+            {"symbol": "600519.SH", "start_date": "20230801", "end_date": "20260807"},
+            page_size=60,
+            concurrency=4,
+            max_pages=30,
+        )
+
+    def test_status_change_batches_use_validated_exchange_symbols(self):
+        client = FTShareMCPClient()
+        client.call_tool = AsyncMock(return_value={"data": [], "metadata": {"truncated": False}})
+
+        asyncio.run(client.get_stock_status_changes(["000003", "600001"]))
+
+        client.call_tool.assert_awaited_once_with(
+            "ft_get_stk_status_change",
+            {"trade_code": "000003.SZ,600001.SH"},
+        )

@@ -18,12 +18,15 @@ async def lifespan(app: FastAPI):
     from seed_data import seed
     from services.history_cache import history_cache
     from services.ai_robot import ai_robot_service
+    from services.fqe_reference_data import fqe_reference_data
     from services.scheduler import scheduler, start_scheduler
     await seed()
     from quant.persistence import hydrate_strategy_store
     await hydrate_strategy_store()
     await history_cache.resume_incomplete_runs()
     await ai_robot_service.resume_incomplete_runs()
+    await fqe_reference_data.resume_incomplete_runs()
+    await fqe_reference_data.ensure_initialized()
     await start_scheduler(collector)
     yield
     if scheduler.running:

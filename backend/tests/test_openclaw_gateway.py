@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import Base
-from models import StockDailyBar
+from models import SecurityMaster, StockDailyBar
 from services.openclaw_gateway import openclaw_gateway
 
 
@@ -118,6 +118,29 @@ class OpenClawDatabaseTests(unittest.IsolatedAsyncioTestCase):
             })
             self.assertTrue(response["result"]["isError"])
             self.assertIn(message, response["result"]["content"][0]["text"])
+
+    async def test_database_tool_reads_security_master_without_synthetic_id(self):
+        async with self.session_factory() as session:
+            session.add(SecurityMaster(
+                stock_code="000003", stock_name="PT金田A", exchange="SZ",
+                list_date=date(1991, 7, 3), delist_date=date(2002, 6, 14),
+                status="delisted", is_currently_listed=False,
+                date_quality="status_event", source="test",
+            ))
+            await session.commit()
+
+        response = await openclaw_gateway.handle_rpc({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {"name": "query_system_database", "arguments": {
+                "dataset": "security_master", "stock_code": "000003",
+                "fields": ["stock_code", "list_date", "delist_date", "status"],
+            }},
+        })
+
+        payload = response["result"]["structuredContent"]
+        self.assertEqual(payload["pagination"]["total"], 1)
+        self.assertEqual(payload["records"][0]["status"], "delisted")
+        self.assertEqual(payload["records"][0]["delist_date"], "2002-06-14")
 
 
 if __name__ == "__main__":

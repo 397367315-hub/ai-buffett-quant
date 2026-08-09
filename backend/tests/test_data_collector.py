@@ -90,6 +90,68 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(universe, [{"code": "600519", "name": "贵州茅台", "market": 1, "sector": "白酒Ⅱ"}])
 
+    async def test_security_directory_retains_inactive_symbols_for_pit_master(self):
+        collector = EastMoneyDataCollector()
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, params, headers
+            return {"data": {"total": 2, "diff": [
+                {"f2": 1361.76, "f12": "600519", "f13": 1, "f14": "贵州茅台"},
+                {"f2": "-", "f12": "000003", "f13": 0, "f14": "PT金田A"},
+            ]}}
+
+        collector.fetch_json = fake_fetch_json
+        directory = await collector.fetch_security_directory()
+
+        self.assertEqual(len(directory), 2)
+        self.assertTrue(next(item for item in directory if item["code"] == "600519")["is_currently_listed"])
+        self.assertFalse(next(item for item in directory if item["code"] == "000003")["is_currently_listed"])
+
+    def test_limit_pool_uses_actual_consecutive_board_height(self):
+        collector = EastMoneyDataCollector()
+        item = collector._pool_item({
+            "c": "600000", "n": "测试", "p": 10000, "lbc": 4,
+            "zttj": {"days": 8, "ct": 5}, "zbc": 2,
+        }, "up")
+
+        self.assertEqual(item["continuous_days"], 4)
+        self.assertEqual(item["limit_days_in_window"], 8)
+        self.assertEqual(item["limit_count_in_window"], 5)
+        self.assertEqual(item["failed_attempts"], 2)
+
+    async def test_failed_limit_pool_forwards_historical_trade_date(self):
+        collector = EastMoneyDataCollector()
+        captured = {}
+
+        async def fake_fetch_json(url, params, headers=None):
+            del headers
+            captured.update({"url": url, "date": params["date"]})
+            return {"data": {"tc": 3, "qdate": "20260807", "pool": []}}
+
+        collector.fetch_json = fake_fetch_json
+        result = await collector.fetch_failed_limit_pool(target_date=date(2026, 8, 7))
+
+        self.assertIn("getTopicZBPool", captured["url"])
+        self.assertEqual(captured["date"], "20260807")
+        self.assertEqual(result["total"], 3)
+
+    async def test_market_breadth_is_derived_from_complete_cached_snapshot(self):
+        snapshot = {
+            "data_date": "2026-08-07",
+            "stocks": [
+                {"code": "600519", "price": 10, "change_pct": 1.0},
+                {"code": "000001", "price": 10, "change_pct": -0.5},
+                {"code": "920065", "price": 10, "change_pct": 0.0},
+            ],
+        }
+        with patch("quant.market_cache.load_quant_market_snapshot", new=AsyncMock(return_value=snapshot)):
+            breadth = await EastMoneyDataCollector().fetch_market_breadth()
+
+        self.assertEqual(breadth["全市场"]["up"], 1)
+        self.assertEqual(breadth["全市场"]["down"], 1)
+        self.assertEqual(breadth["全市场"]["flat"], 1)
+        self.assertEqual(breadth["全市场"]["ratio"], 50.0)
+
     async def test_quant_market_snapshot_paginates_complete_code_sorted_quotes(self):
         collector = EastMoneyDataCollector()
         rows = [

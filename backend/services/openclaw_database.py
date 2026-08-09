@@ -14,12 +14,16 @@ from sqlalchemy import asc, desc, func, select
 
 from database import async_session
 from models import (
+    MarketSentimentDaily,
     MarketFundFlowDaily,
     OvernightPosition,
     OvernightStrategyRun,
     QuantStrategy,
+    SecurityMaster,
+    SecurityStatusEvent,
     StockDailyBar,
     StockSelectionRun,
+    StockValuationHistory,
 )
 from services.data_collector import normalize_stock_code
 
@@ -43,6 +47,7 @@ COMMON_ARGUMENTS = {
     "is_realtime",
     "is_builtin",
     "strategy_id",
+    "sync_status",
 }
 
 
@@ -128,6 +133,60 @@ DATASET_DEFINITIONS: dict[str, dict[str, Any]] = {
         "sort_fields": {"id", "trade_date", "market", "main_net_inflow", "north_net_inflow", "created_at"},
         "default_sort": "trade_date",
     },
+    "market_sentiment_daily": {
+        "label": "A股市场宽度与涨停情绪历史",
+        "model": MarketSentimentDaily,
+        "fields": (
+            "trade_date", "up_count", "down_count", "flat_count", "stock_count",
+            "market_amount", "amount_count", "average_turnover", "turnover_count", "limit_up_count", "limit_down_count",
+            "failed_limit_count", "failed_limit_rate", "max_streak_height", "source", "updated_at",
+        ),
+        "filters": {"source", "start_date", "end_date"},
+        "date_field": "trade_date", "date_kind": "date",
+        "sort_fields": {"trade_date", "market_amount", "failed_limit_rate", "max_streak_height", "updated_at"},
+        "default_sort": "trade_date",
+    },
+    "security_master": {
+        "label": "A股证券主表（含历史非活跃证券）",
+        "model": SecurityMaster,
+        "fields": (
+            "stock_code", "stock_name", "exchange", "list_date", "delist_date", "status",
+            "is_currently_listed", "date_quality", "source", "source_updated_at", "updated_at",
+        ),
+        "filters": {"stock_code", "status", "source", "start_date", "end_date"},
+        "date_field": "list_date", "date_kind": "date",
+        "sort_fields": {"stock_code", "list_date", "delist_date", "status", "updated_at"},
+        "default_sort": "stock_code",
+    },
+    "security_status_events": {
+        "label": "A股上市、停牌、退市状态事件",
+        "model": SecurityStatusEvent,
+        "fields": (
+            "id", "stock_code", "stock_name", "change_date", "change_type", "details", "source", "updated_at",
+        ),
+        "filters": {"stock_code", "source", "start_date", "end_date"},
+        "date_field": "change_date", "date_kind": "date",
+        "sort_fields": {"id", "stock_code", "change_date", "change_type", "updated_at"},
+        "default_sort": "change_date",
+    },
+    "stock_valuation_history": {
+        "label": "个股三年PE历史与分位",
+        "model": StockValuationHistory,
+        "fields": (
+            "stock_code", "stock_name", "history", "requested_start", "history_start", "history_end",
+            "sample_count", "positive_sample_count", "latest_pe_ttm", "pe_percentile_3y",
+            "sync_status", "source", "updated_at",
+        ),
+        "filters": {"stock_code", "sync_status", "source", "start_date", "end_date"},
+        "date_field": "history_end", "date_kind": "date",
+        "sort_fields": {"stock_code", "history_end", "sample_count", "pe_percentile_3y", "updated_at"},
+        "default_sort": "history_end",
+        "default_fields": (
+            "stock_code", "stock_name", "requested_start", "history_start", "history_end",
+            "sample_count", "positive_sample_count", "latest_pe_ttm", "pe_percentile_3y",
+            "sync_status", "source", "updated_at",
+        ),
+    },
 }
 
 
@@ -208,7 +267,7 @@ async def query_system_database(arguments: dict[str, Any]) -> dict[str, Any]:
 
     invalid_filters = sorted(
         key for key in arguments
-        if key in {"stock_code", "start_date", "end_date", "market", "source", "status", "stage", "mode", "risk_profile", "is_realtime", "is_builtin", "strategy_id"}
+        if key in {"stock_code", "start_date", "end_date", "market", "source", "status", "stage", "mode", "risk_profile", "sync_status", "is_realtime", "is_builtin", "strategy_id"}
         and key not in definition["filters"]
     )
     if invalid_filters:
@@ -216,7 +275,7 @@ async def query_system_database(arguments: dict[str, Any]) -> dict[str, Any]:
 
     requested_fields = arguments.get("fields")
     if requested_fields is None:
-        fields = list(definition["fields"])
+        fields = list(definition.get("default_fields") or definition["fields"])
     else:
         if not isinstance(requested_fields, list) or not requested_fields:
             raise ValueError("fields 必须是非空字段数组")
@@ -240,7 +299,7 @@ async def query_system_database(arguments: dict[str, Any]) -> dict[str, Any]:
     conditions: list[Any] = []
     if "stock_code" in definition["filters"] and arguments.get("stock_code") not in (None, ""):
         conditions.append(model.stock_code == normalize_stock_code(arguments["stock_code"]))
-    for key in ("market", "source", "status", "stage", "mode", "risk_profile"):
+    for key in ("market", "source", "status", "stage", "mode", "risk_profile", "sync_status"):
         if key in definition["filters"] and arguments.get(key) not in (None, ""):
             value = str(arguments[key]).strip()
             if len(value) > 100:
@@ -269,7 +328,7 @@ async def query_system_database(arguments: dict[str, Any]) -> dict[str, Any]:
     sort_column = getattr(model, sort_by)
     order_clauses = [asc(sort_column) if sort_order == "asc" else desc(sort_column)]
     # Add a stable secondary key so pagination does not reshuffle equal dates.
-    if sort_by != "id":
+    if sort_by != "id" and hasattr(model, "id"):
         order_clauses.append(desc(model.id))
 
     async with async_session() as session:

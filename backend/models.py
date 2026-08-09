@@ -141,6 +141,30 @@ class MarketFundFlowDaily(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class MarketSentimentDaily(Base):
+    """Auditable daily breadth, turnover and limit-board emotion snapshot."""
+
+    __tablename__ = "market_sentiment_daily"
+    __table_args__ = (Index("idx_market_sentiment_date", "trade_date"),)
+
+    trade_date = Column(Date, primary_key=True)
+    up_count = Column(Integer)
+    down_count = Column(Integer)
+    flat_count = Column(Integer)
+    stock_count = Column(Integer)
+    market_amount = Column(BigInteger)
+    amount_count = Column(Integer)
+    average_turnover = Column(Float)
+    turnover_count = Column(Integer)
+    limit_up_count = Column(Integer)
+    limit_down_count = Column(Integer)
+    failed_limit_count = Column(Integer)
+    failed_limit_rate = Column(Float)
+    max_streak_height = Column(Integer)
+    source = Column(String(50), nullable=False, default="eastmoney+daily_bars")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class NorthFundFlowDaily(Base):
     __tablename__ = "north_fund_flow_daily"
 
@@ -237,6 +261,75 @@ class StockDailyBar(Base):
     change_amount = Column(Float)
     turnover = Column(Float)
     source = Column(String(30), nullable=False, default="eastmoney")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SecurityMaster(Base):
+    """Point-in-time security directory including inactive A-share symbols."""
+
+    __tablename__ = "security_master"
+    __table_args__ = (
+        Index("idx_security_master_status", "is_currently_listed", "status"),
+        Index("idx_security_master_dates", "list_date", "delist_date"),
+    )
+
+    stock_code = Column(String(10), primary_key=True)
+    stock_name = Column(String(100), nullable=False)
+    exchange = Column(String(10), nullable=False)
+    list_date = Column(Date)
+    delist_date = Column(Date)
+    status = Column(String(30), nullable=False, default="unknown")
+    is_currently_listed = Column(Boolean, nullable=False, default=True)
+    date_quality = Column(String(30), nullable=False, default="missing")
+    source = Column(String(80), nullable=False, default="eastmoney")
+    source_updated_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SecurityStatusEvent(Base):
+    """Dated listing, suspension, resumption and delisting events."""
+
+    __tablename__ = "security_status_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "stock_code", "change_date", "change_type",
+            name="uq_security_status_event_code_date_type",
+        ),
+        Index("idx_security_status_events_date", "change_date", "change_type"),
+        Index("idx_security_status_events_code", "stock_code", "change_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    change_date = Column(Date, nullable=False)
+    change_type = Column(String(30), nullable=False)
+    details = Column(Text)
+    source = Column(String(30), nullable=False, default="ftshare")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StockValuationHistory(Base):
+    """Compact per-stock three-year PE history plus current audit summary."""
+
+    __tablename__ = "stock_valuation_histories"
+    __table_args__ = (
+        Index("idx_stock_valuation_history_end", "history_end"),
+        Index("idx_stock_valuation_sync_status", "sync_status", "history_end"),
+    )
+
+    stock_code = Column(String(10), primary_key=True)
+    stock_name = Column(String(100))
+    history = Column(JSON, nullable=False, default=list)
+    requested_start = Column(Date, nullable=False)
+    history_start = Column(Date)
+    history_end = Column(Date)
+    sample_count = Column(Integer, nullable=False, default=0)
+    positive_sample_count = Column(Integer, nullable=False, default=0)
+    latest_pe_ttm = Column(Float)
+    pe_percentile_3y = Column(Float)
+    sync_status = Column(String(20), nullable=False, default="available")
+    source = Column(String(30), nullable=False, default="eastmoney_proxy")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -342,6 +435,32 @@ class CacheBackfillRun(Base):
     total_tasks = Column(Integer, default=0)
     completed_tasks = Column(Integer, default=0)
     records_written = Column(Integer, default=0)
+    error = Column(Text)
+
+
+class FQEDataSyncRun(Base):
+    """Recoverable security-master and valuation-history synchronization."""
+
+    __tablename__ = "fqe_data_sync_runs"
+    __table_args__ = (Index("idx_fqe_data_sync_status", "status", "started_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sync_mode = Column(String(20), nullable=False, default="full")
+    requested_years = Column(Integer, nullable=False, default=3)
+    force = Column(Boolean, nullable=False, default=False)
+    status = Column(String(20), nullable=False, default="queued")
+    stage = Column(String(30), nullable=False, default="queued")
+    message = Column(String(300))
+    total_securities = Column(Integer, nullable=False, default=0)
+    completed_securities = Column(Integer, nullable=False, default=0)
+    master_count = Column(Integer, nullable=False, default=0)
+    inactive_count = Column(Integer, nullable=False, default=0)
+    valuation_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    failed_codes = Column(JSON, nullable=False, default=list)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     error = Column(Text)
 
 

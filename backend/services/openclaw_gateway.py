@@ -283,6 +283,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "enum": [
                         "stock_daily_bars", "overnight_runs", "overnight_positions",
                         "stock_selection_runs", "quant_strategies", "market_flow",
+                        "market_sentiment_daily", "security_master", "security_status_events",
+                        "stock_valuation_history",
                     ],
                 },
                 "fields": {"type": "array", "items": {"type": "string"}, "maxItems": 40},

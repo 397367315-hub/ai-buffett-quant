@@ -3,9 +3,9 @@
 This module implements the two engines described in the FQE guide without
 introducing pandas/cvxpy as runtime requirements.  It deliberately reports
 missing point-in-time fields instead of treating them as zero or as a pass.
-The current quote universe is suitable for a present-day research snapshot;
-historical survivorship-free portfolio backtests still require a dated
-security master and dated financial/quote snapshots.
+The current quote universe is suitable for a present-day research snapshot.
+The comparison service enriches it from a dated security master, while a true
+historical backtest still requires dated financial and quote snapshots.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from quant.jobs import create_job, get_job, latest_running_job, spawn, update_jo
 from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
 from quant.storage import quant_store
 from services.data_collector import collector, shanghai_now
+from services.fqe_reference_data import fqe_reference_data
 from services.stock_features import stock_feature_service
 
 
@@ -619,7 +620,7 @@ class FundamentalQuantEngine:
             "data_quality": {
                 "status": "ready" if holdings and not warnings else "research_only" if holdings else "insufficient",
                 "auditable": False,
-                "notes": ["当前版本使用现有可见股票池，尚未接入历史退市证券主表。"],
+                "notes": ["证券主表与估值历史由数据合同单独审计；当前输出是研究日组合快照，不是历史回测。"],
             },
         }
 
@@ -692,6 +693,13 @@ class FQECompareService:
         )
         contexts = feature_result.get("stocks") or contexts
         if job_id:
+            update_job(
+                "fqe", job_id, phase="reference_data", progress=45,
+                message="正在合并上市历史、退市证券主表与三年PE分位",
+            )
+        reference_result = await fqe_reference_data.enrich(contexts, research_date)
+        contexts = reference_result.get("stocks") or contexts
+        if job_id:
             update_job("fqe", job_id, phase="retail_engine", progress=55, message="正在运行零售轻量引擎")
         retail = FundamentalQuantEngine.run_retail(contexts, top_n, mode)
         if job_id:
@@ -699,9 +707,12 @@ class FQECompareService:
         institutional = await FundamentalQuantEngine.run_institutional(contexts, top_n, candidate_pool)
         financial_available = sum(1 for item in contexts if ((item.get("_feature_meta") or {}).get("financial") or {}).get("status") == "available")
         ttm_available = sum(1 for item in contexts if item.get("ttm_available"))
-        listing_available = sum(1 for item in contexts if _number(item.get("list_days")) is not None)
-        pe_percentile_available = sum(1 for item in contexts if _number(item.get("pe_percentile_3y")) is not None)
-        warnings = list(dict.fromkeys((feature_result.get("warnings") or []) + retail.get("warnings", []) + institutional.get("warnings", [])))
+        warnings = list(dict.fromkeys(
+            (feature_result.get("warnings") or [])
+            + (reference_result.get("warnings") or [])
+            + retail.get("warnings", [])
+            + institutional.get("warnings", [])
+        ))
         return {
             "version": 1,
             "engine_mode": "COMPARE_DUAL_ENGINE",
@@ -716,11 +727,10 @@ class FQECompareService:
             "data_contract": {
                 "pit_financial": {"status": "current_as_of", "covered": financial_available, "total": len(contexts), "note": "财务记录按NOTICE_DATE不晚于研究日筛选"},
                 "ttm": {"status": "available" if ttm_available else "missing", "covered": ttm_available, "total": len(contexts), "formula": "current_period + prior_year_full_year - prior_year_same_period"},
-                "listing_history": {"status": "missing" if listing_available < len(contexts) else "available", "covered": listing_available, "total": len(contexts), "note": "当前行情快照未提供完整上市日期"},
-                "pe_history_percentile": {"status": "missing" if pe_percentile_available < len(contexts) else "available", "covered": pe_percentile_available, "total": len(contexts), "note": "当前缓存未保存三年PE截面历史"},
-                "survivorship_bias": {"status": "unresolved", "note": "当前股票池是现存可交易证券，不含完整历史退市证券主表"},
+                **(reference_result.get("data_contract") or {}),
             },
             "feature_coverage": feature_result.get("coverage") or {},
+            "reference_coverage": reference_result.get("coverage") or {},
             "warnings": warnings,
             "disclaimer": "这是当前研究日的双引擎候选比较，不构成收益率或70%-90%胜率承诺；严格历史回测需补齐退市证券、上市状态和财务PIT历史。",
         }

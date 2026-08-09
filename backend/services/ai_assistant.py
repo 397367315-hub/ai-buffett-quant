@@ -34,6 +34,7 @@ from services.data_collector import (
 from services.macro_dashboard import macro_dashboard_service
 from services.macro_policy_news import macro_policy_news_collector
 from services.quote_cache import quote_snapshot_service
+from services.strategic_market_data import strategic_market_data_service
 
 
 MAX_HISTORY_MESSAGES = 80
@@ -145,7 +146,13 @@ class AIAssistantService:
         """Resolve explicit codes and cached stock names for strategy tools."""
         return await self._resolve_stock_codes(message, force_name_lookup=True)
 
-    async def _stock_context(self, codes: list[str], daily_limit: int = 30) -> dict[str, Any]:
+    async def _stock_context(
+        self,
+        codes: list[str],
+        daily_limit: int = 30,
+        *,
+        ensure_minimum: int = 0,
+    ) -> dict[str, Any]:
         if not codes:
             return {}
         bounded_limit = min(max(int(daily_limit), 5), 260)
@@ -185,6 +192,51 @@ class AIAssistantService:
             return_exceptions=True,
         )
         history = {} if isinstance(history_result, Exception) else history_result
+        refresh_attempted: list[str] = []
+        refresh_failed: list[str] = []
+        minimum = min(max(int(ensure_minimum), 0), 60)
+        if minimum:
+            pending = [code for code in codes if len(history.get(code) or []) < minimum]
+            refresh_attempted = list(pending)
+            if pending:
+                quote_rows = [] if isinstance(quote_result, Exception) else list(quote_result.get("stocks") or [])
+                quote_by_code = {str(item.get("code") or ""): item for item in quote_rows}
+                fetch_days = min(180, max(60, minimum * 3))
+
+                async def fetch_missing(code: str):
+                    try:
+                        payload = await asyncio.wait_for(
+                            collector.fetch_stock_price_history(code, fetch_days),
+                            timeout=20,
+                        )
+                        if payload.get("history"):
+                            return code, payload
+                    except Exception:
+                        pass
+                    return code, None
+
+                fetched = await asyncio.gather(*(fetch_missing(code) for code in pending))
+                payloads = []
+                for code, payload in fetched:
+                    if payload is None:
+                        refresh_failed.append(code)
+                        continue
+                    quote_item = quote_by_code.get(code) or {}
+                    payloads.append(({
+                        "code": code,
+                        "name": quote_item.get("name") or payload.get("name") or "",
+                        "market": "SH" if code.startswith(("6", "9")) else "BJ" if code.startswith(("4", "8")) else "SZ",
+                    }, payload))
+                if payloads:
+                    try:
+                        from services.history_cache import history_cache
+
+                        await history_cache.cache_stock_price_histories(payloads)
+                        history = await load_history()
+                    except Exception:
+                        refresh_failed.extend(
+                            str(stock.get("code") or "") for stock, _ in payloads
+                        )
         if isinstance(quote_result, Exception):
             fallback_quotes = []
             for code in codes:
@@ -234,6 +286,10 @@ class AIAssistantService:
                     "count": len(rows),
                     "start": rows[0]["date"] if rows else None,
                     "end": rows[-1]["date"] if rows else None,
+                    "minimum_required": minimum or None,
+                    "sufficient": len(rows) >= minimum if minimum else bool(rows),
+                    "refresh_attempted": code in refresh_attempted,
+                    "refresh_failed": code in refresh_failed,
                 }
                 for code, rows in history.items()
             },
@@ -452,23 +508,67 @@ class AIAssistantService:
                         select(MarketBoard).where(MarketBoard.board_type == board_type, MarketBoard.code.in_(codes))
                     )).scalars().all()
                 } if codes else {}
+                history_rows = list((await session.execute(
+                    select(model)
+                    .where(model.board_code.in_(codes))
+                    .order_by(model.board_code.asc(), model.trade_date.asc())
+                )).scalars().all()) if codes else []
+                histories: dict[str, list[Any]] = {}
+                for row in history_rows:
+                    histories.setdefault(str(row.board_code), []).append(row)
+
+                def board_metrics(code: str) -> dict[str, Any]:
+                    rows = histories.get(code) or []
+                    close_rows = [
+                        row for row in rows
+                        if row.close_price is not None and float(row.close_price) > 0
+                    ]
+
+                    def period_return(window: int) -> float | None:
+                        if len(close_rows) <= window:
+                            return None
+                        previous = float(close_rows[-window - 1].close_price)
+                        current = float(close_rows[-1].close_price)
+                        return round((current / previous - 1) * 100, 2) if previous else None
+
+                    breadth_row = next((
+                        row for row in reversed(rows)
+                        if row.up_count is not None and row.down_count is not None
+                        and (latest - row.trade_date).days <= 10
+                    ), None)
+                    breadth_total = (
+                        int(breadth_row.up_count or 0) + int(breadth_row.down_count or 0)
+                        if breadth_row else 0
+                    )
+                    return {
+                        "return_5d": period_return(5),
+                        "return_20d": period_return(20),
+                        "history_count": len(close_rows),
+                        "up_count": int(breadth_row.up_count or 0) if breadth_row else None,
+                        "down_count": int(breadth_row.down_count or 0) if breadth_row else None,
+                        "breadth_ratio": (
+                            round(int(breadth_row.up_count or 0) / breadth_total * 100, 2)
+                            if breadth_total else None
+                        ),
+                        "breadth_date": breadth_row.trade_date.isoformat() if breadth_row else None,
+                    }
+
+                def serialize(row: Any) -> dict[str, Any]:
+                    return {
+                        "code": row.board_code,
+                        "name": names.get(row.board_code, row.board_code),
+                        "main_net_inflow": row.main_net_inflow,
+                        "change_pct": row.change_pct,
+                        **board_metrics(str(row.board_code)),
+                    }
+
                 output[board_type] = {
                     "data_date": latest.isoformat() if latest else None,
                     "source": "database_cache",
                     "is_realtime": False,
                     "cache_used": True,
-                    "top_net_inflow": [{
-                        "code": row.board_code,
-                        "name": names.get(row.board_code, row.board_code),
-                        "main_net_inflow": row.main_net_inflow,
-                        "change_pct": row.change_pct,
-                    } for row in inflow_rows],
-                    "top_net_outflow": [{
-                        "code": row.board_code,
-                        "name": names.get(row.board_code, row.board_code),
-                        "main_net_inflow": row.main_net_inflow,
-                        "change_pct": row.change_pct,
-                    } for row in outflow_rows],
+                    "top_net_inflow": [serialize(row) for row in inflow_rows],
+                    "top_net_outflow": [serialize(row) for row in outflow_rows],
                 }
         return output
 
@@ -560,7 +660,9 @@ class AIAssistantService:
                 return cached
             return await asyncio.wait_for(macro_dashboard_service.dashboard(), timeout=8.0)
 
-        stock_task = self._stock_context(codes, daily_limit=120) if codes else asyncio.sleep(0, result={})
+        stock_task = self._stock_context(
+            codes, daily_limit=120, ensure_minimum=30,
+        ) if codes else asyncio.sleep(0, result={})
         market_task = self._cache_snapshot("market_overview_v1")
         flow_task = self._flow_context()
         dragon_task = self._dragon_context()
@@ -569,6 +671,7 @@ class AIAssistantService:
         index_history_task = self._index_history_context()
         stock_flow_task = self._stock_flow_context(codes)
         announcements_task = announcements()
+        market_evidence_task = strategic_market_data_service.history(limit=120)
 
         (
             stock_result,
@@ -580,6 +683,7 @@ class AIAssistantService:
             index_history_result,
             stock_flow_result,
             announcements_result,
+            market_evidence_result,
         ) = await asyncio.gather(
             stock_task,
             market_task,
@@ -590,6 +694,7 @@ class AIAssistantService:
             index_history_task,
             stock_flow_task,
             announcements_task,
+            market_evidence_task,
             return_exceptions=True,
         )
         if not isinstance(stock_result, Exception):
@@ -624,6 +729,15 @@ class AIAssistantService:
                 "covered": 0,
                 "error": type(announcements_result).__name__,
             }
+        if not isinstance(market_evidence_result, Exception):
+            context["market_evidence"] = market_evidence_result
+        else:
+            context["market_evidence"] = {
+                "history": [],
+                "summary": {},
+                "available": False,
+                "error": type(market_evidence_result).__name__,
+            }
 
         stocks = context.get("stocks") or {}
         quote_meta = stocks.get("quote_metadata") or {}
@@ -640,6 +754,7 @@ class AIAssistantService:
         stock_flow = context.get("stock_fund_flow") or {}
         announcement_audit = context.get("announcements") or {}
         index_history = context.get("index_history") or {}
+        market_evidence = context.get("market_evidence") or {}
         sector_dates = [
             item.get("data_date")
             for item in sector.values()
@@ -675,6 +790,15 @@ class AIAssistantService:
                 data_date=market.get("data_date") or (market.get("market_index") or {}).get("data_date"),
                 is_realtime=False,
                 cache_used=bool(market),
+            ),
+            self._source_entry(
+                "市场情绪历史",
+                market_evidence,
+                available=bool(market_evidence.get("available")),
+                source=str(market_evidence.get("source") or "database_cache"),
+                data_date=market_evidence.get("data_date"),
+                is_realtime=False,
+                cache_used=bool(market_evidence.get("cache_used")),
             ),
             self._source_entry(
                 "指数日线",

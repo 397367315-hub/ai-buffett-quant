@@ -224,8 +224,49 @@ export interface FQEResult {
     formula?: string;
   }>;
   feature_coverage?: Record<string, unknown>;
+  reference_coverage?: Record<string, number | string | null>;
   warnings: string[];
   disclaimer: string;
+}
+
+export interface FQEDataSyncRun {
+  id: number;
+  run_id: number;
+  sync_mode: 'full' | 'incremental' | string;
+  requested_years: number;
+  status: 'queued' | 'running' | 'completed' | 'partial' | 'failed' | string;
+  stage: string;
+  message?: string | null;
+  progress: number;
+  total_securities: number;
+  completed_securities: number;
+  master_count: number;
+  inactive_count: number;
+  valuation_count: number;
+  failed_count: number;
+  failed_codes: string[];
+  started_at?: string | null;
+  completed_at?: string | null;
+  updated_at?: string | null;
+  error?: string | null;
+  already_running?: boolean;
+}
+
+export interface FQEDataSyncStatus {
+  run: FQEDataSyncRun | null;
+  coverage: {
+    security_total: number;
+    currently_listed: number;
+    listing_dated: number;
+    inactive_total: number;
+    inactive_dated: number;
+    status_events: number;
+    valuation_series: number;
+    valuation_percentiles: number;
+    current_valuation_series: number;
+    current_valuation_percentiles: number;
+    valuation_date?: string | null;
+  };
 }
 
 export interface ResearchFactor {

@@ -172,6 +172,22 @@ class MaoStrategyAgent:
             elif volume_ratio > 5:
                 score -= 8
                 risks.append(f"量比 {volume_ratio:.2f}，存在情绪过热或对倒噪声")
+        turnover_values = [
+            value for row in ordered
+            if (value := _number(row.get("turnover"))) is not None and value >= 0
+        ]
+        amount_values = [
+            value for row in ordered
+            if (value := _number(row.get("amount"))) is not None and value > 0
+        ]
+        latest_turnover = _number(quote.get("turnover")) or (turnover_values[-1] if turnover_values else None)
+        latest_amount = _number(quote.get("amount")) or (amount_values[-1] if amount_values else None)
+
+        def percentile(value: float | None, values: list[float]) -> float | None:
+            if value is None or len(values) < 10:
+                return None
+            return round(sum(item <= value for item in values[-60:]) / len(values[-60:]) * 100, 2)
+
         return {
             "price": round(price, 3) if price is not None else None,
             "ma5": ma5,
@@ -192,6 +208,8 @@ class MaoStrategyAgent:
             "volume_to_recent_peak": volume_to_recent_peak,
             "close_location": close_location,
             "lower_shadow_ratio": lower_shadow_ratio,
+            "turnover_percentile_60d": percentile(latest_turnover, turnover_values),
+            "amount_percentile_60d": percentile(latest_amount, amount_values),
             "history_count": len(ordered),
             "history_start": str(ordered[0].get("date")) if ordered else None,
             "history_end": str(ordered[-1].get("date")) if ordered else None,
@@ -430,6 +448,14 @@ class MaoStrategyAgent:
         index_close = index_values[-1] if index_values else None
         index_ma20 = _mean(index_values[-20:]) if len(index_values) >= 20 else None
         index_ma60 = _mean(index_values[-60:]) if len(index_values) >= 60 else None
+
+        def index_return(window: int) -> float | None:
+            if len(index_values) <= window or index_values[-window - 1] == 0:
+                return None
+            return round((index_values[-1] / index_values[-window - 1] - 1) * 100, 2)
+
+        index_return_5d = index_return(5)
+        index_return_20d = index_return(20)
         if index_close is not None and index_ma20 is not None:
             score += 18 if index_close > index_ma20 else -18
             points += 1
@@ -472,6 +498,18 @@ class MaoStrategyAgent:
             evidence.append(str(outlook.get("headline") or f"宏观综合分{outlook_score:+.1f}"))
 
         market = context.get("market_overview") or {}
+        market_summary = (context.get("market_evidence") or {}).get("summary") or {}
+        evidence_current = bool(market_summary.get("is_current", True))
+        breadth_ratio = _number(market_summary.get("breadth_ratio"))
+        if evidence_current and market_summary.get("breadth_complete") and breadth_ratio is not None:
+            score += _clamp((breadth_ratio - 50) * 0.6, -12, 12)
+            points += 1
+            evidence.append(f"全市场上涨宽度{breadth_ratio:.1f}%")
+        amount_vs_ma5 = _number(market_summary.get("market_amount_vs_ma5_pct")) if evidence_current else None
+        if amount_vs_ma5 is not None:
+            score += _clamp(amount_vs_ma5 * 0.35, -10, 10)
+            points += 1
+            evidence.append(f"市场成交额较5日均值{_signed_pct(amount_vs_ma5)}")
         market_index = market.get("market_index") or {}
         sh_change = _number(market_index.get("sh_change_pct"))
         if sh_change is not None:
@@ -479,8 +517,13 @@ class MaoStrategyAgent:
             points += 1
             evidence.append(f"上证指数最近变化 {_signed_pct(sh_change)}")
         limit_board = market.get("limit_board") or {}
+        latest_sentiment = (market_summary.get("latest") or {}) if evidence_current else {}
         limit_up = _number(limit_board.get("limit_up"))
+        if limit_up is None:
+            limit_up = _number(latest_sentiment.get("limit_up_count"))
         limit_down = _number(limit_board.get("limit_down"))
+        if limit_down is None:
+            limit_down = _number(latest_sentiment.get("limit_down_count"))
         if limit_up is not None and limit_down is not None:
             spread = limit_up - limit_down
             score += _clamp(spread / 5, -12, 12)
@@ -508,6 +551,8 @@ class MaoStrategyAgent:
                 "close": round(index_close, 3) if index_close is not None else None,
                 "ma20": round(index_ma20, 3) if index_ma20 is not None else None,
                 "ma60": round(index_ma60, 3) if index_ma60 is not None else None,
+                "return_5d": index_return_5d,
+                "return_20d": index_return_20d,
                 "history_count": len(index_values),
             },
             "falsification": [
@@ -538,16 +583,19 @@ class MaoStrategyAgent:
 
         regime_missing = []
         index_metrics = cycle.get("index_metrics") or {}
+        market_summary = (context.get("market_evidence") or {}).get("summary") or {}
+        evidence_current = bool(market_summary.get("is_current", True))
         if int(index_metrics.get("history_count") or 0) < 60:
             regime_missing.append("完整60日指数日线")
-        if not market.get("market_breadth"):
+        if (not evidence_current or not market_summary.get("breadth_complete")) and not market.get("market_breadth"):
             regime_missing.append("全市场真实涨跌宽度")
-        regime_missing.append("市场成交额历史趋势")
+        if not evidence_current or int(market_summary.get("amount_history_count") or 0) < 5:
+            regime_missing.append("市场成交额历史趋势")
         market_regime = {
             "id": "market_regime_score",
             "name": "市场状态分",
             "score": cycle.get("score"),
-            "status": "partial" if cycle.get("score") is not None else "blocked",
+            "status": "available" if cycle.get("score") is not None and not regime_missing else "partial" if cycle.get("score") is not None else "blocked",
             "evidence": list(cycle.get("evidence") or [])[:5],
             "missing": list(dict.fromkeys(regime_missing)),
             "interpretation": "指数MA20/MA60、市场宽度和成交额趋势必须同时核验。",
@@ -555,6 +603,8 @@ class MaoStrategyAgent:
 
         sector_score = None
         sector_evidence: list[str] = []
+        sector_missing: list[str] = []
+        sector_breadth_available = False
         if inflows or outflows:
             positive_flow = sum(max(_number(row.get("main_net_inflow")) or 0, 0) for row in inflows[:5])
             negative_flow = sum(min(_number(row.get("main_net_inflow")) or 0, 0) for row in outflows[:5])
@@ -573,13 +623,47 @@ class MaoStrategyAgent:
                         matched.append(f"{stock['name']}所属{stock_sector}进入资金流入前列")
                         break
             sector_evidence.extend(matched)
+            index_return_5d = _number(index_metrics.get("return_5d"))
+            index_return_20d = _number(index_metrics.get("return_20d"))
+            return_5d = [
+                _number(row.get("return_5d")) for row in [*inflows, *outflows]
+                if _number(row.get("return_5d")) is not None
+            ]
+            return_20d = [
+                _number(row.get("return_20d")) for row in [*inflows, *outflows]
+                if _number(row.get("return_20d")) is not None
+            ]
+            breadth_rows = [
+                row for row in [*inflows, *outflows]
+                if _number(row.get("breadth_ratio")) is not None
+            ]
+            if return_5d and index_return_5d is not None:
+                relative_5d = _mean([value - index_return_5d for value in return_5d])
+                sector_score = round(_clamp((sector_score or 0) * 0.65 + (relative_5d or 0) * 8, -100, 100), 1)
+                sector_evidence.append(f"板块相对指数5日强度{_signed_pct(relative_5d)}")
+            else:
+                sector_missing.append("板块5日相对强度")
+            if return_20d and index_return_20d is not None:
+                relative_20d = _mean([value - index_return_20d for value in return_20d])
+                sector_score = round(_clamp((sector_score or 0) * 0.75 + (relative_20d or 0) * 5, -100, 100), 1)
+                sector_evidence.append(f"板块相对指数20日强度{_signed_pct(relative_20d)}")
+            else:
+                sector_missing.append("板块20日相对强度")
+            if breadth_rows:
+                sector_breadth_available = True
+                breadth = _mean([_number(row.get("breadth_ratio")) for row in breadth_rows if _number(row.get("breadth_ratio")) is not None])
+                sector_evidence.append(f"重点板块成分上涨比例{breadth:.1f}%")
+            else:
+                sector_missing.append("板块成分股上涨比例")
+        else:
+            sector_missing.extend(["板块5/20日相对强度", "板块成分股上涨比例"])
         sector_leadership = {
             "id": "sector_leadership_score",
             "name": "板块主线强度",
             "score": sector_score,
-            "status": "partial" if sector_score is not None else "blocked",
+            "status": "available" if sector_score is not None and not sector_missing else "partial" if sector_score is not None else "blocked",
             "evidence": sector_evidence[:5],
-            "missing": ["板块5/20日相对强度", "板块成分股上涨比例"],
+            "missing": list(dict.fromkeys(sector_missing)),
             "interpretation": "只有板块连续强于指数且成分宽度扩散，才可称为主线。",
         }
 
@@ -594,6 +678,44 @@ class MaoStrategyAgent:
             if total_limits:
                 crowd_parts.append(_clamp(abs(limit_up - limit_down) / total_limits * 25, 0, 25))
             crowd_evidence.append(f"涨停{int(limit_up)}只、跌停{int(limit_down)}只")
+        sentiment_latest = market_summary.get("latest") or {} if evidence_current else {}
+        if limit_up is None:
+            limit_up = _number(sentiment_latest.get("limit_up_count"))
+        if limit_down is None:
+            limit_down = _number(sentiment_latest.get("limit_down_count"))
+        if limit_up is not None and limit_down is not None and not crowd_evidence:
+            total_limits = limit_up + limit_down
+            crowd_parts.append(_clamp(total_limits / 120 * 55, 0, 55))
+            if total_limits:
+                crowd_parts.append(_clamp(abs(limit_up - limit_down) / total_limits * 25, 0, 25))
+            crowd_evidence.append(f"涨停{int(limit_up)}只、跌停{int(limit_down)}只")
+        failed_rate = _number(market_summary.get("failed_limit_rate")) if evidence_current else None
+        max_streak = _number(market_summary.get("max_streak_height")) if evidence_current else None
+        amount_percentile = _number(market_summary.get("market_amount_percentile")) if evidence_current else None
+        turnover_percentile = _number(market_summary.get("average_turnover_percentile")) if evidence_current else None
+        crowd_missing: list[str] = []
+        if failed_rate is not None:
+            crowd_parts.append(_clamp(failed_rate * 0.4, 0, 20))
+            crowd_evidence.append(f"炸板率{failed_rate:.1f}%")
+        else:
+            crowd_missing.append("炸板率")
+        if max_streak is not None:
+            crowd_parts.append(_clamp(max_streak * 2, 0, 20))
+            crowd_evidence.append(f"连板高度{int(max_streak)}板")
+        else:
+            crowd_missing.append("连板高度")
+        if amount_percentile is not None and turnover_percentile is not None:
+            crowd_parts.append(_clamp((amount_percentile + turnover_percentile) / 10, 0, 20))
+            crowd_evidence.append(f"市场成交额/换手历史分位{amount_percentile:.1f}%/{turnover_percentile:.1f}%")
+        else:
+            crowd_missing.append("换手/成交额历史分位")
+        if evidence_current and market_summary.get("breadth_complete"):
+            breadth = _number(market_summary.get("breadth_ratio"))
+            if breadth is not None:
+                crowd_parts.append(_clamp(abs(breadth - 50) * 0.2, 0, 10))
+                crowd_evidence.append(f"真实市场宽度{breadth:.1f}%")
+        else:
+            crowd_missing.append("真实市场宽度")
         for stock in stocks:
             turnover = _number(stock.get("turnover"))
             volume_ratio = _number(stock["technical"].get("volume_ratio"))
@@ -603,14 +725,20 @@ class MaoStrategyAgent:
             if volume_ratio is not None and volume_ratio >= 4:
                 crowd_parts.append(min(20, volume_ratio * 2.5))
                 crowd_evidence.append(f"{stock['name']}量比{volume_ratio:.2f}")
+        if "换手/成交额历史分位" in crowd_missing and any(
+            _number(stock["technical"].get("turnover_percentile_60d")) is not None
+            and _number(stock["technical"].get("amount_percentile_60d")) is not None
+            for stock in stocks
+        ):
+            crowd_missing.remove("换手/成交额历史分位")
         crowd_score = round(_clamp(sum(crowd_parts), 0, 100), 1) if crowd_parts else None
         crowd_extreme = {
             "id": "crowd_extreme_score",
             "name": "大众情绪极值",
             "score": crowd_score,
-            "status": "partial" if crowd_score is not None else "blocked",
+            "status": "available" if crowd_score is not None and not crowd_missing else "partial" if crowd_score is not None else "blocked",
             "evidence": crowd_evidence[:5],
-            "missing": ["炸板率", "连板高度", "换手/成交额历史分位", "真实市场宽度"],
+            "missing": list(dict.fromkeys(crowd_missing)),
             "interpretation": "极端可以持续；只有出现滞涨、炸板上升或宽度反转才算转衰确认。",
         }
 
@@ -656,15 +784,23 @@ class MaoStrategyAgent:
             exhaustion_scores.append(_clamp(local, 0, 100))
         exhaustion_score = round(_mean(exhaustion_scores), 1) if exhaustion_scores else None
         exhaustion_missing = []
-        if not exhaustion_scores:
+        if not stocks:
+            exhaustion_missing = []
+            exhaustion_status = "not_applicable"
+            exhaustion_evidence.append("本轮未指定个股，抛压衰竭因子不参与大盘研判")
+        elif not exhaustion_scores:
             exhaustion_missing.append("至少10日个股日线")
+            exhaustion_status = "blocked"
         elif not exhaustion_has_volume:
             exhaustion_missing.append("近期成交量")
+            exhaustion_status = "partial"
+        else:
+            exhaustion_status = "available"
         supply_exhaustion = {
             "id": "supply_exhaustion_score",
             "name": "抛压衰竭确认",
             "score": exhaustion_score,
-            "status": "partial" if exhaustion_score is not None and exhaustion_missing else "available" if exhaustion_score is not None else "blocked",
+            "status": exhaustion_status,
             "evidence": exhaustion_evidence[:6],
             "missing": exhaustion_missing,
             "interpretation": "缩量回调只是候选，仍需次日重新站上均价线或关键均线确认。",
@@ -700,16 +836,29 @@ class MaoStrategyAgent:
                 local += 15
             breakout_scores.append(_clamp(local, 0, 100))
         breakout_score = round(_mean(breakout_scores), 1) if breakout_scores else None
-        breakout_missing = ["板块成分股上涨比例"]
-        if not breakout_scores:
+        breakout_missing: list[str] = []
+        if not stocks:
+            breakout_status = "not_applicable"
+            breakout_evidence.append("本轮未指定个股，突破共振因子不参与大盘研判")
+        elif not breakout_scores:
             breakout_missing.append("至少21日个股日线与20日高点")
+            if not sector_breadth_available:
+                breakout_missing.append("板块成分股上涨比例")
+            breakout_status = "blocked"
         elif not breakout_has_volume:
             breakout_missing.append("量比或5日均量")
+            if not sector_breadth_available:
+                breakout_missing.append("板块成分股上涨比例")
+            breakout_status = "partial"
+        else:
+            if not sector_breadth_available:
+                breakout_missing.append("板块成分股上涨比例")
+            breakout_status = "partial" if breakout_missing else "available"
         breakout_confirmation = {
             "id": "breakout_confirmation_score",
             "name": "突破共振确认",
             "score": breakout_score,
-            "status": "partial" if breakout_score is not None else "blocked",
+            "status": breakout_status,
             "evidence": breakout_evidence[:6],
             "missing": breakout_missing,
             "interpretation": "突破必须同时有量能、收盘位置和板块联动，孤立突破不追。",

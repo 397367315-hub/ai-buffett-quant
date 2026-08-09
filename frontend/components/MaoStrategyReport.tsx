@@ -125,6 +125,7 @@ function statusLabel(status: string) {
     available: '可计算',
     partial: '部分数据',
     blocked: '数据阻断',
+    not_applicable: '本轮不适用',
     candidate: '待验证',
     not_triggered: '未触发',
     blocked_data: '数据阻断',

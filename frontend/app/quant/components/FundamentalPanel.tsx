@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle, BarChart3, CheckCircle2, Clock3, Database, Layers3, Loader2, RefreshCw, ShieldAlert, SlidersHorizontal, Wifi } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
-import type { BackgroundJob, FQEHolding, FQEPortfolio, FQEResult } from '../types';
+import type { BackgroundJob, FQEDataSyncStatus, FQEHolding, FQEPortfolio, FQEResult } from '../types';
 
 const CONTRACT_LABELS: Record<string, string> = {
   pit_financial: '财务 PIT',
@@ -18,6 +18,7 @@ const PHASE_LABELS: Record<string, string> = {
   queued: '任务排队',
   market_snapshot: '行情快照',
   pit_ttm: 'PIT / TTM 财务合并',
+  reference_data: '上市历史 / PE 分位合并',
   retail_engine: '零售轻量引擎',
   institutional_engine: '机构重构与组合优化',
   completed: '已完成',
@@ -42,8 +43,48 @@ function percentage(value: number | null | undefined, digits = 2) {
 
 function contractStatus(status: string) {
   if (status === 'available' || status === 'current_as_of') return { label: '可审计', className: 'text-down border-down/50' };
+  if (status === 'partial') return { label: '部分覆盖', className: 'text-warn border-warn/50' };
   if (status === 'unresolved' || status === 'missing') return { label: '有缺口', className: 'text-warn border-warn/50' };
   return { label: status || '未知', className: 'text-text-secondary border-border' };
+}
+
+const SYNC_PHASE_LABELS: Record<string, string> = {
+  queued: '补数排队',
+  security_master: '证券主表与上市状态',
+  valuation_history: '三年 PE 历史',
+  market_evidence: '市场宽度与情绪历史',
+  completed: '补数完成',
+  failed: '补数失败',
+};
+
+function DataSyncProgress({ status }: { status: FQEDataSyncStatus }) {
+  const run = status.run;
+  if (!run) return null;
+  const active = run.status === 'queued' || run.status === 'running';
+  const failed = run.status === 'failed';
+  const partial = run.status === 'partial';
+  return (
+    <div className={`rounded-md border p-3 ${failed ? 'border-down/50 bg-[#EF535022]' : partial ? 'border-warn/50 bg-[#D299221A]' : 'border-accent/50 bg-[#1F6FEB1A]'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className="flex min-w-0 items-center gap-2 text-text">
+          {active ? <Loader2 size={14} className="shrink-0 animate-spin text-accent" /> : failed || partial ? <AlertTriangle size={14} className={`shrink-0 ${failed ? 'text-down' : 'text-warn'}`} /> : <CheckCircle2 size={14} className="shrink-0 text-down" />}
+          <span>{SYNC_PHASE_LABELS[run.stage] || run.stage}：{run.message || '--'}</span>
+        </span>
+        <span className="shrink-0 font-mono text-accent">{Math.round(run.progress)}%</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#0D1117]"><div className="h-full bg-accent transition-all duration-300" style={{ width: `${Math.max(2, Math.min(100, run.progress))}%` }} /></div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-secondary">
+        <span>证券主表 {run.master_count || status.coverage.security_total}</span>
+        <span>上市日期 {status.coverage.listing_dated}/{status.coverage.currently_listed}</span>
+        <span>PE 历史 {status.coverage.current_valuation_series ?? status.coverage.valuation_series}/{status.coverage.currently_listed}</span>
+        <span>正 PE 分位 {status.coverage.current_valuation_percentiles ?? status.coverage.valuation_percentiles}</span>
+        <span>历史非活跃 {status.coverage.inactive_dated}/{status.coverage.inactive_total}</span>
+        {run.total_securities > 0 && <span>处理 {run.completed_securities}/{run.total_securities}</span>}
+        {run.failed_count > 0 && <span className="text-warn">上游失败 {run.failed_count}</span>}
+      </div>
+      {run.error && !active && <div className="mt-2 text-[11px] text-warn">{run.error}</div>}
+    </div>
+  );
 }
 
 function Progress({ job }: { job: BackgroundJob }) {
@@ -145,19 +186,25 @@ function PortfolioBlock({ portfolio }: { portfolio: FQEPortfolio }) {
 export default function FundamentalPanel() {
   const [result, setResult] = useState<FQEResult | null>(null);
   const [job, setJob] = useState<BackgroundJob | null>(null);
+  const [syncStatus, setSyncStatus] = useState<FQEDataSyncStatus | null>(null);
   const [topN, setTopN] = useState(10);
   const [candidatePool, setCandidatePool] = useState(60);
   const [mode, setMode] = useState<'strict' | 'pragmatic'>('pragmatic');
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    apiFetch<{ data: FQEResult | null }>('/quant/fqe/latest')
-      .then((response) => { if (mounted && response.data) setResult(response.data); })
-      .catch(() => undefined)
-      .finally(() => { if (mounted) setLoading(false); });
+    Promise.allSettled([
+      apiFetch<{ data: FQEResult | null }>('/quant/fqe/latest'),
+      apiFetch<{ data: FQEDataSyncStatus }>('/quant/fqe/data/status'),
+    ]).then(([latest, sync]) => {
+      if (!mounted) return;
+      if (latest.status === 'fulfilled' && latest.value.data) setResult(latest.value.data);
+      if (sync.status === 'fulfilled') setSyncStatus(sync.value.data);
+    }).finally(() => { if (mounted) setLoading(false); });
     return () => { mounted = false; };
   }, []);
 
@@ -181,6 +228,22 @@ export default function FundamentalPanel() {
     return () => { mounted = false; window.clearInterval(timer); };
   }, [job?.job_id, job?.status]);
 
+  useEffect(() => {
+    const run = syncStatus?.run;
+    if (!run || !['queued', 'running'].includes(run.status)) return;
+    let mounted = true;
+    const poll = async () => {
+      try {
+        const response = await apiFetch<{ data: FQEDataSyncStatus }>('/quant/fqe/data/status');
+        if (mounted) setSyncStatus(response.data);
+      } catch (caught) {
+        if (mounted) setSyncError(caught instanceof Error ? caught.message : '审计数据状态读取失败');
+      }
+    };
+    const timer = window.setInterval(poll, 1500);
+    return () => { mounted = false; window.clearInterval(timer); };
+  }, [syncStatus?.run?.run_id, syncStatus?.run?.status]);
+
   const run = async (force: boolean) => {
     setWorking(true); setError(null);
     try {
@@ -196,7 +259,29 @@ export default function FundamentalPanel() {
     }
   };
 
+  const startDataSync = async () => {
+    setSyncError(null);
+    try {
+      const response = await apiFetch<{ data: FQEDataSyncStatus['run'] }>('/quant/fqe/data/sync', {
+        method: 'POST',
+        body: JSON.stringify({ full: true, years: 3, force: false }),
+      });
+      setSyncStatus((current) => ({
+        run: response.data,
+        coverage: current?.coverage || {
+          security_total: 0, currently_listed: 0, listing_dated: 0,
+          inactive_total: 0, inactive_dated: 0, status_events: 0,
+          valuation_series: 0, valuation_percentiles: 0,
+          current_valuation_series: 0, current_valuation_percentiles: 0, valuation_date: null,
+        },
+      }));
+    } catch (caught) {
+      setSyncError(caught instanceof Error ? caught.message : '审计数据补齐任务启动失败');
+    }
+  };
+
   const active = Boolean(job && ['queued', 'running'].includes(job.status));
+  const syncActive = Boolean(syncStatus?.run && ['queued', 'running'].includes(syncStatus.run.status));
   const sourceLabel = result?.is_realtime ? '盘中实时' : result?.cache_used ? '缓存快照' : result?.source || '暂无数据';
   const sourceClass = result?.is_realtime ? 'text-down' : result?.cache_used ? 'text-warn' : 'text-text-secondary';
 
@@ -221,6 +306,18 @@ export default function FundamentalPanel() {
       </div>
 
       <div className="text-xs text-text-secondary">优先使用盘中行情；非交易时段或源站失败时使用最近有效缓存。严格模式缺失上市历史或 PE 历史分位时会明确排除，不用零值补齐。</div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-y border-border py-3">
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-text-secondary">
+          <span>证券主表 <b className="font-mono font-normal text-text">{syncStatus?.coverage.security_total ?? '--'}</b></span>
+          <span>上市日期 <b className="font-mono font-normal text-text">{syncStatus ? `${syncStatus.coverage.listing_dated}/${syncStatus.coverage.currently_listed}` : '--'}</b></span>
+          <span>PE 历史 <b className="font-mono font-normal text-text">{syncStatus ? `${syncStatus.coverage.current_valuation_series ?? syncStatus.coverage.valuation_series}/${syncStatus.coverage.currently_listed}` : '--'}</b></span>
+          <span>正 PE 分位 <b className="font-mono font-normal text-text">{syncStatus?.coverage.current_valuation_percentiles ?? syncStatus?.coverage.valuation_percentiles ?? '--'}</b></span>
+          <span>估值日期 <b className="font-mono font-normal text-text">{syncStatus?.coverage.valuation_date || '--'}</b></span>
+        </div>
+        <button type="button" onClick={startDataSync} disabled={syncActive} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-accent px-3 py-2 text-xs text-accent hover:bg-[#1F6FEB1A] disabled:opacity-50"><Database size={14} />{syncActive ? '审计补数中' : '补齐审计数据'}</button>
+      </div>
+      {syncStatus?.run && <DataSyncProgress status={syncStatus} />}
+      {syncError && <div className="flex items-start gap-2 rounded-md border border-down/50 bg-[#EF535022] p-3 text-xs text-down"><AlertTriangle size={15} className="shrink-0" />{syncError}</div>}
       {job && (active || job.status === 'completed') && <Progress job={job} />}
       {job?.status === 'failed' && <div className="flex items-start gap-2 rounded-md border border-down/50 bg-[#EF535022] p-3 text-xs text-down"><AlertTriangle size={15} className="shrink-0" />{job.error || '任务失败，请重试。'}</div>}
       {error && job?.status !== 'failed' && <div className="flex items-start gap-2 rounded-md border border-down/50 bg-[#EF535022] p-3 text-xs text-down"><AlertTriangle size={15} className="shrink-0" />{error}</div>}

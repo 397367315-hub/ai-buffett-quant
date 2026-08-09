@@ -101,6 +101,39 @@ class AIAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(stock_context["quote_metadata"]["is_realtime"])
         self.assertTrue(stock_context["quote_metadata"]["cache_used"])
 
+    async def test_strategy_context_backfills_missing_daily_history_on_demand(self):
+        start = date(2026, 6, 1)
+        history = [{
+            "trade_date": (start + timedelta(days=index)).isoformat(),
+            "open": 100 + index, "close": 101 + index,
+            "high": 102 + index, "low": 99 + index,
+            "volume": 1_000_000, "amount": 100_000_000,
+            "amplitude": 3.0, "change_pct": 1.0,
+            "change_amount": 1.0, "turnover": 4.0,
+        } for index in range(30)]
+        quote = {
+            "stocks": [{"code": "600519", "name": "贵州茅台", "price": 130.0}],
+            "source": "cache", "data_date": "2026-08-07", "is_realtime": False,
+            "cache_used": True, "complete": True,
+        }
+        price_history = {
+            "code": "600519", "name": "贵州茅台", "source": "tencent", "history": history,
+        }
+
+        with (
+            patch("services.ai_assistant.quote_snapshot_service.fetch", new=AsyncMock(return_value=quote)),
+            patch("services.ai_assistant.collector.fetch_stock_price_history", new=AsyncMock(return_value=price_history)) as fetch,
+            patch("services.history_cache.async_session", self.session_factory),
+        ):
+            context = await self.service._stock_context(
+                ["600519"], daily_limit=120, ensure_minimum=30,
+            )
+
+        fetch.assert_awaited_once()
+        self.assertEqual(len(context["daily_bars"]["600519"]), 30)
+        self.assertTrue(context["history_coverage"]["600519"]["sufficient"])
+        self.assertTrue(context["history_coverage"]["600519"]["refresh_attempted"])
+
 
 if __name__ == "__main__":
     unittest.main()

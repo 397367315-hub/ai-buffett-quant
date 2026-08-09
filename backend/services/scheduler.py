@@ -20,6 +20,32 @@ async def resume_incomplete_backfills() -> list[int]:
         return []
 
 
+async def resume_incomplete_fqe_syncs() -> list[int]:
+    from services.fqe_reference_data import fqe_reference_data
+
+    try:
+        resumed = await fqe_reference_data.resume_incomplete_runs()
+        if resumed:
+            print(f"[Scheduler] 已恢复FQE审计数据任务: {resumed}")
+        return resumed
+    except Exception as exc:
+        print(f"[Scheduler] FQE审计数据恢复失败: {type(exc).__name__}")
+        return []
+
+
+async def refresh_fqe_audit_data():
+    """Append the latest PE snapshot and refresh strategic market evidence."""
+    from services.fqe_reference_data import fqe_reference_data
+
+    try:
+        coverage = await fqe_reference_data.coverage()
+        full = not coverage.get("security_total") or not coverage.get("valuation_series")
+        return await fqe_reference_data.queue_sync(full=full, years=3, force=False)
+    except Exception as exc:
+        print(f"[Scheduler] FQE审计数据更新失败: {type(exc).__name__}")
+        return None
+
+
 async def refresh_ai_robot_short():
     from services.ai_robot import ai_robot_service
 
@@ -205,6 +231,27 @@ async def start_scheduler(data_collector=None, db_session=None):
         coalesce=True,
         max_instances=1,
         misfire_grace_time=60,
+    )
+    scheduler.add_job(
+        resume_incomplete_fqe_syncs,
+        "interval",
+        minutes=2,
+        id="resume_fqe_data_sync",
+        name="恢复未完成FQE审计数据任务",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=120,
+    )
+    scheduler.add_job(
+        refresh_fqe_audit_data,
+        CronTrigger(hour=16, minute=10, day_of_week="mon-fri"),
+        id="fqe_audit_data_close",
+        name="FQE上市历史、PE分位与市场证据盘后更新",
+        replace_existing=True,
+        coalesce=True,
+        max_instances=1,
+        misfire_grace_time=1800,
     )
 
     async def quant_signal_scan():

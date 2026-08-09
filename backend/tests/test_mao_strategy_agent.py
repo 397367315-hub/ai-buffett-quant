@@ -225,6 +225,60 @@ class MaoStrategyAgentTests(unittest.TestCase):
         self.assertIn("风控红线：", rendered)
         self.assertEqual(rendered.count("入场前提："), 1)
 
+    def test_persisted_market_and_sector_evidence_clears_fixed_data_gaps(self):
+        context = _complete_context()
+        context["market_evidence"] = {
+            "available": True,
+            "summary": {
+                "breadth_complete": True,
+                "breadth_ratio": 58.0,
+                "amount_history_count": 20,
+                "turnover_history_count": 20,
+                "market_amount_vs_ma5_pct": 6.5,
+                "market_amount_percentile": 82.0,
+                "average_turnover_percentile": 74.0,
+                "failed_limit_rate": 11.2,
+                "max_streak_height": 7,
+                "latest": {"limit_up_count": 68, "limit_down_count": 4},
+            },
+        }
+        for payload in context["sector_flow"].values():
+            for row in [*(payload.get("top_net_inflow") or []), *(payload.get("top_net_outflow") or [])]:
+                row.update({"return_5d": 4.2, "return_20d": 11.5, "breadth_ratio": 68.0})
+
+        report = self.service.analyze_context(
+            "分析600519",
+            context,
+            regime={"regime": "牛市", "bias": "bullish", "confidence": 0.8},
+        )
+        missing = {
+            item
+            for factor in report["strategy_factors"]
+            for item in factor["missing"]
+        }
+        for resolved in (
+            "全市场真实涨跌宽度", "市场成交额历史趋势", "板块5日相对强度",
+            "板块20日相对强度", "板块成分股上涨比例", "炸板率", "连板高度",
+            "换手/成交额历史分位", "真实市场宽度", "至少10日个股日线",
+            "至少21日个股日线与20日高点",
+        ):
+            self.assertNotIn(resolved, missing)
+
+    def test_market_only_question_marks_stock_factors_not_applicable(self):
+        context = _complete_context()
+        context["stock_codes"] = []
+        context["stocks"] = {"quotes": [], "quote_metadata": {}, "daily_bars": {}}
+        report = self.service.analyze_context(
+            "分析上证大盘",
+            context,
+            regime={"regime": "震荡市", "bias": "neutral", "confidence": 0.6},
+        )
+        by_id = {item["id"]: item for item in report["strategy_factors"]}
+        self.assertEqual(by_id["supply_exhaustion_score"]["status"], "not_applicable")
+        self.assertEqual(by_id["breakout_confirmation_score"]["status"], "not_applicable")
+        self.assertEqual(by_id["supply_exhaustion_score"]["missing"], [])
+        self.assertEqual(by_id["breakout_confirmation_score"]["missing"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

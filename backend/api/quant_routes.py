@@ -19,6 +19,7 @@ from quant.rules import public_rule_catalog
 from quant.schemas import (
     BacktestRequest,
     CompareRequest,
+    FQEDataSyncRequest,
     FQERequest,
     PaperBuyRequest,
     PaperResetRequest,
@@ -38,6 +39,7 @@ from database import async_session
 from services.quote_cache import quote_snapshot_service
 from services.overnight_strategy import overnight_strategy_service
 from services.fqe_engine import fqe_compare_service
+from services.fqe_reference_data import fqe_reference_data
 from services.quant_research_workspace import quant_research_workspace
 
 
@@ -210,6 +212,36 @@ async def get_fqe_status(job_id: str):
 @router.get("/fqe/latest")
 async def get_latest_fqe():
     return {"code": 0, "data": fqe_compare_service.get_latest()}
+
+
+@router.post("/fqe/data/sync", status_code=status.HTTP_202_ACCEPTED)
+async def start_fqe_data_sync(payload: FQEDataSyncRequest):
+    """Backfill the dated security master, PE history and strategic evidence."""
+    result = await fqe_reference_data.queue_sync(
+        full=payload.full,
+        years=payload.years,
+        force=payload.force,
+    )
+    return {"code": 0, "data": result}
+
+
+@router.get("/fqe/data/status")
+async def get_fqe_data_status():
+    return {"code": 0, "data": await fqe_reference_data.latest_status()}
+
+
+@router.get("/fqe/data/valuation/{stock_code}")
+async def get_fqe_valuation_history(
+    stock_code: str,
+    days: int = Query(1095, ge=1, le=1825),
+):
+    try:
+        result = await fqe_reference_data.get_history(stock_code, days=days)
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="该股票尚无PE历史缓存")
+    return {"code": 0, "data": result}
 
 
 @router.get("/signals")
