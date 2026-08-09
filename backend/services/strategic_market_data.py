@@ -34,6 +34,22 @@ def _percentile(value: float | None, values: list[float]) -> float | None:
 class StrategicMarketDataService:
     _CONCURRENCY = 4
 
+    def __init__(self) -> None:
+        self._ensure_lock = asyncio.Lock()
+
+    @staticmethod
+    def _analysis_ready(payload: dict[str, Any]) -> bool:
+        summary = payload.get("summary") or {}
+        return bool(
+            payload.get("available")
+            and summary.get("is_current")
+            and summary.get("breadth_complete")
+            and int(summary.get("amount_history_count") or 0) >= 5
+            and int(summary.get("turnover_history_count") or 0) >= 5
+            and summary.get("failed_limit_rate") is not None
+            and summary.get("max_streak_height") is not None
+        )
+
     @staticmethod
     async def _aggregate(trade_date: date) -> dict[str, Any]:
         async with async_session() as session:
@@ -242,6 +258,30 @@ class StrategicMarketDataService:
             "cache_used": bool(history),
             "available": bool(history),
         }
+
+    async def ensure_history(self, limit: int = 120) -> dict[str, Any]:
+        """Return complete strategy evidence, repairing a stale cache once."""
+        snapshot = await self.history(limit=limit)
+        if self._analysis_ready(snapshot):
+            return snapshot
+
+        async with self._ensure_lock:
+            snapshot = await self.history(limit=limit)
+            if self._analysis_ready(snapshot):
+                return snapshot
+            try:
+                refresh = await asyncio.wait_for(self.sync_recent(days=5), timeout=30.0)
+                refresh_error = None
+            except Exception as exc:
+                refresh = None
+                refresh_error = type(exc).__name__
+            snapshot = await self.history(limit=limit)
+            snapshot["refresh_attempted"] = True
+            if refresh is not None:
+                snapshot["refresh_result"] = refresh
+            if refresh_error:
+                snapshot["refresh_error"] = refresh_error
+            return snapshot
 
 
 strategic_market_data_service = StrategicMarketDataService()

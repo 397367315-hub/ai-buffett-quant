@@ -37,7 +37,9 @@ jobs:
           jq -e '
             .code == 0 and
             .data.concept.status == "success" and
-            .data.industry.status == "success"
+            .data.industry.status == "success" and
+            .data.strategic_evidence.status == "success" and
+            .data.strategic_evidence.written >= 1
           ' <<<"$response"
 
       - name: Verify persisted coverage

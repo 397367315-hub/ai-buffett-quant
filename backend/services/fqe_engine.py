@@ -11,6 +11,7 @@ historical backtest still requires dated financial and quote snapshots.
 from __future__ import annotations
 
 import asyncio
+import copy
 import math
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
@@ -20,7 +21,7 @@ from sqlalchemy import select
 
 from config import settings
 from database import async_session
-from models import StockDailyBar
+from models import MarketDataCache, StockDailyBar
 from quant.indicators import normalize_snapshot_stock
 from quant.jobs import create_job, get_job, latest_running_job, spawn, update_job
 from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
@@ -45,6 +46,8 @@ FQE_FINANCIAL_FIELDS = {
     "net_profit",
     "is_profitable_non_st",
 }
+
+FQE_LATEST_CACHE_KEY = "fqe_latest_result_v1"
 
 
 def _number(value: Any) -> float | None:
@@ -650,6 +653,7 @@ class FQECompareService:
             update_job("fqe", job_id, status="running", phase="market_snapshot", progress=5, message="正在读取全市场行情与缓存", started_at=shanghai_now().isoformat())
             try:
                 result = await self.compare(top_n=top_n, candidate_pool=candidate_pool, mode=mode, force=force, job_id=job_id)
+                await self.save_latest(result)
                 update_job("fqe", job_id, status="completed", phase="completed", progress=100, message=f"双引擎完成，零售{result['retail_portfolio']['count']}只，机构{result['institutional_portfolio']['count']}只", result=result, completed_at=shanghai_now().isoformat())
             except Exception as exc:
                 update_job("fqe", job_id, status="failed", phase="failed", progress=100, message="FQE双引擎运行失败", error=f"{type(exc).__name__}: {exc}"[:500], completed_at=shanghai_now().isoformat())
@@ -740,11 +744,49 @@ class FQECompareService:
         return get_job("fqe", job_id)
 
     @staticmethod
-    def get_latest() -> dict | None:
+    def _local_latest() -> dict | None:
         jobs = quant_store.read("jobs").get("fqe", {}).values()
         completed = [item for item in jobs if item.get("status") == "completed" and item.get("result")]
         latest = max(completed, key=lambda item: item.get("completed_at") or "", default=None)
         return latest.get("result") if latest else None
+
+    @staticmethod
+    async def save_latest(result: dict) -> bool:
+        if not isinstance(result, dict) or result.get("engine_mode") != "COMPARE_DUAL_ENGINE":
+            return False
+        payload = copy.deepcopy(result)
+        try:
+            async with async_session() as session:
+                row = await session.get(MarketDataCache, FQE_LATEST_CACHE_KEY)
+                if row is None:
+                    session.add(MarketDataCache(key=FQE_LATEST_CACHE_KEY, payload=payload))
+                else:
+                    existing_at = str((row.payload or {}).get("generated_at") or "")
+                    incoming_at = str(payload.get("generated_at") or "")
+                    if existing_at and incoming_at and incoming_at < existing_at:
+                        return False
+                    row.payload = payload
+                    row.updated_at = datetime.utcnow()
+                await session.commit()
+            return True
+        except Exception as exc:
+            print(f"FQE latest result cache save failed: {type(exc).__name__}")
+            return False
+
+    @classmethod
+    async def get_latest(cls) -> dict | None:
+        local = cls._local_latest()
+        persisted = None
+        try:
+            async with async_session() as session:
+                row = await session.get(MarketDataCache, FQE_LATEST_CACHE_KEY)
+            if row and isinstance(row.payload, dict):
+                persisted = copy.deepcopy(row.payload)
+        except Exception as exc:
+            print(f"FQE latest result cache load failed: {type(exc).__name__}")
+
+        candidates = [item for item in (local, persisted) if isinstance(item, dict)]
+        return max(candidates, key=lambda item: str(item.get("generated_at") or ""), default=None)
 
 
 fqe_compare_service = FQECompareService()

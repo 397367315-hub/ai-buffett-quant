@@ -733,7 +733,7 @@ class AIAssistantService:
         index_history_task = self._index_history_context()
         stock_flow_task = self._stock_flow_context(codes)
         announcements_task = announcements()
-        market_evidence_task = strategic_market_data_service.history(limit=120)
+        market_evidence_task = strategic_market_data_service.ensure_history(limit=120)
 
         (
             stock_result,

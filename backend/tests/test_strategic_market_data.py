@@ -1,6 +1,6 @@
 import unittest
 from datetime import date, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -53,6 +53,28 @@ class StrategicMarketDataTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(summary["market_amount_vs_ma5_pct"], 0)
         self.assertEqual(summary["failed_limit_rate"], 12.5)
         self.assertEqual(summary["max_streak_height"], 6)
+
+    async def test_ensure_history_repairs_incomplete_strategy_evidence_once(self):
+        incomplete = {"available": False, "summary": {}}
+        complete = {
+            "available": True,
+            "summary": {
+                "is_current": True,
+                "breadth_complete": True,
+                "amount_history_count": 5,
+                "turnover_history_count": 5,
+                "failed_limit_rate": 12.5,
+                "max_streak_height": 4,
+            },
+        }
+        self.service.history = AsyncMock(side_effect=[incomplete, incomplete, complete])
+        self.service.sync_recent = AsyncMock(return_value={"status": "success", "written": 5})
+
+        result = await self.service.ensure_history(limit=120)
+
+        self.service.sync_recent.assert_awaited_once_with(days=5)
+        self.assertTrue(result["refresh_attempted"])
+        self.assertTrue(self.service._analysis_ready(result))
 
 
 if __name__ == "__main__":

@@ -211,7 +211,7 @@ async def get_fqe_status(job_id: str):
 
 @router.get("/fqe/latest")
 async def get_latest_fqe():
-    return {"code": 0, "data": fqe_compare_service.get_latest()}
+    return {"code": 0, "data": await fqe_compare_service.get_latest()}
 
 
 @router.post("/fqe/data/sync", status_code=status.HTTP_202_ACCEPTED)

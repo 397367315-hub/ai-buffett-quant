@@ -1,12 +1,16 @@
+import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from database import Base
+from quant.storage import QuantJsonStore
 from quant.schemas import FQERequest
-from services.fqe_engine import FundamentalQuantEngine
-from services.fqe_engine import fqe_compare_service
+from services.fqe_engine import FQECompareService, FundamentalQuantEngine, fqe_compare_service
 from services.stock_features import StockFeatureService, _a_share_code, _ttm_value
 
 
@@ -43,6 +47,31 @@ class FQEEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, running)
         create_job.assert_not_called()
         spawn.assert_not_called()
+
+    async def test_latest_result_survives_an_empty_process_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+            session_factory = async_sessionmaker(engine, expire_on_commit=False)
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+            store = QuantJsonStore(Path(directory) / "json")
+            service = FQECompareService()
+            result = {
+                "version": 1,
+                "engine_mode": "COMPARE_DUAL_ENGINE",
+                "generated_at": "2026-08-09T17:00:00+08:00",
+                "retail_portfolio": {"count": 10, "holdings": []},
+                "institutional_portfolio": {"count": 10, "holdings": []},
+            }
+
+            with patch("services.fqe_engine.async_session", session_factory), patch(
+                "services.fqe_engine.quant_store", store
+            ):
+                self.assertTrue(await service.save_latest(result))
+                store.write("jobs", {"version": 1, "scan": {}, "backtest": {}, "fqe": {}})
+                self.assertEqual(await service.get_latest(), result)
+
+            await engine.dispose()
 
     def test_a_share_code_is_normalized_for_financial_joins(self):
         self.assertEqual(_a_share_code("600519"), "600519")

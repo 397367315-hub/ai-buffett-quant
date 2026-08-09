@@ -11,6 +11,7 @@ from sqlalchemy.exc import OperationalError
 from services.history_cache import HistoryCacheService, _ftshare_yi_to_yuan, collector, engine
 from services.ftshare_mcp import ftshare_mcp_client
 from services.data_sync import DataSyncService, history_cache
+from services.data_sync import strategic_market_data_service
 from models import ConceptFundFlowDaily
 
 
@@ -134,13 +135,16 @@ class HistoryCacheAsyncTests(unittest.IsolatedAsyncioTestCase):
             patch.object(history_cache, "cache_current_northbound", new_callable=AsyncMock, return_value={"status": "success"}),
             patch.object(history_cache, "cache_current_concept_flow", new_callable=AsyncMock, return_value={"status": "success"}) as concept,
             patch.object(history_cache, "cache_current_industry_flow", new_callable=AsyncMock, return_value={"status": "success"}) as industry,
+            patch.object(strategic_market_data_service, "sync_recent", new_callable=AsyncMock, return_value={"status": "success", "written": 5}) as strategic,
         ):
             result = await DataSyncService.sync_market_snapshot()
 
         expected = {"trade_date": date(2026, 8, 3), "verified_trade_date": True}
         concept.assert_awaited_once_with(**expected)
         industry.assert_awaited_once_with(**expected)
+        strategic.assert_awaited_once_with(days=5)
         self.assertEqual(result["stock_bars"], stock_bars)
+        self.assertEqual(result["strategic_evidence"]["written"], 5)
 
     async def test_current_stock_snapshot_writes_only_timestamp_verified_rows(self):
         service = HistoryCacheService()

@@ -4,6 +4,7 @@ import asyncio
 from datetime import date
 
 from services.history_cache import history_cache
+from services.strategic_market_data import strategic_market_data_service
 
 
 class DataSyncService:
@@ -38,11 +39,22 @@ class DataSyncService:
                 verified_trade_date=verified_trade_date,
             ),
         )
+        try:
+            # Build sentiment evidence only after the verified daily bars have
+            # been written, so a new trading day cannot race with aggregation.
+            strategic_evidence = await strategic_market_data_service.sync_recent(days=5)
+        except Exception as exc:
+            strategic_evidence = {
+                "status": "unavailable",
+                "written": 0,
+                "error": type(exc).__name__,
+            }
         return {
             "concept": concept,
             "industry": industry,
             "northbound": northbound,
             "stock_bars": stock_bars,
+            "strategic_evidence": strategic_evidence,
         }
 
     @staticmethod
