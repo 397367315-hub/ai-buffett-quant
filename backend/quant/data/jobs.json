@@ -2,5 +2,7 @@
   "version": 1,
   "scan": {},
   "backtest": {},
-  "fqe": {}
+  "fqe": {},
+  "zhaban": {},
+  "zhaban_backtest": {}
 }

@@ -30,6 +30,8 @@ from quant.schemas import (
     ScanRequest,
     StrategyCreate,
     StrategyUpdate,
+    ZhabanBacktestRequest,
+    ZhabanScanRequest,
 )
 from quant.signals import quant_signal_service
 from quant.storage import quant_store
@@ -41,6 +43,7 @@ from services.overnight_strategy import overnight_strategy_service
 from services.fqe_engine import fqe_compare_service
 from services.fqe_reference_data import fqe_reference_data
 from services.quant_research_workspace import quant_research_workspace
+from services.zhaban_strategy import zhaban_strategy_service
 
 
 router = APIRouter(prefix="/api/v1/quant", tags=["量化策略"])
@@ -59,6 +62,59 @@ async def get_rules():
 @router.get("/templates")
 async def get_templates():
     return {"code": 0, "data": list_templates()}
+
+
+@router.get("/zhaban/config")
+async def get_zhaban_strategy_config():
+    return {"code": 0, "data": zhaban_strategy_service.config()}
+
+
+@router.get("/zhaban/latest")
+async def get_latest_zhaban_research():
+    return {"code": 0, "data": await zhaban_strategy_service.latest()}
+
+
+@router.get("/zhaban/backtest/latest")
+async def get_latest_zhaban_backtest():
+    return {"code": 0, "data": await zhaban_strategy_service.latest_backtest()}
+
+
+@router.post("/zhaban/scan", status_code=status.HTTP_202_ACCEPTED)
+async def start_zhaban_research(payload: ZhabanScanRequest):
+    try:
+        job = await zhaban_strategy_service.start_scan(payload.model_dump(mode="json"))
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    return {"code": 0, "data": job, "message": "炸板事件研究任务已提交"}
+
+
+@router.get("/zhaban/scan/status/{job_id}")
+async def get_zhaban_research_status(job_id: str):
+    job = zhaban_strategy_service.job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="炸板研究任务不存在")
+    if job.get("status") == "completed":
+        job = {**job, "research": await zhaban_strategy_service.latest()}
+    return {"code": 0, "data": job}
+
+
+@router.post("/zhaban/backtest", status_code=status.HTTP_202_ACCEPTED)
+async def start_zhaban_backtest(payload: ZhabanBacktestRequest):
+    try:
+        job = await zhaban_strategy_service.start_backtest(payload.model_dump(mode="json"))
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    return {"code": 0, "data": job, "message": "炸板策略回测任务已提交"}
+
+
+@router.get("/zhaban/backtest/status/{job_id}")
+async def get_zhaban_backtest_status(job_id: str):
+    job = zhaban_strategy_service.backtest_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="炸板回测任务不存在")
+    if job.get("status") == "completed":
+        job = {**job, "backtest": await zhaban_strategy_service.latest_backtest()}
+    return {"code": 0, "data": job}
 
 
 @router.get("/sectors")

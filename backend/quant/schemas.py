@@ -87,6 +87,32 @@ class ScanRequest(BaseModel):
     force: bool = False
 
 
+class ZhabanScanRequest(BaseModel):
+    """Parameters for the research-only limit-up-breakout scanner."""
+
+    target_date: date | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
+    force: bool = False
+
+
+class ZhabanBacktestRequest(BaseModel):
+    """Bounded daily event-study request for the zhaban research module."""
+
+    start_date: date = Field(default_factory=lambda: date.today() - timedelta(days=365))
+    end_date: date = Field(default_factory=date.today)
+    initial_capital: float = Field(default=100000.0, ge=10000, le=100000000)
+    config: dict[str, Any] = Field(default_factory=dict)
+    force: bool = False
+
+    @model_validator(mode="after")
+    def validate_period(self):
+        if self.end_date <= self.start_date:
+            raise ValueError("炸板研究结束日期必须晚于开始日期")
+        if (self.end_date - self.start_date).days > 730:
+            raise ValueError("炸板研究区间最长支持两年")
+        return self
+
+
 class FQERequest(BaseModel):
     top_n: int = Field(default=10, ge=5, le=15)
     candidate_pool: int = Field(default=60, ge=20, le=120)

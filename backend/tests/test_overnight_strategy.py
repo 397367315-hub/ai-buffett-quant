@@ -339,6 +339,32 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(positions[0].previous_close, 17.5)
         self.assertLessEqual(positions[0].allocated_pct, 10)
 
+    async def test_three_losses_warn_without_blocking_future_scans(self):
+        run = OvernightStrategyRun(
+            stage="entry", trigger="manual", status="completed", progress=100,
+            message="test", data_date=date(2026, 8, 1),
+        )
+        async with self.session_factory() as session:
+            session.add(run)
+            await session.flush()
+            for index, pnl in enumerate((100.0, -10.0, -20.0, -30.0)):
+                moment = datetime(2026, 8, 1, 10, 0) + timedelta(days=index)
+                session.add(OvernightPosition(
+                    entry_run_id=run.id, stock_code=f"60000{index}", stock_name=f"测试{index}",
+                    status="closed", shares=100, signal_at=moment - timedelta(days=1),
+                    entry_at=moment - timedelta(days=1), entry_price=10.0,
+                    exit_at=moment, exit_price=10.0 + pnl / 100,
+                    pnl=pnl, pnl_pct=pnl / 1000 * 100,
+                ))
+            await session.commit()
+
+        result = await self.service._loss_circuit(datetime(2026, 8, 5, 9, 25))
+
+        self.assertTrue(result["warning"])
+        self.assertFalse(result["blocked"])
+        self.assertEqual(result["consecutive_losses"], 3)
+        self.assertNotIn("pause_until", result)
+
     async def test_scheduled_completed_run_is_deduplicated_for_five_minutes(self):
         first, created = await self.service._create_run("entry", "schedule")
         self.assertTrue(created)

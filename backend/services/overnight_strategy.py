@@ -1046,15 +1046,23 @@ class OvernightStrategyService:
                 .order_by(desc(OvernightPosition.exit_at), desc(OvernightPosition.id))
                 .limit(3)
             )).scalars().all()
-        if len(rows) < 3 or not all(float(row.pnl or 0) < 0 for row in rows):
-            return {"blocked": False, "consecutive_losses": sum(float(row.pnl or 0) < 0 for row in rows)}
-        latest_exit = rows[0].exit_at or rows[0].updated_at or rows[0].created_at
-        pause_until = latest_exit.date() + timedelta(days=7) if latest_exit else now.date()
+        consecutive_losses = 0
+        for row in rows:
+            if float(row.pnl or 0) >= 0:
+                break
+            consecutive_losses += 1
+        warning = consecutive_losses >= 3
         return {
-            "blocked": now.date() < pause_until,
-            "consecutive_losses": 3,
-            "pause_until": pause_until.isoformat(),
-            "reason": "连续3笔亏损，强制空仓一周",
+            # The system observes and warns; the user remains the final decision
+            # maker. A losing streak must never hide current market candidates.
+            "blocked": False,
+            "warning": warning,
+            "level": "high" if warning else "normal",
+            "consecutive_losses": consecutive_losses,
+            "reason": (
+                "最近连续3笔模拟交易亏损，请降低仓位并复核策略；扫描和行情观察继续运行。"
+                if warning else "未触发连续3笔亏损提醒"
+            ),
         }
 
     @staticmethod
@@ -1131,19 +1139,6 @@ class OvernightStrategyService:
             return
 
         circuit = await self._loss_circuit(now)
-        if circuit.get("blocked"):
-            await self._finish(
-                run_id,
-                status="completed",
-                message=f"空仓日：{circuit['reason']}（至 {circuit['pause_until']}）",
-                data_date=now.date(),
-                data_quality={
-                    "strategy_id": config["id"], "strategy": config,
-                    "cash_day": True, "loss_circuit": circuit, "quote": "not_requested",
-                },
-            )
-            return
-
         await self._set_progress(run_id, 5, "正在获取完整A股实时横截面")
         snapshot_result, market_result = await asyncio.gather(
             collector.fetch_quant_market_snapshot(),
@@ -1513,20 +1508,6 @@ class OvernightStrategyService:
             return
 
         circuit = await self._loss_circuit(now)
-        if circuit.get("blocked"):
-            await self._finish(
-                run_id,
-                status="completed",
-                message=f"空仓日：{circuit['reason']}（至 {circuit['pause_until']}）",
-                data_date=now.date(),
-                data_quality={
-                    "strategy_id": config["id"], "strategy": config,
-                    "cash_day": True, "loss_circuit": circuit,
-                    "auction": {"status": "blocked", "agent": "AI竞价盯盘Agent"},
-                },
-            )
-            return
-
         async with async_session() as session:
             previous_runs = (await session.execute(
                 select(OvernightStrategyRun)
@@ -2128,6 +2109,7 @@ class OvernightStrategyService:
         all_priced = [item for item in position_views if item["pnl"] is not None]
         total_cost = sum(item["cost_value"] for item in all_priced)
         total_pnl = sum(item["pnl"] for item in all_priced)
+        loss_alert = await self._loss_circuit(shanghai_now())
         return {
             "updated_at": shanghai_now().isoformat(),
             "strategy": {
@@ -2156,6 +2138,7 @@ class OvernightStrategyService:
                 "pnl": round(total_pnl, 2) if all_priced else None,
                 "pnl_pct": round(total_pnl / total_cost * 100, 3) if total_cost else None,
             },
+            "loss_alert": loss_alert,
             "quote": {
                 "available": bool(quote_payload.get("available")),
                 "source": quote_payload.get("source", "eastmoney"),

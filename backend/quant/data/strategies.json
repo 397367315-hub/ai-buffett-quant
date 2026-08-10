@@ -233,13 +233,11 @@
           },
           {
             "type": "vol_ratio",
-            "operator": "gt",
-            "value": 1.2
-          },
-          {
-            "type": "vol_ratio",
-            "operator": "lte",
-            "value": 3.5
+            "operator": "between",
+            "value": [
+              1.2,
+              3.5
+            ]
           },
           {
             "type": "main_inflow",

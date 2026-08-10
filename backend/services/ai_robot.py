@@ -20,6 +20,7 @@ from models import (
     PersonalPoolItem,
 )
 from services.data_collector import collector, shanghai_now
+from services.ai_service import ai_service
 from services.stock_selection_agents import stock_selection_agents
 from services.quote_cache import quote_snapshot_service
 
@@ -459,6 +460,186 @@ class AIRobotService:
         async with async_session() as session:
             rows = list((await session.execute(query)).scalars().all())
         return [_journal_dict(row) for row in rows]
+
+    async def performance_calendar(self, pool_type: str | None = None, days: int = 180) -> dict[str, Any]:
+        """Aggregate persisted robot journals into a calendar-friendly ledger."""
+        if pool_type and pool_type not in POOL_CONFIG:
+            raise ValueError("pool_type 必须是 short 或 long")
+        bounded_days = min(max(int(days), 7), 730)
+        today = shanghai_now().date()
+        cutoff = today - timedelta(days=bounded_days - 1)
+        query = select(AIRobotJournal).where(
+            AIRobotJournal.journal_date >= cutoff,
+            AIRobotJournal.journal_date <= today,
+        ).order_by(AIRobotJournal.journal_date.asc(), AIRobotJournal.pool_type.asc())
+        if pool_type:
+            query = query.where(AIRobotJournal.pool_type == pool_type)
+        async with async_session() as session:
+            rows = list((await session.execute(query)).scalars().all())
+
+        by_date: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            key = row.journal_date.isoformat()
+            day = by_date.setdefault(key, {
+                "date": key,
+                "pnl": 0.0,
+                "cost_value": 0.0,
+                "market_value": 0.0,
+                "priced_positions": 0,
+                "waiting_positions": 0,
+                "winners": 0,
+                "losers": 0,
+                "pools": {},
+                "is_realtime": False,
+                "source_data_dates": [],
+            })
+            metrics = row.metrics if isinstance(row.metrics, dict) else {}
+            performance = metrics.get("performance") if isinstance(metrics.get("performance"), dict) else {}
+            pnl = _number(performance.get("pnl"))
+            cost = _number(performance.get("cost_value"))
+            market_value = _number(performance.get("market_value"))
+            priced = int(performance.get("priced_positions") or 0)
+            waiting = int(performance.get("waiting_positions") or 0) + int(performance.get("quote_unavailable_positions") or 0)
+            pool_view = {
+                "journal_id": row.id,
+                "pool_type": row.pool_type,
+                "pnl": round(pnl, 2) if pnl is not None else None,
+                "pnl_pct": _number(performance.get("pnl_pct")),
+                "cost_value": round(cost, 2) if cost is not None else None,
+                "market_value": round(market_value, 2) if market_value is not None else None,
+                "priced_positions": priced,
+                "waiting_positions": waiting,
+                "winners": int(performance.get("winners") or 0),
+                "losers": int(performance.get("losers") or 0),
+                "source_data_date": row.source_data_date.isoformat() if row.source_data_date else None,
+                "is_realtime": bool(row.is_realtime),
+                "action_summary": row.action_summary,
+            }
+            day["pools"][row.pool_type] = pool_view
+            if pnl is not None:
+                day["pnl"] += pnl
+            if cost is not None:
+                day["cost_value"] += cost
+            if market_value is not None:
+                day["market_value"] += market_value
+            day["priced_positions"] += priced
+            day["waiting_positions"] += waiting
+            day["winners"] += int(performance.get("winners") or 0)
+            day["losers"] += int(performance.get("losers") or 0)
+            day["is_realtime"] = day["is_realtime"] or bool(row.is_realtime)
+            if row.source_data_date:
+                day["source_data_dates"].append(row.source_data_date.isoformat())
+
+        calendar_days = []
+        for key, day in sorted(by_date.items()):
+            cost = day["cost_value"]
+            day["pnl"] = round(day["pnl"], 2)
+            day["cost_value"] = round(cost, 2)
+            day["market_value"] = round(day["market_value"], 2)
+            day["pnl_pct"] = round(day["pnl"] / cost * 100, 2) if cost > 0 else None
+            day["status"] = "profit" if day["pnl"] > 0 else "loss" if day["pnl"] < 0 else "flat"
+            day["source_data_dates"] = sorted(set(day["source_data_dates"]))
+            calendar_days.append(day)
+
+        profits = [item for item in calendar_days if item["status"] == "profit"]
+        losses = [item for item in calendar_days if item["status"] == "loss"]
+        max_loss_streak = 0
+        current_loss_streak = 0
+        for item in calendar_days:
+            if item["status"] == "loss":
+                current_loss_streak += 1
+                max_loss_streak = max(max_loss_streak, current_loss_streak)
+            else:
+                current_loss_streak = 0
+        total_pnl = round(sum(item["pnl"] for item in calendar_days), 2)
+        total_cost = sum(item["cost_value"] for item in calendar_days)
+        return {
+            "from": cutoff.isoformat(),
+            "to": today.isoformat(),
+            "pool_type": pool_type or "all",
+            "days": calendar_days,
+            "summary": {
+                "recorded_days": len(calendar_days),
+                "profit_days": len(profits),
+                "loss_days": len(losses),
+                "flat_days": len(calendar_days) - len(profits) - len(losses),
+                "total_pnl": total_pnl,
+                "total_pnl_pct": round(total_pnl / total_cost * 100, 2) if total_cost else None,
+                "best_day": max(calendar_days, key=lambda item: item["pnl"], default=None),
+                "worst_day": min(calendar_days, key=lambda item: item["pnl"], default=None),
+                "current_loss_streak": current_loss_streak,
+                "max_loss_streak": max_loss_streak,
+            },
+            "source": "ai_robot_journals",
+            "methodology": "按每日机器人复盘中的模拟持仓快照聚合；缺失有效价格的标的不计入盈亏，不以空白补零为盈利。",
+        }
+
+    async def performance_calendar_day(self, journal_date: date) -> dict[str, Any]:
+        async with async_session() as session:
+            rows = list((await session.execute(
+                select(AIRobotJournal)
+                .where(AIRobotJournal.journal_date == journal_date)
+                .order_by(AIRobotJournal.pool_type.asc())
+            )).scalars().all())
+        return {
+            "date": journal_date.isoformat(),
+            "journals": [_journal_dict(row) for row in rows],
+            "available": bool(rows),
+        }
+
+    async def analyze_performance_calendar(
+        self,
+        *,
+        pool_type: str | None = None,
+        days: int = 180,
+        use_ai: bool = True,
+    ) -> dict[str, Any]:
+        calendar = await self.performance_calendar(pool_type, days)
+        summary = calendar["summary"]
+        evidence = {
+            "pool_type": calendar["pool_type"],
+            "period": [calendar["from"], calendar["to"]],
+            "recorded_days": summary["recorded_days"],
+            "profit_days": summary["profit_days"],
+            "loss_days": summary["loss_days"],
+            "total_pnl": summary["total_pnl"],
+            "total_pnl_pct": summary["total_pnl_pct"],
+            "current_loss_streak": summary["current_loss_streak"],
+            "max_loss_streak": summary["max_loss_streak"],
+            "recent_days": [
+                {"date": item["date"], "pnl": item["pnl"], "pnl_pct": item["pnl_pct"], "pools": item["pools"]}
+                for item in calendar["days"][-20:]
+            ],
+        }
+        fallback = (
+            f"已记录{summary['recorded_days']}个模拟交易日，盈利{summary['profit_days']}天、"
+            f"亏损{summary['loss_days']}天，累计模拟盈亏{summary['total_pnl']:.2f}元。"
+        )
+        if summary["current_loss_streak"] >= 3:
+            fallback += "当前连续亏损达到3天，仅触发提醒；请复核选股依据和仓位，不自动停止行情扫描。"
+        elif summary["max_loss_streak"] >= 3:
+            fallback += "历史出现过至少3天连续亏损，建议重点检查亏损日的板块集中度和数据完整性。"
+        else:
+            fallback += "当前没有达到连续3个亏损日的提醒阈值，仍需观察样本外表现。"
+        analysis = fallback
+        source = "rule_based"
+        if use_ai:
+            prompt = (
+                "你是量化研究复盘助手。只根据下面已持久化的模拟数据分析，不得编造股票价格或胜率，"
+                "用中文输出三段：表现事实、可能原因、下一步人工复核。明确这是模拟盘，不给确定买卖指令。\n"
+                f"数据：{evidence}"
+            )
+            generated = await ai_service.generate(prompt)
+            if generated and not generated.startswith("[AI服务") and not generated.startswith("[AI服务暂时不可用"):
+                analysis = generated.strip()
+                source = "deepseek"
+        return {
+            "analysis": analysis,
+            "source": source,
+            "generated_at": shanghai_now().isoformat(),
+            "evidence": evidence,
+            "calendar": calendar,
+        }
 
     async def _latest_journals(self) -> dict[str, dict[str, Any] | None]:
         output: dict[str, dict[str, Any] | None] = {}

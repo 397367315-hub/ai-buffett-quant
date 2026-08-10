@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, BookOpen, Bot, ChevronDown, Clock3, Loader2, MoonStar, RefreshCw, WalletCards } from 'lucide-react';
+import { AlertTriangle, BookOpen, Bot, BrainCircuit, CalendarDays, ChevronDown, Clock3, Loader2, MoonStar, RefreshCw, WalletCards } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import PersonalWorkspaceNav from '@/components/PersonalWorkspaceNav';
 import { apiFetch } from '@/lib/api';
@@ -104,6 +104,43 @@ interface Dashboard {
   disclaimer: string;
 }
 
+interface CalendarDay {
+  date: string;
+  pnl: number;
+  pnl_pct: number | null;
+  cost_value: number;
+  market_value: number;
+  status: 'profit' | 'loss' | 'flat';
+  pools: Record<string, { pnl: number | null; pnl_pct: number | null; source_data_date: string | null }>;
+  source_data_dates: string[];
+  is_realtime: boolean;
+}
+
+interface PerformanceCalendar {
+  from: string;
+  to: string;
+  pool_type: string;
+  days: CalendarDay[];
+  summary: {
+    recorded_days: number;
+    profit_days: number;
+    loss_days: number;
+    flat_days: number;
+    total_pnl: number;
+    total_pnl_pct: number | null;
+    current_loss_streak: number;
+    max_loss_streak: number;
+  };
+  methodology: string;
+}
+
+interface CalendarAnalysis {
+  analysis: string;
+  source: string;
+  generated_at: string;
+  calendar: PerformanceCalendar;
+}
+
 interface OvernightPosition {
   id: number;
   code: string;
@@ -130,6 +167,9 @@ export default function RobotPage() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [history, setHistory] = useState<RobotRun[]>([]);
   const [journals, setJournals] = useState<RobotJournal[]>([]);
+  const [calendar, setCalendar] = useState<PerformanceCalendar | null>(null);
+  const [calendarDay, setCalendarDay] = useState<{ date: string; journals: RobotJournal[]; available: boolean } | null>(null);
+  const [calendarAnalysis, setCalendarAnalysis] = useState<CalendarAnalysis | null>(null);
   const [selectedJournalId, setSelectedJournalId] = useState<number | null>(null);
   const [poolType, setPoolType] = useState<PoolType>('short');
   const [loading, setLoading] = useState(true);
@@ -141,14 +181,17 @@ export default function RobotPage() {
     if (!quiet) setLoading(true);
     setError(null);
     try {
-      const [dashboard, runs, journalResponse] = await Promise.all([
+      const [dashboard, runs, journalResponse, calendarResponse] = await Promise.allSettled([
         apiFetch<{ data: Dashboard }>('/personal/robot'),
         apiFetch<{ data: { runs: RobotRun[] } }>('/personal/robot/history?limit=12'),
         apiFetch<{ data: { journals: RobotJournal[] } }>('/personal/robot/journals?limit=30'),
+        apiFetch<{ data: PerformanceCalendar }>('/personal/robot/calendar?days=180'),
       ]);
-      setData(dashboard.data);
-      setHistory(runs.data.runs || []);
-      setJournals(journalResponse.data.journals || []);
+      if (dashboard.status === 'fulfilled') setData(dashboard.value.data);
+      if (runs.status === 'fulfilled') setHistory(runs.value.data.runs || []);
+      if (journalResponse.status === 'fulfilled') setJournals(journalResponse.value.data.journals || []);
+      if (calendarResponse.status === 'fulfilled') setCalendar(calendarResponse.value.data);
+      if (dashboard.status === 'rejected') throw dashboard.reason;
       setLoadProgress(100);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'AI机器人池加载失败');
@@ -181,6 +224,29 @@ export default function RobotPage() {
       setError(caught instanceof Error ? caught.message : '刷新任务提交失败');
     } finally {
       setTriggering(false);
+    }
+  };
+
+  const selectCalendarDay = async (day: CalendarDay) => {
+    setCalendarDay(null);
+    try {
+      const response = await apiFetch<{ data: { date: string; journals: RobotJournal[]; available: boolean } }>(`/personal/robot/calendar/${day.date}`);
+      setCalendarDay(response.data);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '收益日详情读取失败');
+    }
+  };
+
+  const analyzeCalendar = async () => {
+    setCalendarAnalysis(null);
+    try {
+      const response = await apiFetch<{ data: CalendarAnalysis }>('/personal/robot/calendar/analyze', {
+        method: 'POST', body: JSON.stringify({ pool_type: poolType, days: 180, use_ai: true }),
+      });
+      setCalendarAnalysis(response.data);
+      setCalendar(response.data.calendar);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '收益日历分析失败');
     }
   };
 
@@ -229,6 +295,8 @@ export default function RobotPage() {
 
       {activeRun && <section className="border border-accent/50 rounded-md p-4 mb-4"><div className="flex items-center justify-between gap-3 text-xs"><span className="text-text flex items-center gap-2"><Loader2 size={14} className="animate-spin text-accent" />{activeRun.message}</span><span className="font-mono text-accent">{activeRun.progress}%</span></div><div className="h-1.5 bg-[#21262D] mt-3 overflow-hidden rounded"><div className="h-full bg-accent transition-all" style={{ width: `${activeRun.progress}%` }} /></div></section>}
 
+      {calendar && <RobotPerformanceCalendar calendar={calendar} selectedDay={calendarDay} analysis={calendarAnalysis} onSelect={selectCalendarDay} onAnalyze={analyzeCalendar} />}
+
       {pool && <>
         <section className="grid grid-cols-2 lg:grid-cols-6 border border-border rounded-md divide-x divide-y lg:divide-y-0 divide-border mb-5">
           <Metric label="池内股票" value={`${pool.performance.positions}只`} />
@@ -258,6 +326,43 @@ export default function RobotPage() {
 
 function Metric({ label, value, className = '', wrapperClassName = '' }: { label: string; value: string; className?: string; wrapperClassName?: string }) {
   return <div className={`p-3 min-w-0 ${wrapperClassName}`}><div className="text-[11px] text-text-secondary">{label}</div><div className={`font-mono text-sm md:text-base mt-1 truncate ${className || 'text-text'}`}>{value}</div></div>;
+}
+
+function RobotPerformanceCalendar({
+  calendar,
+  selectedDay,
+  analysis,
+  onSelect,
+  onAnalyze,
+}: {
+  calendar: PerformanceCalendar;
+  selectedDay: { date: string; journals: RobotJournal[]; available: boolean } | null;
+  analysis: CalendarAnalysis | null;
+  onSelect: (day: CalendarDay) => void;
+  onAnalyze: () => void;
+}) {
+  const summary = calendar.summary;
+  const currentAlert = summary.current_loss_streak >= 3;
+  const dayMap = new Map(calendar.days.map((day) => [day.date, day]));
+  const calendarEnd = new Date(`${calendar.to}T12:00:00`);
+  const calendarStart = new Date(calendarEnd);
+  calendarStart.setDate(calendarEnd.getDate() - ((calendarEnd.getDay() + 6) % 7) - 35);
+  const calendarCells = Array.from({ length: 42 }, (_, index) => {
+    const current = new Date(calendarStart);
+    current.setDate(calendarStart.getDate() + index);
+    const key = current.toISOString().slice(0, 10);
+    return { key, day: dayMap.get(key) || null };
+  });
+  return <section className="mb-4 border border-border rounded-md overflow-hidden">
+    <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><CalendarDays size={15} className="text-accent" />AI选股收益日历</h2><span className="text-[11px] text-text-secondary">已记录{summary.recorded_days}日 · {calendar.from} 至 {calendar.to}</span><button type="button" onClick={onAnalyze} className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-text"><BrainCircuit size={13} />AI解析</button></div>
+    <div className="grid grid-cols-2 md:grid-cols-5 border-b border-border divide-x divide-border"><Metric label="累计盈亏" value={money(summary.total_pnl)} className={pnlClass(summary.total_pnl)} /><Metric label="盈利日" value={`${summary.profit_days}日`} className="text-up" /><Metric label="亏损日" value={`${summary.loss_days}日`} className="text-down" /><Metric label="当前连续亏损" value={`${summary.current_loss_streak}日`} className={currentAlert ? 'text-warn' : ''} /><Metric label="最长连续亏损" value={`${summary.max_loss_streak}日`} className="text-text" /></div>
+    {currentAlert && <div className="flex gap-2 border-b border-warn/50 bg-[#D2992218] px-4 py-2.5 text-xs text-warn"><AlertTriangle size={14} className="shrink-0" />连续亏损达到3日：仅提醒并保留行情扫描，建议人工复核，不自动停止选股。</div>}
+    <div className="grid grid-cols-7 border-b border-border text-[10px] text-text-secondary">{['一', '二', '三', '四', '五', '六', '日'].map((day) => <div key={day} className="px-2 py-2 text-center">周{day}</div>)}</div>
+    <div className="grid grid-cols-7 gap-px bg-border p-px">{calendarCells.map(({ key, day }) => day ? <button key={key} type="button" title={`${day.date} ${money(day.pnl)}`} onClick={() => onSelect(day)} className={`min-h-[54px] bg-bg px-1 py-1.5 text-center hover:bg-card ${day.status === 'profit' ? 'text-up' : day.status === 'loss' ? 'text-down' : 'text-text-secondary'}`}><div className="font-mono text-[10px] text-text-secondary">{day.date.slice(5)}</div><div className="mt-1 font-mono text-xs">{day.pnl >= 0 ? '+' : ''}{day.pnl.toFixed(0)}</div><div className="mt-0.5 text-[9px]">{day.status === 'profit' ? '盈' : day.status === 'loss' ? '亏' : '平'}</div></button> : <div key={key} className="min-h-[54px] bg-bg px-1 py-1.5 text-center"><div className="font-mono text-[10px] text-text-secondary/60">{key.slice(5)}</div><div className="mt-3 text-[9px] text-text-secondary/40">--</div></div>)}</div>
+    {selectedDay?.available && <div className="border-b border-border bg-[#0D1117] px-4 py-3"><div className="text-xs font-semibold text-text">{selectedDay.date} · 当日复盘</div><div className="mt-2 grid gap-2 md:grid-cols-2">{selectedDay.journals.map((journal) => <div key={journal.id} className="rounded-md border border-border p-2.5 text-xs"><div className="flex justify-between gap-2"><span className="text-text">{journal.pool_type === 'short' ? '短期池' : '长期池'}</span><span className={pnlClass((journal.metrics?.performance as Performance | undefined)?.pnl)}>{money((journal.metrics?.performance as Performance | undefined)?.pnl)}</span></div><div className="mt-1.5 text-text-secondary leading-5">{journal.pnl_reflection || journal.action_summary}</div></div>)}</div></div>}
+    {analysis && <div className="border-b border-border px-4 py-3"><div className="text-xs font-semibold text-text">AI解析 · {analysis.source === 'deepseek' ? 'DeepSeek' : '规则审计'}</div><div className="mt-2 whitespace-pre-line text-xs leading-6 text-text-secondary">{analysis.analysis}</div></div>}
+    <div className="px-4 py-2 text-[10px] text-text-secondary">{calendar.methodology}</div>
+  </section>;
 }
 
 function RobotRow({ pick }: { pick: RobotPick }) {

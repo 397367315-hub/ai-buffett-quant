@@ -119,6 +119,13 @@ interface Dashboard {
     pnl: number | null;
     pnl_pct: number | null;
   };
+  loss_alert: {
+    blocked: boolean;
+    warning: boolean;
+    level: string;
+    consecutive_losses: number;
+    reason: string;
+  };
   quote: { available: boolean; source: string; data_date: string | null; is_realtime: boolean; cache_used: boolean };
   minute_coverage: { bar_count: number; stock_count: number; from: string | null; to: string | null; collection_mode: string };
   backtest: { available: boolean; grade: string; reason: string; requirements: string[] };
@@ -310,6 +317,7 @@ export default function OvernightPanel() {
     </section>}
 
     {error && <div className="border border-down/50 bg-[#EF535018] rounded-md p-3 text-xs text-down flex gap-2"><AlertTriangle size={15} className="shrink-0" />{error}</div>}
+    {data?.loss_alert?.warning && <section className="border border-warn/50 bg-[#D2992218] rounded-md p-3 text-xs text-warn flex gap-2"><AlertTriangle size={15} className="shrink-0" /><div><div className="font-semibold">连续亏损提醒</div><div className="mt-1 text-text-secondary">{data.loss_alert.reason} 当前行情扫描、候选观察和人工操作保持开放。</div></div></section>}
     {active && <section className="border border-accent/50 rounded-md p-3"><div className="flex justify-between gap-3 text-xs"><span className="text-text flex items-center gap-2"><Loader2 size={14} className="animate-spin text-accent" />{active.message}</span><span className="font-mono text-accent">{active.progress}%</span></div><div className="h-1.5 bg-[#21262D] mt-2 overflow-hidden rounded"><div className="h-full bg-accent transition-all" style={{ width: `${Math.max(3, active.progress)}%` }} /></div></section>}
 
     {data?.strategy.requires_auction_confirmation && <section className="border border-accent/40 rounded-md p-3"><div className="flex flex-wrap items-center gap-2"><CheckCircle2 size={15} className="text-accent" /><h3 className="text-sm font-semibold text-text">AI竞价盯盘 Agent</h3><span className="text-[11px] text-text-secondary">次日09:24-09:27 · 竞价量比严格&gt;{data.strategy.auction_volume_ratio_min ?? 3} · 高开{data.strategy.auction_high_open_pct?.[0] ?? 2}%-{data.strategy.auction_high_open_pct?.[1] ?? 5}%双条件</span></div>{data.latest_auction_run ? <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-secondary"><span>{data.latest_auction_run.message}</span><span>覆盖 {(data.latest_auction_run.data_quality?.auction?.covered ?? 0)}只</span><span>通过 {(data.latest_auction_run.data_quality?.auction?.passed ?? 0)}只</span><span className={data.latest_auction_run.is_realtime ? 'text-up' : 'text-warn'}>{data.latest_auction_run.is_realtime ? '实时竞价' : '无可执行实时竞价'}</span></div> : <div className="mt-2 text-xs text-text-secondary">尾盘候选生成后，系统会在下一交易日竞价窗口自动检查；无实时竞价时不建仓。</div>}</section>}

@@ -499,3 +499,54 @@ export interface PaperPortfolio {
     reason: string;
   }>;
 }
+
+export interface ZhabanFactor {
+  key: string;
+  label: string;
+  type: 'number' | 'boolean' | string;
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  options?: Array<{ value: string; label: string }>;
+}
+
+export interface ZhabanResearch {
+  generated_at: string;
+  data_date: string | null;
+  status: string;
+  source: string;
+  is_realtime: boolean;
+  cache_used: boolean;
+  strategy: Record<string, any>;
+  market_environment?: Record<string, any>;
+  summary?: Record<string, any>;
+  candidates: Array<Record<string, any>>;
+  events?: Array<Record<string, any>>;
+  warnings: string[];
+  data_quality: Record<string, any>;
+  disclaimer: string;
+}
+
+export interface ZhabanBacktest {
+  generated_at: string;
+  status: string;
+  source: string;
+  is_realtime: boolean;
+  cache_used: boolean;
+  strategy: Record<string, any>;
+  period: Record<string, any>;
+  summary: Record<string, any>;
+  annual: Array<Record<string, any>>;
+  monthly: Array<Record<string, any>>;
+  board_performance: Array<Record<string, any>>;
+  cost_sensitivity: Array<Record<string, any>>;
+  validation?: Record<string, any>;
+  trades: Array<Record<string, any>>;
+  daily_values: Array<Record<string, any>>;
+  candidate_count: number;
+  event_count: number;
+  data_quality: Record<string, any>;
+  warnings: string[];
+  disclaimer: string;
+}

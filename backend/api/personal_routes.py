@@ -1,5 +1,7 @@
 """API for the single-user personal investment workspace."""
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from services.admin_auth import require_admin
@@ -141,6 +143,42 @@ async def get_robot_journals(
     except ValueError as exc:
         raise _bad_request(exc) from exc
     return {"code": 0, "data": {"journals": journals}}
+
+
+@router.get("/robot/calendar")
+async def get_robot_performance_calendar(
+    pool_type: str | None = Query(None),
+    days: int = Query(180, ge=7, le=730),
+):
+    try:
+        calendar = await ai_robot_service.performance_calendar(pool_type, days)
+    except ValueError as exc:
+        raise _bad_request(exc) from exc
+    return {"code": 0, "data": calendar}
+
+
+@router.get("/robot/calendar/{journal_date}")
+async def get_robot_performance_calendar_day(journal_date: str):
+    try:
+        parsed = date.fromisoformat(journal_date[:10])
+    except ValueError as exc:
+        raise _bad_request(ValueError("日期必须使用YYYY-MM-DD格式")) from exc
+    return {"code": 0, "data": await ai_robot_service.performance_calendar_day(parsed)}
+
+
+@router.post("/robot/calendar/analyze")
+async def analyze_robot_performance_calendar(request: dict):
+    payload = request or {}
+    pool_type = str(payload.get("pool_type") or "").strip().lower() or None
+    days = payload.get("days", 180)
+    use_ai = bool(payload.get("use_ai", True))
+    try:
+        result = await ai_robot_service.analyze_performance_calendar(
+            pool_type=pool_type, days=int(days), use_ai=use_ai,
+        )
+    except (ValueError, TypeError) as exc:
+        raise _bad_request(exc) from exc
+    return {"code": 0, "data": result}
 
 
 @router.get("/allocation")

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, BrainCircuit, ClipboardList, FlaskConical, Layers3, LineChart, Loader2, MoonStar, Plus, Radio, Trash2, WalletCards } from 'lucide-react';
+import { AlertTriangle, BrainCircuit, ClipboardList, FlaskConical, Layers3, LineChart, Loader2, MoonStar, Plus, Radio, ShieldAlert, Trash2, WalletCards } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import BacktestPanel from './components/BacktestPanel';
 import PaperPanel from './components/PaperPanel';
@@ -10,15 +10,17 @@ import StrategyBuilder from './components/StrategyBuilder';
 import OvernightPanel from './components/OvernightPanel';
 import FundamentalPanel from './components/FundamentalPanel';
 import ResearchPanel from './components/ResearchPanel';
+import ZhabanPanel from './components/ZhabanPanel';
 import type { BackgroundJob, BacktestResult, RuleMeta, SectorOption, SignalSnapshot, Strategy, StrategyDraft, TradeSignal } from './types';
 
-type TabId = 'strategies' | 'signals' | 'research' | 'fundamental' | 'overnight' | 'backtest' | 'paper';
+type TabId = 'strategies' | 'signals' | 'research' | 'zhaban' | 'fundamental' | 'overnight' | 'backtest' | 'paper';
 type Template = StrategyDraft & { id: string; description?: string };
 
 const tabs: Array<{ id: TabId; label: string; icon: typeof ClipboardList }> = [
   { id: 'strategies', label: '策略管理', icon: ClipboardList },
   { id: 'signals', label: '信号看板', icon: Radio },
   { id: 'research', label: '量化研究', icon: FlaskConical },
+  { id: 'zhaban', label: '炸板研究', icon: ShieldAlert },
   { id: 'fundamental', label: '基本面双引擎', icon: Layers3 },
   { id: 'overnight', label: '一夜持股', icon: MoonStar },
   { id: 'backtest', label: '回测中心', icon: LineChart },
@@ -153,6 +155,7 @@ export default function QuantPage() {
     {tab === 'strategies' && <div className="grid grid-cols-1 xl:grid-cols-[250px_minmax(0,1fr)] gap-4"><aside className="border border-border rounded-md overflow-hidden h-fit"><div className="flex items-center justify-between px-3 py-2 border-b border-border"><span className="text-sm font-semibold text-text">我的策略</span><button type="button" onClick={() => { setEditingId(null); setBuilderNonce((value) => value + 1); }} className="h-7 w-7 inline-flex items-center justify-center rounded-md text-accent hover:bg-[#1F6FEB22]" title="新建策略" aria-label="新建策略"><Plus size={16} /></button></div><div className="p-2 space-y-1">{strategies.map((strategy) => <div key={strategy.id} className={`group flex items-center gap-2 p-2 rounded-md ${editingId === strategy.id ? 'bg-[#1F6FEB22]' : 'hover:bg-[#161B22]'}`}><button type="button" onClick={() => setEditingId(strategy.id)} className="min-w-0 flex-1 text-left"><div className="text-xs font-medium text-text truncate">{strategy.name}</div><div className="mt-1 flex items-center gap-1.5 text-[11px] text-text-secondary"><span className={`w-1.5 h-1.5 rounded-full ${strategy.active ? 'bg-up' : 'bg-text-secondary'}`} />{strategy.builtin ? '内置 · ' : ''}{strategy.active ? '启用中' : '已停用'} · {strategy.entry.rules.length} 条买入规则</div></button>{!strategy.builtin && <button type="button" onClick={() => deleteStrategy(strategy)} className="h-6 w-6 hidden group-hover:inline-flex items-center justify-center text-text-secondary hover:text-down rounded-md" title="删除策略" aria-label="删除策略"><Trash2 size={13} /></button>}</div>)}{!strategies.length && <div className="p-4 text-center text-xs text-text-secondary">尚未保存策略。可从右侧模板开始。</div>}</div></aside><section className="border border-border rounded-md p-3 md:p-4"><StrategyBuilder key={currentStrategy?.id || `new-${builderNonce}`} strategy={currentStrategy} templates={templates} rules={rules} sectors={sectors} onSave={saveStrategy} onPreview={previewStrategy} onBacktest={moveToBacktest} saving={saving} /></section></div>}
     {tab === 'signals' && <section className="border border-border rounded-md p-3 md:p-4"><SignalList snapshot={signals} job={scanJob} onRefresh={startScan} onAddToPaper={moveSignalToPaper} history={signalHistory} /></section>}
     {tab === 'research' && <section className="border border-border rounded-md p-3 md:p-4"><ResearchPanel /></section>}
+    {tab === 'zhaban' && <section className="border border-border rounded-md p-3 md:p-4"><ZhabanPanel /></section>}
     {tab === 'fundamental' && <section className="border border-border rounded-md p-3 md:p-4"><FundamentalPanel /></section>}
     {tab === 'overnight' && <OvernightPanel />}
     {tab === 'backtest' && <section className="border border-border rounded-md p-3 md:p-4"><BacktestPanel strategies={strategies} initialStrategyId={initialBacktestStrategy} onResult={handleResult} /></section>}

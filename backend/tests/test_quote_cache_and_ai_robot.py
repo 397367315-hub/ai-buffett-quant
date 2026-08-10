@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
@@ -233,6 +233,36 @@ class AIRobotSimulationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view["price_status"], "waiting")
         self.assertIsNone(view["cost_value"])
         self.assertIsNone(view["pnl"])
+
+    async def test_performance_calendar_warns_after_three_loss_days(self):
+        now = datetime(2026, 8, 10, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        async with self.session_factory() as session:
+            for offset, pnl in enumerate((-10.0, -20.0, -30.0)):
+                session.add(AIRobotJournal(
+                    pool_type="short",
+                    journal_date=date(2026, 8, 6) + timedelta(days=offset),
+                    source_data_date=date(2026, 8, 6) + timedelta(days=offset),
+                    is_realtime=False,
+                    action_summary="测试",
+                    decision_reason="测试",
+                    metrics={"performance": {
+                        "pnl": pnl, "pnl_pct": pnl / 1000 * 100,
+                        "cost_value": 1000, "market_value": 1000 + pnl,
+                        "priced_positions": 1, "waiting_positions": 0,
+                        "quote_unavailable_positions": 0, "winners": 0, "losers": 1,
+                    }},
+                ))
+            await session.commit()
+
+        with patch("services.ai_robot.shanghai_now", return_value=now):
+            calendar = await self.service.performance_calendar("short", 30)
+            analysis = await self.service.analyze_performance_calendar(
+                pool_type="short", days=30, use_ai=False,
+            )
+
+        self.assertEqual(calendar["summary"]["current_loss_streak"], 3)
+        self.assertEqual(calendar["summary"]["max_loss_streak"], 3)
+        self.assertIn("不自动停止行情扫描", analysis["analysis"])
 
 
 if __name__ == "__main__":
