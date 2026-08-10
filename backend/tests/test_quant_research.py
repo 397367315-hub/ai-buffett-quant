@@ -62,6 +62,10 @@ class QuantResearchTests(unittest.TestCase):
         ):
             self.assertIn(key, metrics)
         self.assertGreater(metrics["trading_periods"], 0)
+        self.assertEqual(
+            simulation["_daily_results_internal"],
+            simulation["daily_results"],
+        )
 
 
 if __name__ == "__main__":

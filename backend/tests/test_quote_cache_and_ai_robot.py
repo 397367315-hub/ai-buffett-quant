@@ -105,6 +105,35 @@ class AIRobotSimulationTests(unittest.IsolatedAsyncioTestCase):
             await session.refresh(current)
             return current.id
 
+    def test_pick_explanation_uses_each_stocks_saved_evidence(self):
+        first = AIRobotPick(
+            run_id=1, pool_type="short", sector_key="energy", sector_label="电力/能源",
+            code="600001", name="甲公司", selected_price=12.0, selected_on=date(2026, 8, 10),
+            score=82, confidence=71, verdict="优先研究", state="new",
+            recommendation={
+                "agents": {
+                    "technical": {"evidence": ["MA5 > MA10 > MA20，短中期趋势向上"], "risks": [], "metrics": {"ma5": 12, "ma10": 11, "ma20": 10}},
+                    "capital": {"evidence": ["主力净流入 +1.20 亿"], "risks": [], "metrics": {"main_net_inflow_yi": 1.2, "volume_ratio": 1.8}},
+                    "supervisor": {"debate": {"decisive_factor": "资金强度"}},
+                },
+                "horizon_outlook": {"label": "未来一周", "validation_conditions": ["收盘维持在MA20之上"]},
+            },
+        )
+        second = AIRobotPick(
+            run_id=1, pool_type="short", sector_key="energy", sector_label="电力/能源",
+            code="600002", name="乙公司", selected_price=8.0, selected_on=date(2026, 8, 10),
+            score=66, confidence=55, verdict="持续跟踪", state="new",
+            recommendation={"agents": {"technical": {"evidence": ["RSI 52，动能处于可持续区间"], "risks": [], "metrics": {"rsi14": 52}}}},
+        )
+
+        first_view = self.service._pick_explanation(first)
+        second_view = self.service._pick_explanation(second)
+
+        self.assertIn("甲公司", first_view["plain_reason"])
+        self.assertIn("主力净流入", first_view["plain_reason"])
+        self.assertIn("量比 1.80", first_view["key_facts"])
+        self.assertNotEqual(first_view["plain_reason"], second_view["plain_reason"])
+
     async def test_sector_resolution_uses_bounded_rankings_when_full_directory_fails(self):
         industry = [{"code": "BK0475", "name": "银行", "main_net_inflow": 1}]
         concept = [{"code": "BK0816", "name": "人工智能", "main_net_inflow": 1}]

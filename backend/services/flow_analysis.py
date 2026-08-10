@@ -19,6 +19,8 @@ FLOW_WINDOWS = {
     "week": {"label": "近一周", "sessions": 5},
     "two_weeks": {"label": "近两周", "sessions": 10},
     "month": {"label": "近一个月", "sessions": 20},
+    "quarter": {"label": "近一个季度", "sessions": 60},
+    "year": {"label": "近一年", "sessions": 250},
 }
 
 
@@ -104,7 +106,11 @@ class FlowAnalysisService:
     def _deterministic_summary(window: dict, board_type: str, boards: list[dict], daily: list[dict]) -> dict:
         label = "行业" if board_type == "industry" else "概念"
         top_inflows = sorted(boards, key=lambda item: item["total_inflow"], reverse=True)[:5]
-        top_outflows = sorted(boards, key=lambda item: item["total_inflow"])[:5]
+        # A positive value is never an outflow.  Older snapshots occasionally
+        # contained only the inflow ranking; keep that fact visible instead of
+        # presenting the weakest positive board as money leaving the sector.
+        negative_boards = [item for item in boards if item["total_inflow"] < 0]
+        top_outflows = sorted(negative_boards, key=lambda item: item["total_inflow"])[:5]
         sustained_inflows = sorted(
             (item for item in boards if item["total_inflow"] > 0 and item["positive_ratio_pct"] >= 60),
             key=lambda item: (item["positive_ratio_pct"], item["total_inflow"]), reverse=True,
@@ -170,6 +176,7 @@ class FlowAnalysisService:
             "aggregate_inflow": int(round(aggregate)),
             "top_inflows": top_inflows,
             "top_outflows": top_outflows,
+            "outflow_data_available": bool(negative_boards),
             "sustained_inflows": sustained_inflows,
             "sustained_outflows": sustained_outflows,
             "turning_positive": turning_positive,
@@ -209,7 +216,7 @@ class FlowAnalysisService:
         if board_type not in {"industry", "concept"}:
             raise ValueError("board_type 仅支持 industry 或 concept")
         if window_key not in FLOW_WINDOWS:
-            raise ValueError("window 仅支持 week、two_weeks 或 month")
+            raise ValueError("window 仅支持 week、two_weeks、month、quarter 或 year")
         window = FLOW_WINDOWS[window_key]
         rows, names, dates = await self._dataset(board_type, window["sessions"])
         boards = self._board_rows(rows, names, dates)

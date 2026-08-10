@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 
 from database import async_session
 from models import MarketDataCache, StockDailyBar
+from quant.jobs import create_job, get_job, latest_running_job, spawn, update_job
 from services.quant_research import quant_research_engine
 
 
@@ -247,9 +248,9 @@ class QuantResearchWorkspaceService:
             "record_count": count,
             "stock_count": stock_count,
             "universe": {
-                "status": "blocked",
+                "status": "partial",
                 "historical_membership": False,
-                "note": "当前日线缓存以现存可见股票为主，未形成逐日退市/停牌历史股票池。",
+                "note": "日线动量研究可以运行；历史退市、停牌和并购股票覆盖不完整，因此结果存在幸存者偏差。",
             },
             "point_in_time": {
                 "status": "partial",
@@ -259,9 +260,15 @@ class QuantResearchWorkspaceService:
             },
             "cache_used": True,
             "warnings": [
-                "该清单是数据集元数据哈希，不是对每个原始文件的替代证明。",
-                "缺失的历史股票池和财务披露日期不会被静默填补。",
+                "当前日线基线可计算，但数据集清单不能替代逐原始文件审计。",
+                "历史股票池和财务披露日期缺口会降低可信度，不会被静默填补。",
             ],
+            "researchability": {
+                "daily_bar_baseline": "ready_with_bias_warning",
+                "auction_history": "missing",
+                "pit_financials": "missing",
+                "sector_membership_history": "partial",
+            },
         }
         manifest["manifest_hash"] = _canonical_hash(manifest)
         manifest["available"] = bool(count and start_date and end_date)
@@ -297,6 +304,7 @@ class QuantResearchWorkspaceService:
             "hard_gates": HARD_GATES,
             "dataset": manifest,
             "latest_report": latest,
+            "active_job": latest_running_job("research"),
             "research_contract": {
                 "ai_role": "提出假设、解释和审查；不执行任意代码、不修改回测数字。",
                 "execution": "研究结果只进入报告和模拟盘，不连接券商、不自动下单。",
@@ -458,7 +466,7 @@ class QuantResearchWorkspaceService:
         # inspectable.
         return {key: value for key, value in result.items() if not key.startswith("_")}
 
-    async def run_experiment(self, request: dict[str, Any]) -> dict[str, Any]:
+    async def run_experiment(self, request: dict[str, Any], progress_callback=None) -> dict[str, Any]:
         experiment_id = str(request.get("experiment_id") or "weekly_momentum_baseline_v1")
         experiment = next((item for item in EXPERIMENT_CATALOG if item["id"] == experiment_id), None)
         if experiment is None:
@@ -506,7 +514,7 @@ class QuantResearchWorkspaceService:
         }
         locked = {"experiment_id": experiment_id, "dataset_id": manifest.get("dataset_id"), "manifest_hash": manifest.get("manifest_hash"), "params": params}
         strategy_lock_hash = _canonical_hash(locked)
-        raw_result = await quant_research_engine.run(**params)
+        raw_result = await quant_research_engine.run(**params, progress_callback=progress_callback)
         raw_result["_daily_results_internal"] = raw_result.get("_daily_results_internal") or []
         partitions = self._partition_metrics(raw_result)
         public_result = self._public_result(raw_result)
@@ -584,6 +592,51 @@ class QuantResearchWorkspaceService:
         except Exception as exc:
             report["persistence_warning"] = f"研究报告未能持久化：{type(exc).__name__}"
         return report
+
+    async def start_experiment(self, request: dict[str, Any]) -> dict[str, Any]:
+        experiment_id = str(request.get("experiment_id") or "weekly_momentum_baseline_v1")
+        if not any(item["id"] == experiment_id for item in EXPERIMENT_CATALOG):
+            raise ValueError("实验不存在")
+        running = latest_running_job("research")
+        if running:
+            return {**running, "already_running": True}
+        job = create_job("research", "research", {
+            "experiment_id": experiment_id,
+            "request": dict(request),
+        })
+        spawn(self._run_job(job["job_id"], dict(request)))
+        return job
+
+    async def _run_job(self, job_id: str, request: dict[str, Any]) -> None:
+        update_job(
+            "research", job_id,
+            status="running", phase="manifest", progress=5,
+            message="正在锁定数据清单与研究参数", started_at=datetime.utcnow().isoformat() + "Z",
+        )
+
+        async def progress(value: int, phase: str, message: str) -> None:
+            update_job("research", job_id, progress=value, phase=phase, message=message)
+
+        try:
+            report = await self.run_experiment(request, progress_callback=progress)
+            update_job(
+                "research", job_id,
+                status="completed", phase="completed", progress=100,
+                message="研究报告已生成并持久化", result=report,
+                completed_at=datetime.utcnow().isoformat() + "Z",
+            )
+        except Exception as exc:
+            update_job(
+                "research", job_id,
+                status="failed", phase="failed", progress=100,
+                message="研究任务运行失败，请查看具体错误后重试",
+                error=f"{type(exc).__name__}: {exc}"[:500],
+                completed_at=datetime.utcnow().isoformat() + "Z",
+            )
+
+    @staticmethod
+    def job(job_id: str) -> dict[str, Any] | None:
+        return get_job("research", job_id)
 
 
 quant_research_workspace = QuantResearchWorkspaceService()

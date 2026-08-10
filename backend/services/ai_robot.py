@@ -376,10 +376,195 @@ class AIRobotService:
 
     @staticmethod
     def _pick_basis(row: AIRobotPick) -> str:
-        recommendation = row.recommendation or {}
-        outlook = recommendation.get("horizon_outlook") or {}
-        supervisor = (recommendation.get("agents") or {}).get("supervisor") or {}
-        return str(outlook.get("basis") or supervisor.get("summary") or row.verdict or "Agent 规则评分通过")
+        return AIRobotService._pick_explanation(row)["plain_reason"]
+
+    @staticmethod
+    def _unique_text(values: list[object], limit: int = 5) -> list[str]:
+        """Keep the journal readable while retaining the first source-backed facts."""
+        output: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            output.append(text)
+            if len(output) >= limit:
+                break
+        return output
+
+    @staticmethod
+    def _pick_explanation(row: AIRobotPick) -> dict[str, Any]:
+        """Build a plain-Chinese, per-stock explanation from the saved evidence.
+
+        This is deliberately deterministic.  An unavailable language model may
+        polish the wording elsewhere, but it must never be the source of the
+        facts shown in a trading journal.
+        """
+        recommendation = row.recommendation if isinstance(row.recommendation, dict) else {}
+        agents = recommendation.get("agents") if isinstance(recommendation.get("agents"), dict) else {}
+        outlook = recommendation.get("horizon_outlook") if isinstance(recommendation.get("horizon_outlook"), dict) else {}
+        supervisor = agents.get("supervisor") if isinstance(agents.get("supervisor"), dict) else {}
+        technical = agents.get("technical") if isinstance(agents.get("technical"), dict) else {}
+        fundamental = agents.get("fundamental") if isinstance(agents.get("fundamental"), dict) else {}
+        capital = agents.get("capital") if isinstance(agents.get("capital"), dict) else {}
+        risk = agents.get("risk") if isinstance(agents.get("risk"), dict) else {}
+        news = agents.get("news") if isinstance(agents.get("news"), dict) else {}
+        technical_metrics = technical.get("metrics") if isinstance(technical.get("metrics"), dict) else {}
+        capital_metrics = capital.get("metrics") if isinstance(capital.get("metrics"), dict) else {}
+        risk_plan = risk.get("plan") if isinstance(risk.get("plan"), dict) else {}
+        data_quality = ((recommendation.get("research") or {}).get("data_quality") or {}) if isinstance(recommendation.get("research"), dict) else {}
+
+        positive = AIRobotService._unique_text([
+            *(technical.get("evidence") or []),
+            *(capital.get("evidence") or []),
+            *(fundamental.get("evidence") or []),
+            *(news.get("evidence") or []),
+        ], 5)
+        risks = AIRobotService._unique_text([
+            *(technical.get("risks") or []),
+            *(capital.get("risks") or []),
+            *(fundamental.get("risks") or []),
+            *(risk.get("risks") or []),
+            *(news.get("risks") or []),
+        ], 5)
+        facts: list[str] = []
+        ma20 = _number(technical_metrics.get("ma20"))
+        ma5 = _number(technical_metrics.get("ma5"))
+        ma10 = _number(technical_metrics.get("ma10"))
+        rsi = _number(technical_metrics.get("rsi14"))
+        volume_ratio = _number(capital_metrics.get("volume_ratio") or technical_metrics.get("volume_ratio"))
+        turnover = _number(capital_metrics.get("turnover"))
+        inflow = _number(capital_metrics.get("main_net_inflow_yi"))
+        pe = _number((fundamental.get("metrics") or {}).get("pe"))
+        roe = _number((fundamental.get("metrics") or {}).get("roe"))
+        volatility = _number(risk_plan.get("daily_volatility_pct"))
+        if ma20 is not None:
+            facts.append(f"MA20参考值 {ma20:.2f}，现价{'在其上方' if row.selected_price and row.selected_price >= ma20 else '未明确站上'}")
+        if ma5 is not None and ma10 is not None and ma20 is not None:
+            facts.append(f"均线数值 MA5 {ma5:.2f} / MA10 {ma10:.2f} / MA20 {ma20:.2f}")
+        if volume_ratio is not None:
+            facts.append(f"量比 {volume_ratio:.2f}")
+        if turnover is not None:
+            facts.append(f"换手率 {turnover:.2f}%")
+        if inflow is not None:
+            facts.append(f"主力净流入 {inflow:+.2f} 亿元")
+        if pe is not None:
+            facts.append(f"PE {pe:.1f}")
+        if roe is not None:
+            facts.append(f"ROE {roe:.1f}%")
+        if rsi is not None:
+            facts.append(f"RSI {rsi:.1f}")
+        if volatility is not None:
+            facts.append(f"日线波动率参考 {volatility:.2f}%")
+
+        contributions = outlook.get("factor_contributions") if isinstance(outlook.get("factor_contributions"), list) else []
+        contribution_names = [
+            str(item.get("factor")) for item in contributions[:3]
+            if isinstance(item, dict) and item.get("factor")
+        ]
+        decisive = ((supervisor.get("debate") or {}).get("decisive_factor") if isinstance(supervisor.get("debate"), dict) else None)
+        score = _number(row.score)
+        confidence = _number(row.confidence)
+        verdict = str(row.verdict or outlook.get("judgement") or "观察")
+        horizon_label = str(outlook.get("label") or "当前持有周期")
+        reasons = positive[:2] or [f"主管判断为“{verdict}”，但本轮没有保存足够的正向证据"]
+        reason_text = f"{row.name}（{row.code}）进入{horizon_label}观察池，不是因为单一涨跌幅。"
+        if score is not None:
+            reason_text += f"综合评分 {score:.1f}"
+        if confidence is not None:
+            reason_text += f"，置信度 {confidence:.1f}%"
+        if decisive:
+            reason_text += f"；主管认为最关键的是{decisive}。"
+        elif contribution_names:
+            reason_text += f"；主要观察{'、'.join(contribution_names)}。"
+        reason_text += f"具体依据：{'；'.join(reasons)}。"
+        if risks:
+            reason_text += f"需要留意：{risks[0]}。"
+
+        validation = AIRobotService._unique_text(list(outlook.get("validation_conditions") or []), 4)
+        invalidation = AIRobotService._unique_text(list(outlook.get("invalidation_conditions") or []), 5)
+        if not validation:
+            validation = ["后续收盘继续站稳关键均线，并且资金面没有连续恶化"]
+        if not invalidation:
+            invalidation = risks[:3] or ["出现新的重大负面公告，或价格和成交结构明显失效"]
+        return {
+            "plain_reason": reason_text,
+            "key_facts": facts[:8],
+            "positive_evidence": positive,
+            "risks": risks,
+            "validation_conditions": validation,
+            "invalidation_conditions": invalidation,
+            "score": score,
+            "confidence": confidence,
+            "verdict": verdict,
+            "data_quality": data_quality.get("grade") or "未标注",
+            "source_data_date": row.selected_on.isoformat() if row.selected_on else None,
+        }
+
+    @classmethod
+    def _snapshot_for_pick(cls, row: AIRobotPick) -> dict[str, Any]:
+        explanation = cls._pick_explanation(row)
+        return {
+            "code": row.code,
+            "name": row.name,
+            "sector": row.sector_label,
+            "state": row.state,
+            "score": row.score,
+            "confidence": row.confidence,
+            "selected_price": row.selected_price,
+            "selected_on": row.selected_on.isoformat() if row.selected_on else None,
+            "shares": int(row.simulated_shares or 100),
+            "basis": explanation["plain_reason"],
+            "explanation": explanation,
+        }
+
+    @classmethod
+    def _decision_reason_from_snapshot(cls, snapshots: list[dict[str, Any]]) -> str:
+        lines = [
+            f"{item.get('name')}({item.get('code')})：{((item.get('explanation') or {}).get('plain_reason') or item.get('basis') or '暂无具体依据')}"
+            for item in snapshots
+        ]
+        if len(lines) > 12:
+            return "\n".join(lines[:12]) + f"\n其余 {len(lines) - 12} 只请查看下方逐股解释。"
+        return "\n".join(lines) or "本轮没有形成可验证的入选依据。"
+
+    async def _journal_payloads(self, journal_ids: list[int]) -> list[dict[str, Any]]:
+        """Backfill structured explanations for journals written by older builds."""
+        if not journal_ids:
+            return []
+        async with async_session() as session:
+            rows = list((await session.execute(
+                select(AIRobotJournal).where(AIRobotJournal.id.in_(journal_ids))
+            )).scalars().all())
+            run_ids = [row.run_id for row in rows if row.run_id]
+            picks = list((await session.execute(
+                select(AIRobotPick).where(AIRobotPick.run_id.in_(run_ids))
+            )).scalars().all()) if run_ids else []
+            by_run: dict[int, list[AIRobotPick]] = {}
+            for pick in picks:
+                by_run.setdefault(int(pick.run_id), []).append(pick)
+            payloads: list[dict[str, Any]] = []
+            dirty = False
+            for row in sorted(rows, key=lambda item: journal_ids.index(item.id)):
+                old = list(row.picks_snapshot or [])
+                old_by_code = {str(item.get("code")): item for item in old if isinstance(item, dict)}
+                snapshots = []
+                for pick in sorted(by_run.get(int(row.run_id or 0), []), key=lambda item: item.score or 0, reverse=True):
+                    snapshot = {**old_by_code.get(pick.code, {}), **self._snapshot_for_pick(pick)}
+                    previous_performance = old_by_code.get(pick.code, {})
+                    for key in ("latest_price", "market_value", "pnl", "pnl_pct", "price_status"):
+                        if key in previous_performance:
+                            snapshot[key] = previous_performance[key]
+                    snapshots.append(snapshot)
+                if snapshots and snapshots != old:
+                    row.picks_snapshot = snapshots
+                    row.decision_reason = self._decision_reason_from_snapshot(snapshots)
+                    dirty = True
+                payloads.append(_journal_dict(row))
+            if dirty:
+                await session.commit()
+            return payloads
 
     async def _record_decision_journal(self, run_id: int) -> None:
         async with async_session() as session:
@@ -397,29 +582,14 @@ class AIRobotService:
                 f"新调入 {summary.get('new', 0)} 只、移出 {summary.get('removed', 0)} 只；"
                 f"有核验价格的标的均按 100 股模拟，依据数据日 {source_label}。"
             )
-            reasons = [
-                f"{row.name}({row.code})：{self._pick_basis(row)[:140]}"
-                for row in picks[:6]
-            ]
-            decision_reason = "\n".join(reasons) or "本轮没有形成可验证的入选依据。"
             unavailable = len(SECTOR_BLUEPRINTS) - int(summary.get("available_sectors") or 0)
             lessons = (
                 f"本轮有 {unavailable} 个板块数据不完整，结论只覆盖已返回有效数据的板块。"
                 if unavailable > 0
                 else "八大板块均完成数据核验；仍需用后续行情检验选股依据，不能把评分当作收益承诺。"
             )
-            snapshot = [{
-                "code": row.code,
-                "name": row.name,
-                "sector": row.sector_label,
-                "state": row.state,
-                "score": row.score,
-                "confidence": row.confidence,
-                "selected_price": row.selected_price,
-                "selected_on": row.selected_on.isoformat() if row.selected_on else None,
-                "shares": int(row.simulated_shares or 100),
-                "basis": self._pick_basis(row),
-            } for row in picks]
+            snapshot = [self._snapshot_for_pick(row) for row in picks]
+            decision_reason = self._decision_reason_from_snapshot(snapshot)
             journal = (await session.execute(
                 select(AIRobotJournal).where(
                     AIRobotJournal.pool_type == run.pool_type,
@@ -459,7 +629,7 @@ class AIRobotService:
             query = query.where(AIRobotJournal.pool_type == pool_type)
         async with async_session() as session:
             rows = list((await session.execute(query)).scalars().all())
-        return [_journal_dict(row) for row in rows]
+        return await self._journal_payloads([row.id for row in rows])
 
     async def performance_calendar(self, pool_type: str | None = None, days: int = 180) -> dict[str, Any]:
         """Aggregate persisted robot journals into a calendar-friendly ledger."""
@@ -583,7 +753,7 @@ class AIRobotService:
             )).scalars().all())
         return {
             "date": journal_date.isoformat(),
-            "journals": [_journal_dict(row) for row in rows],
+            "journals": await self._journal_payloads([row.id for row in rows]),
             "available": bool(rows),
         }
 
@@ -652,7 +822,12 @@ class AIRobotService:
                     .limit(1)
                 )).scalar_one_or_none()
                 output[pool_type] = _journal_dict(row)
-        return output
+        payloads = await self._journal_payloads([row["id"] for row in output.values() if row and row.get("id")])
+        by_id = {item["id"]: item for item in payloads if item}
+        return {
+            pool_type: by_id.get(item["id"]) if item else None
+            for pool_type, item in output.items()
+        }
 
     async def _execute(self, run_id: int) -> None:
         try:

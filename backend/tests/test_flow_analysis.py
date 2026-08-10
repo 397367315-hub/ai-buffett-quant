@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import Base
 from models import IndustryFundFlowDaily, MarketBoard
-from services.flow_analysis import FlowAnalysisService
+from services.flow_analysis import FLOW_WINDOWS, FlowAnalysisService
 
 
 class FlowAnalysisTests(unittest.IsolatedAsyncioTestCase):
@@ -64,6 +64,36 @@ class FlowAnalysisTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["coverage"]["complete"])
         self.assertTrue(result["analysis"]["risks"])
+
+    async def test_quarter_and_year_windows_are_available_without_fabricating_coverage(self):
+        service = FlowAnalysisService()
+        with (
+            patch("services.flow_analysis.async_session", self.session_factory),
+            patch("services.flow_analysis.ai_service.client", None),
+        ):
+            quarter = await service.analyze("industry", "quarter")
+            year = await service.analyze("industry", "year")
+
+        self.assertEqual(FLOW_WINDOWS["quarter"]["sessions"], 60)
+        self.assertEqual(FLOW_WINDOWS["year"]["sessions"], 250)
+        self.assertEqual(quarter["coverage"]["actual_sessions"], 5)
+        self.assertEqual(year["coverage"]["actual_sessions"], 5)
+        self.assertFalse(year["coverage"]["complete"])
+
+    def test_positive_boards_are_never_labeled_as_outflows(self):
+        analysis = FlowAnalysisService._deterministic_summary(
+            {"label": "近一周", "sessions": 5},
+            "industry",
+            [{
+                "code": "BK001", "name": "仍在流入", "days": 5,
+                "total_inflow": 100, "average_inflow": 20, "latest_inflow": 10,
+                "positive_days": 5, "negative_days": 0, "positive_ratio_pct": 100,
+                "average_change_pct": 1.0, "trend_delta": 0, "previous_average": 20,
+            }],
+            [{"date": "2026-08-10", "net_inflow": 100, "inflow_boards": 1, "outflow_boards": 0, "board_count": 1}],
+        )
+        self.assertEqual(analysis["top_outflows"], [])
+        self.assertFalse(analysis["outflow_data_available"])
 
 
 if __name__ == "__main__":

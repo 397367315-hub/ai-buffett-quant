@@ -7,6 +7,44 @@ from services.data_collector import EastMoneyDataCollector, normalize_stock_code
 
 
 class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rotation_does_not_call_positive_inflow_an_outflow(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_all_concept_flow = AsyncMock(return_value=[
+            {"code": "BK001", "name": "强流入", "main_net_inflow": 200, "change_pct": 1},
+            {"code": "BK002", "name": "弱流入", "main_net_inflow": 10, "change_pct": 0.2},
+        ])
+
+        result = await collector.fetch_sector_rotation()
+
+        self.assertEqual(result["hot_outflow"], [])
+        self.assertFalse(result["outflow_data_available"])
+
+    async def test_block_trade_snapshot_is_reused_for_concurrent_page_requests(self):
+        collector = EastMoneyDataCollector()
+        calls = 0
+
+        async def fake_fetch_json(url, params, headers=None):
+            nonlocal calls
+            del url, params, headers
+            calls += 1
+            await asyncio.sleep(0)
+            return {"result": {"data": [{
+                "SECURITY_CODE": "600519", "SECURITY_NAME_ABBR": "贵州茅台",
+                "TRADE_DATE": "2026-08-10", "DEAL_AMT": 1000000,
+                "DEAL_PRICE": 1400, "PREMIUM_RATIO": 0.01,
+                "DEAL_VOLUME": 1000, "BUYER_NAME": "机构专用", "SELLER_NAME": "营业部",
+            }]}}
+
+        collector.fetch_json = fake_fetch_json
+        first, second = await asyncio.gather(
+            collector.fetch_block_trades(),
+            collector.fetch_block_trades(),
+        )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(first, second)
+        self.assertEqual(first[0]["code"], "600519")
+
     async def test_dragon_board_target_date_is_forwarded_to_eastmoney_filter(self):
         collector = EastMoneyDataCollector()
         calls = []

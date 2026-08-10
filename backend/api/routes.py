@@ -40,6 +40,7 @@ from database import async_session
 from services.history_cache import history_cache
 from services.sector_flow_network import build_inferred_transfers
 from services.topic_strength import topic_strength_service
+from services.block_trade_analysis import block_trade_analysis_service
 from quant.market_cache import load_quant_market_snapshot
 
 router = APIRouter(prefix="/api/v1")
@@ -1224,6 +1225,17 @@ async def get_sector_rotation():
     return {"code": 0, "data": data}
 
 
+@router.post("/flow/rotation/analysis")
+async def analyze_sector_rotation(request: dict | None = None):
+    """Run a cached multi-session analysis for the concept rotation page."""
+    window = str((request or {}).get("window") or "week").strip().lower()
+    try:
+        result = await flow_analysis_service.analyze("concept", window)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": result, "windows": FLOW_WINDOWS}
+
+
 @router.get("/dragon/board")
 async def get_dragon_board(
     target_date: Optional[str] = Query(None, alias="date"),
@@ -1282,6 +1294,22 @@ async def get_block_trades():
         "summary": {"total": len(trades), "total_amount": sum(trade["amount"] for trade in trades), "premium_count": sum(trade["premium"] > 0 for trade in trades)},
         **_market_metadata(available=bool(trades), data_date=data_date, is_realtime=False),
     }}
+
+
+@router.post("/block-trade/analysis")
+async def analyze_block_trades(request: dict | None = None):
+    """Analyze the current block-trade snapshot against verified/cached quotes."""
+    payload = request or {}
+    trades = await collector.fetch_block_trades(
+        page=int(payload.get("page") or 1),
+        page_size=min(max(int(payload.get("page_size") or 50), 1), 100),
+    )
+    result = await block_trade_analysis_service.analyze(
+        trades,
+        selected_code=str(payload.get("code") or "") or None,
+        use_ai=bool(payload.get("use_ai", True)),
+    )
+    return {"code": 0, "data": result}
 
 
 @router.get("/screener/technical")

@@ -136,10 +136,13 @@ class EastMoneyDataCollector:
         "f20,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184"
     )
     SECTOR_COUNTS_CACHE_SECONDS = 3600
+    BLOCK_TRADE_CACHE_SECONDS = 60
 
     def __init__(self):
         self._sector_counts_cache: tuple[float, dict[str, int]] | None = None
         self._sector_counts_lock = asyncio.Lock()
+        self._block_trade_cache: dict[tuple[int, int], tuple[float, list[dict]]] = {}
+        self._block_trade_cache_lock = asyncio.Lock()
 
     @staticmethod
     def _request_timeout() -> float:
@@ -1030,45 +1033,65 @@ class EastMoneyDataCollector:
         return stocks
 
     async def fetch_block_trades(self, page: int = 1, page_size: int = 50) -> list[dict]:
+        page = max(1, int(page))
+        page_size = min(max(1, int(page_size)), self.MAX_LIST_PAGE_SIZE)
+        cache_key = (page, page_size)
+        cached = self._block_trade_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < self.BLOCK_TRADE_CACHE_SECONDS:
+            return [dict(item) for item in cached[1]]
+
         params = {
             "reportName": "RPT_DATA_BLOCKTRADE", "columns": "ALL", "pageNumber": str(page), "pageSize": str(page_size),
             "sortTypes": "-1,-1", "sortColumns": "TRADE_DATE,DEAL_AMT", "source": "WEB", "client": "WEB",
         }
-        try:
-            data = await self.fetch_json(self.DATACENTER_URL, params)
-        except Exception as exc:
-            print(f"Error fetching block trades: {type(exc).__name__}")
-            return []
-        result = []
-        for item in ((data.get("result") or {}).get("data") or []):
+        async with self._block_trade_cache_lock:
+            cached = self._block_trade_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < self.BLOCK_TRADE_CACHE_SECONDS:
+                return [dict(item) for item in cached[1]]
             try:
-                code = normalize_stock_code(item.get("SECURITY_CODE"))
-            except ValueError:
-                continue
-            result.append({
-                "code": code, "name": item.get("SECURITY_NAME_ABBR", ""), "date": str(item.get("TRADE_DATE") or "")[:10],
-                "amount": as_int(item.get("DEAL_AMT")), "price": as_float(item.get("DEAL_PRICE")),
-                "premium": round(as_float(item.get("PREMIUM_RATIO")) * 100, 2), "volume": as_int(item.get("DEAL_VOLUME")),
-                "buyer": item.get("BUYER_NAME", ""), "seller": item.get("SELLER_NAME", ""),
-                "change_pct": as_float(item.get("CHANGE_RATE")),
-            })
-        return result
+                data = await self.fetch_json(self.DATACENTER_URL, params)
+            except Exception as exc:
+                print(f"Error fetching block trades: {type(exc).__name__}")
+                return []
+            result = []
+            for item in ((data.get("result") or {}).get("data") or []):
+                try:
+                    code = normalize_stock_code(item.get("SECURITY_CODE"))
+                except ValueError:
+                    continue
+                result.append({
+                    "code": code, "name": item.get("SECURITY_NAME_ABBR", ""), "date": str(item.get("TRADE_DATE") or "")[:10],
+                    "amount": as_int(item.get("DEAL_AMT")), "price": as_float(item.get("DEAL_PRICE")),
+                    "premium": round(as_float(item.get("PREMIUM_RATIO")) * 100, 2), "volume": as_int(item.get("DEAL_VOLUME")),
+                    "buyer": item.get("BUYER_NAME", ""), "seller": item.get("SELLER_NAME", ""),
+                    "change_pct": as_float(item.get("CHANGE_RATE")),
+                })
+            self._block_trade_cache[cache_key] = (time.monotonic(), result)
+            return [dict(item) for item in result]
 
     async def fetch_sector_rotation(self, lookback_days: int = 5) -> dict:
-        del lookback_days
         sectors = []
-        for item in await self.fetch_concept_flow(page_size=100):
+        try:
+            rows = await self.fetch_all_concept_flow()
+        except Exception:
+            # Keep the live page usable when a full directory request is
+            # throttled; this is explicitly marked partial below.
+            rows = await self.fetch_concept_flow(page_size=100)
+        for item in rows:
             sectors.append({
                 "code": item.get("code", ""), "name": item.get("name", ""),
                 "change_pct": as_float(item.get("change_pct")), "main_net_inflow": as_int(item.get("main_net_inflow")),
                 "super_large_inflow": as_int(item.get("super_large_net_inflow")), "large_inflow": as_int(item.get("large_net_inflow")),
                 "up_count": as_int(item.get("up_count")), "down_count": as_int(item.get("down_count")),
             })
+        negative = [item for item in sectors if item["main_net_inflow"] < 0]
         return {
             "sectors": sectors,
             "hot_inflow": sorted(sectors, key=lambda item: item["main_net_inflow"], reverse=True)[:5],
-            "hot_outflow": sorted(sectors, key=lambda item: item["main_net_inflow"])[:5],
+            "hot_outflow": sorted(negative, key=lambda item: item["main_net_inflow"])[:5],
             "hot_gainers": sorted(sectors, key=lambda item: item["change_pct"], reverse=True)[:5],
+            "outflow_data_available": bool(negative),
+            "lookback_days": lookback_days,
         }
 
     async def _fetch_screener_rows(self, sort_field: str, page_size: int) -> list[dict]:

@@ -68,7 +68,28 @@ interface RobotJournal {
   pnl_reflection: string;
   lessons: string;
   metrics: Record<string, any>;
-  picks_snapshot: Array<Record<string, any>>;
+  picks_snapshot: Array<{
+    code?: string;
+    name?: string;
+    sector?: string;
+    state?: string;
+    score?: number | null;
+    confidence?: number | null;
+    selected_price?: number | null;
+    latest_price?: number | null;
+    pnl?: number | null;
+    pnl_pct?: number | null;
+    explanation?: {
+      plain_reason?: string;
+      key_facts?: string[];
+      positive_evidence?: string[];
+      risks?: string[];
+      validation_conditions?: string[];
+      invalidation_conditions?: string[];
+      data_quality?: string;
+    };
+    [key: string]: any;
+  }>;
 }
 
 interface Performance {
@@ -371,7 +392,14 @@ function RobotRow({ pick }: { pick: RobotPick }) {
 
 function RobotJournalSection({ journals, selected, onSelect }: { journals: RobotJournal[]; selected: RobotJournal; onSelect: (id: number) => void }) {
   const performance = selected.metrics?.performance as Performance | undefined;
-  return <section className="border border-border rounded-md overflow-hidden mb-4"><div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2"><h2 className="text-sm font-semibold text-text flex items-center gap-2"><BookOpen size={15} className="text-accent" />机器人复盘日记</h2><span className="text-[11px] text-text-secondary">记录日 {selected.journal_date} · 行情日 {selected.source_data_date || '--'}</span><span className="sm:ml-auto text-[11px] text-text-secondary">{selected.is_realtime ? '盘中数据' : '收盘/缓存数据'}</span></div><div className="grid lg:grid-cols-[180px_1fr]"><div className="border-b lg:border-b-0 lg:border-r border-border bg-[#0D1117] p-2 flex lg:block gap-1 overflow-x-auto">{journals.slice(0, 20).map((journal) => <button key={journal.id} type="button" onClick={() => onSelect(journal.id)} className={`shrink-0 w-[132px] lg:w-full text-left px-2.5 py-2 rounded text-xs mb-0 lg:mb-1 ${journal.id === selected.id ? 'bg-accent/15 text-accent' : 'text-text-secondary hover:bg-card hover:text-text'}`}><div className="font-mono">{journal.journal_date}</div><div className="mt-0.5 truncate">{journal.metrics?.new || 0}调入 · {journal.metrics?.removed || 0}移出</div></button>)}</div><div className="p-4 grid gap-4 md:grid-cols-2"><JournalBlock title="今天做了什么" text={selected.action_summary} /><JournalBlock title="为什么这样选" text={selected.decision_reason} /><JournalBlock title="盈亏思考" text={selected.pnl_reflection || (performance ? `组合盈亏 ${money(performance.pnl)} · ${signed(performance.pnl_pct)}` : '等待盘后盈亏快照')} /><JournalBlock title="今天的收获" text={selected.lessons} /></div></div></section>;
+  return <section className="border border-border rounded-md overflow-hidden mb-4"><div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2"><h2 className="text-sm font-semibold text-text flex items-center gap-2"><BookOpen size={15} className="text-accent" />机器人复盘日记</h2><span className="text-[11px] text-text-secondary">记录日 {selected.journal_date} · 行情日 {selected.source_data_date || '--'}</span><span className="sm:ml-auto text-[11px] text-text-secondary">{selected.is_realtime ? '盘中数据' : '收盘/缓存数据'}</span></div><div className="grid lg:grid-cols-[180px_1fr]"><div className="border-b lg:border-b-0 lg:border-r border-border bg-[#0D1117] p-2 flex lg:block gap-1 overflow-x-auto">{journals.slice(0, 20).map((journal) => <button key={journal.id} type="button" onClick={() => onSelect(journal.id)} className={`shrink-0 w-[132px] lg:w-full text-left px-2.5 py-2 rounded text-xs mb-0 lg:mb-1 ${journal.id === selected.id ? 'bg-accent/15 text-accent' : 'text-text-secondary hover:bg-card hover:text-text'}`}><div className="font-mono">{journal.journal_date}</div><div className="mt-0.5 truncate">{journal.metrics?.new || 0}调入 · {journal.metrics?.removed || 0}移出</div></button>)}</div><div className="p-4 space-y-4"><div className="grid gap-4 md:grid-cols-2"><JournalBlock title="今天做了什么" text={selected.action_summary} /><JournalBlock title="盈亏思考" text={selected.pnl_reflection || (performance ? `组合盈亏 ${money(performance.pnl)} · ${signed(performance.pnl_pct)}` : '等待盘后盈亏快照')} /><JournalBlock title="今天的收获" text={selected.lessons} /><JournalBlock title="总体判断" text={selected.decision_reason} /></div><div><div className="text-[11px] text-text-secondary mb-2">逐股说明 · 每只股票单独依据</div><div className="grid gap-2">{selected.picks_snapshot?.map((pick, index) => <RobotJournalPick key={`${pick.code || index}-${index}`} pick={pick} />)}</div></div></div></div></section>;
+}
+
+function RobotJournalPick({ pick }: { pick: RobotJournal['picks_snapshot'][number] }) {
+  const explanation = pick.explanation || {};
+  const positive = explanation.positive_evidence || [];
+  const risks = explanation.risks || [];
+  return <article className="border border-border rounded-md p-3 bg-[#0D1117] min-w-0"><div className="flex flex-wrap items-start justify-between gap-2"><div><div className="text-sm font-semibold text-text">{pick.name || '--'} <span className="font-mono text-text-secondary ml-1">{pick.code || '--'}</span></div><div className="text-[11px] text-text-secondary mt-1">{pick.sector || '板块未返回'} · {pick.state === 'new' ? '新调入' : '保留'} · 评分 {pick.score == null ? '--' : pick.score.toFixed(1)}</div></div><span className="text-[11px] text-text-secondary">数据质量：{explanation.data_quality || '未标注'}</span></div><p className="mt-2 text-xs leading-5 text-text">{explanation.plain_reason || pick.basis || '暂无逐股解释'}</p><div className="mt-2 grid gap-2 md:grid-cols-3 text-[11px]"><div><div className="text-text-secondary mb-1">关键事实</div><div className="space-y-1 text-text">{(explanation.key_facts || []).slice(0, 4).map((item) => <div key={item}>{item}</div>)}</div></div><div><div className="text-text-secondary mb-1">支持证据</div><div className="space-y-1 text-up">{positive.slice(0, 3).map((item) => <div key={item}>{item}</div>)}</div></div><div><div className="text-text-secondary mb-1">风险与失效</div><div className="space-y-1 text-warn">{[...risks, ...(explanation.invalidation_conditions || [])].slice(0, 3).map((item) => <div key={item}>{item}</div>)}</div></div></div></article>;
 }
 
 function JournalBlock({ title, text }: { title: string; text: string }) {

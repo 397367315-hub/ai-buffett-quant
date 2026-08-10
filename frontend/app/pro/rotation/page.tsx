@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { apiFetch, formatYi, formatYiShort, getChangeColor } from '@/lib/api';
 import {
-  TrendingUp, TrendingDown, Flame, BarChart3, HelpCircle, ArrowUp, ArrowDown, Zap
+  TrendingUp, TrendingDown, Flame, BarChart3, HelpCircle, ArrowUp, ArrowDown, Zap, BrainCircuit, Loader2
 } from 'lucide-react';
 
 interface SectorItem {
@@ -22,11 +22,36 @@ interface RotationData {
   hot_inflow: SectorItem[];
   hot_outflow: SectorItem[];
   hot_gainers: SectorItem[];
+  outflow_data_available?: boolean;
 }
+
+type AnalysisWindow = 'week' | 'two_weeks' | 'month' | 'quarter' | 'year';
+interface RotationAnalysis {
+  available: boolean;
+  window: { id: AnalysisWindow; label: string; sessions: number };
+  period: { start: string | null; end: string | null };
+  coverage: { actual_sessions: number; requested_sessions: number; board_count: number; complete: boolean };
+  analysis: {
+    score: number; tone: string; headline: string; summary: string;
+    aggregate_inflow: number; latest_breadth_pct: number; concentration_top3_pct: number;
+    top_inflows: SectorItem[]; top_outflows: SectorItem[]; suggestions: string[]; risks: string[];
+  };
+  ai_narrative: string | null;
+  ai_generated: boolean;
+}
+
+const WINDOWS: Array<{ id: AnalysisWindow; label: string }> = [
+  { id: 'week', label: '一周' }, { id: 'two_weeks', label: '半个月' },
+  { id: 'month', label: '一个月' }, { id: 'quarter', label: '一个季度' }, { id: 'year', label: '一年' },
+];
 
 export default function RotationPage() {
   const [data, setData] = useState<RotationData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [analysisWindow, setAnalysisWindow] = useState<AnalysisWindow>('week');
+  const [analysis, setAnalysis] = useState<RotationAnalysis | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   const fetchData = async () => {
     try {
@@ -43,6 +68,26 @@ export default function RotationPage() {
     fetchData();
     const timer = setInterval(fetchData, 60000);
     return () => clearInterval(timer);
+  }, []);
+
+  const runAnalysis = async (window: AnalysisWindow) => {
+    setAnalysisWindow(window);
+    setAnalysisLoading(true);
+    setAnalysisError(null);
+    try {
+      const response = await apiFetch<{ data: RotationAnalysis }>('/flow/rotation/analysis', {
+        method: 'POST', body: JSON.stringify({ window, use_ai: true }),
+      });
+      setAnalysis(response.data);
+    } catch (caught) {
+      setAnalysisError(caught instanceof Error ? caught.message : '板块资金分析暂时不可用');
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void runAnalysis('week');
   }, []);
 
   if (loading) {
@@ -78,6 +123,19 @@ export default function RotationPage() {
           追踪主力资金在板块间的流向变化，发现资金轮动规律
         </p>
       </div>
+
+      <section className="border border-border rounded-lg overflow-hidden mb-6">
+        <div className="px-4 py-3 border-b border-border flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-semibold text-text flex items-center gap-2"><BrainCircuit size={16} className="text-accent" />板块资金 AI 分析</h2>
+          <span className="text-[11px] text-text-secondary">按缓存交易日聚合，实时行情不可用时仍可查看历史证据</span>
+        </div>
+        <div className="flex flex-wrap gap-1.5 p-3 border-b border-border">
+          {WINDOWS.map((item) => <button key={item.id} type="button" onClick={() => runAnalysis(item.id)} disabled={analysisLoading} className={`px-3 py-1.5 rounded border text-xs ${analysisWindow === item.id ? 'border-accent bg-accent/15 text-accent' : 'border-border text-text-secondary hover:text-text'} disabled:opacity-60`}>{item.label}</button>)}
+        </div>
+        {analysisLoading && <div className="px-4 py-6 text-xs text-text-secondary flex items-center gap-2"><Loader2 size={15} className="animate-spin text-accent" />正在读取{WINDOWS.find((item) => item.id === analysisWindow)?.label}缓存并核对资金连续性...</div>}
+        {analysisError && <div className="m-3 border border-down/50 bg-[#EF535018] rounded p-3 text-xs text-down">{analysisError}</div>}
+        {analysis && !analysisLoading && <div className="p-4 space-y-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-sm font-semibold text-text">{analysis.analysis.headline}</div><div className="text-xs text-text-secondary mt-1">{analysis.analysis.summary}</div></div><div className="text-right"><div className="font-mono text-lg text-accent">{analysis.analysis.score.toFixed(1)}</div><div className="text-[11px] text-text-secondary">资金状态：{analysis.analysis.tone}</div></div></div><div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs"><div className="border border-border rounded p-2"><div className="text-text-secondary">累计净流入</div><div className="font-mono text-text mt-1">{formatYi(analysis.analysis.aggregate_inflow)}</div></div><div className="border border-border rounded p-2"><div className="text-text-secondary">最新流入广度</div><div className="font-mono text-text mt-1">{analysis.analysis.latest_breadth_pct.toFixed(1)}%</div></div><div className="border border-border rounded p-2"><div className="text-text-secondary">前3集中度</div><div className="font-mono text-text mt-1">{analysis.analysis.concentration_top3_pct.toFixed(1)}%</div></div><div className="border border-border rounded p-2"><div className="text-text-secondary">数据覆盖</div><div className="font-mono text-text mt-1">{analysis.coverage.actual_sessions}/{analysis.coverage.requested_sessions}日</div></div></div><div className="grid gap-3 md:grid-cols-3 text-xs"><div><div className="text-text-secondary mb-1">AI/规则结论</div><div className="text-text leading-5 whitespace-pre-line">{analysis.ai_narrative || '当前使用规则审计结论，AI服务不可用时不影响数据分析。'}</div></div><div><div className="text-text-secondary mb-1">观察建议</div><div className="space-y-1 text-up">{analysis.analysis.suggestions.map((item) => <div key={item}>{item}</div>)}</div></div><div><div className="text-text-secondary mb-1">风险</div><div className="space-y-1 text-warn">{analysis.analysis.risks.length ? analysis.analysis.risks.map((item) => <div key={item}>{item}</div>) : <div>暂未发现额外风险，但不能据此保证收益。</div>}</div></div></div></div>}
+      </section>
 
       {/* 资金流入 TOP5 */}
       {data.hot_inflow && data.hot_inflow.length > 0 && (
@@ -146,6 +204,7 @@ export default function RotationPage() {
           </div>
         </div>
       )}
+      {(!data.hot_outflow || data.hot_outflow.length === 0 || data.outflow_data_available === false) && <div className="mb-6 border border-border rounded-lg px-4 py-3 text-xs text-text-secondary">当前快照没有核验到负净流入板块，暂不展示“资金流出 TOP5”，避免把流入较弱误说成资金流出。</div>}
 
       {/* 涨幅 TOP5 */}
       {data.hot_gainers && data.hot_gainers.length > 0 && (

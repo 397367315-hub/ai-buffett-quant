@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import type {
+  BackgroundJob,
   ResearchExperiment,
   ResearchFactor,
   ResearchReport,
@@ -46,7 +47,7 @@ function statusLabel(status: string): string {
     VALIDATED: '已验证',
     COMPOSABLE: '可组合',
     DRAFT: '草稿',
-    BLOCKED_DATA: '数据阻断',
+    BLOCKED_DATA: '该实验缺关键数据',
     READY_RESEARCH_ONLY: '可研究',
     RESEARCH_ONLY: '仅研究',
     INSUFFICIENT_DATA: '数据不足',
@@ -65,7 +66,7 @@ function DatasetSnapshot({ dataset }: { dataset: ResearchWorkspace['dataset'] })
       <div><div className="text-text-secondary">覆盖区间</div><div className="font-mono text-text mt-1">{from || '--'} 至 {to || '--'}</div></div>
       <div><div className="text-text-secondary">来源</div><div className="text-text mt-1 truncate" title={(dataset.source || []).join(',')}>{(dataset.source || []).join(', ') || '缓存不可用'}</div></div>
     </div>
-    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-text-secondary"><span>数据集 {dataset.dataset_id}</span><span>历史股票池 {dataset.universe?.status === 'ready' ? '已登记' : '未登记'}</span><span>点时状态 {dataset.point_in_time?.status || '--'}</span><span>缓存参与 {dataset.cache_used ? '是' : '否'}</span></div>
+    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-text-secondary"><span>数据集 {dataset.dataset_id}</span><span>历史股票池 {dataset.universe?.status === 'ready' ? '完整' : dataset.universe?.status === 'partial' ? '部分覆盖（可研究、有偏差）' : '不可用'}</span><span>点时状态 {dataset.point_in_time?.status || '--'}</span><span>缓存参与 {dataset.cache_used ? '是' : '否'}</span></div>
     {(dataset.warnings || []).length > 0 && <div className="mt-3 space-y-1 text-[11px] text-warn">{dataset.warnings?.slice(0, 3).map((warning) => <div key={warning} className="flex gap-1.5"><AlertTriangle size={12} className="mt-0.5 shrink-0" />{warning}</div>)}</div>}
   </section>;
 }
@@ -75,7 +76,7 @@ function ExperimentCard({ item, selected, onSelect }: { item: ResearchExperiment
     <div className="flex items-start justify-between gap-2"><div className="min-w-0"><div className="text-sm font-semibold text-text truncate">{item.name}</div><div className="text-[11px] text-text-secondary mt-1">{item.cadence} · {item.family}</div></div><span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${statusClass(item.status)}`}>{statusLabel(item.status)}</span></div>
     <div className="text-xs text-text-secondary mt-2 leading-5">{item.description}</div>
     <div className="flex flex-wrap gap-1 mt-2">{item.factor_names.map((name) => <span key={name} className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-secondary">{name}</span>)}</div>
-    {item.blockers.length > 0 && <div className="mt-2 text-[11px] text-warn">{item.blockers[0]}</div>}
+    {item.blockers.length > 0 && <div className="mt-2 text-[11px] text-warn">{item.supported ? '研究限制' : '该实验缺口'}：{item.blockers[0]}</div>}
   </button>;
 }
 
@@ -145,6 +146,7 @@ export default function ResearchPanel() {
   const [capital, setCapital] = useState(400000);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [job, setJob] = useState<BackgroundJob | null>(null);
   const [progress, setProgress] = useState(8);
   const [error, setError] = useState<string | null>(null);
   const [dsl, setDsl] = useState(DEFAULT_DSL);
@@ -157,6 +159,11 @@ export default function ResearchPanel() {
       const response = await apiFetch<{ data: ResearchWorkspace }>('/quant/research/workspace');
       setWorkspace(response.data);
       if (response.data.latest_report) setReport(response.data.latest_report);
+      if (response.data.active_job) {
+        setJob(response.data.active_job);
+        setRunning(['queued', 'running'].includes(response.data.active_job.status));
+        setProgress(response.data.active_job.progress || 0);
+      }
       if (!response.data.experiments.some((item) => item.id === selectedId)) setSelectedId(response.data.experiments[0]?.id || '');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '研究工作台读取失败');
@@ -169,23 +176,48 @@ export default function ResearchPanel() {
 
   const selected = workspace?.experiments.find((item) => item.id === selectedId) || null;
 
+  useEffect(() => {
+    if (!job || !['queued', 'running'].includes(job.status)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const response = await apiFetch<{ data: BackgroundJob }>(`/quant/research/run/status/${job.job_id}`);
+        if (cancelled) return;
+        const current = response.data;
+        setJob(current);
+        setProgress(current.progress || 0);
+        if (current.status === 'completed') {
+          const completedReport = current.result as unknown as ResearchReport | null;
+          if (completedReport) setReport(completedReport);
+          setRunning(false);
+        } else if (current.status === 'failed') {
+          setRunning(false);
+          setError(current.error ? `研究失败：${current.error}` : current.message || '研究任务运行失败');
+        }
+      } catch (caught) {
+        if (!cancelled) setError(caught instanceof Error ? `研究状态读取失败：${caught.message}` : '研究状态读取失败');
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [job?.job_id, job?.status]);
+
   const runResearch = async () => {
     if (!selected || !selected.supported) return;
     setRunning(true);
     setProgress(8);
     setError(null);
-    const timer = window.setInterval(() => setProgress((value) => Math.min(92, value + 5)), 450);
     try {
-      const response = await apiFetch<{ data: ResearchReport }>('/quant/research/run', {
+      const response = await apiFetch<{ data: BackgroundJob }>('/quant/research/run', {
         method: 'POST',
         body: JSON.stringify({ experiment_id: selected.id, days, top_n: topN, lookback_days: lookback, holding_days: holding, capital }),
       });
-      setReport(response.data);
-      setProgress(100);
+      setJob(response.data);
+      setProgress(response.data.progress || 0);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '研究任务运行失败');
-    } finally {
-      window.clearInterval(timer);
+      const message = caught instanceof Error ? caught.message : '';
+      setError(message === 'Load failed' ? '研究任务提交连接中断，请检查后端状态后重试。' : message || '研究任务提交失败');
       setRunning(false);
     }
   };
@@ -210,7 +242,7 @@ export default function ResearchPanel() {
 
     <section className="space-y-3"><div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold text-text flex items-center gap-2"><SlidersHorizontal size={15} className="text-accent" />实验轨道</h2><span className="text-[11px] text-text-secondary">选择一个实验后锁定参数运行</span></div><div className="grid grid-cols-1 lg:grid-cols-3 gap-3">{workspace.experiments.map((item) => <ExperimentCard key={item.id} item={item} selected={item.id === selectedId} onSelect={() => setSelectedId(item.id)} />)}</div></section>
 
-    <section className="border border-border rounded-md p-3"><div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 items-end"><label className="text-xs text-text-secondary">研究窗口<input type="number" min={30} max={730} value={days} onChange={(event) => setDays(Math.min(730, Math.max(30, Number(event.target.value) || 365)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><label className="text-xs text-text-secondary">持仓数量<input type="number" min={1} max={50} value={topN} onChange={(event) => setTopN(Math.min(50, Math.max(1, Number(event.target.value) || 10)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><label className="text-xs text-text-secondary">动量回看<input type="number" min={10} max={120} value={lookback} onChange={(event) => setLookback(Math.min(120, Math.max(10, Number(event.target.value) || 20)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><label className="text-xs text-text-secondary">持有期<input type="number" min={1} max={20} value={holding} onChange={(event) => setHolding(Math.min(20, Math.max(1, Number(event.target.value) || 5)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><label className="text-xs text-text-secondary">参考资金<input type="number" min={10000} max={100000000} step={10000} value={capital} onChange={(event) => setCapital(Math.min(100000000, Math.max(10000, Number(event.target.value) || 400000)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><button type="button" onClick={runResearch} disabled={running || !selected?.supported} className="inline-flex items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs text-white disabled:opacity-50"><Play size={14} className={running ? 'animate-pulse' : ''} />{running ? '研究计算中' : selected?.supported ? '运行研究' : '数据未就绪'}</button></div>{running && <div className="mt-3 border border-accent/50 bg-[#1F6FEB18] rounded-md p-2.5"><div className="flex justify-between text-xs text-text"><span className="inline-flex items-center gap-1.5"><Loader2 size={13} className="animate-spin text-accent" />读取缓存、计算因子、生成分区报告</span><span className="font-mono text-accent">{progress}%</span></div><div className="mt-2 h-1.5 bg-bg rounded-full overflow-hidden"><div className="h-full bg-accent transition-[width] duration-300" style={{ width: `${progress}%` }} /></div></div>}</section>
+    <section className="border border-border rounded-md p-3"><div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 items-end"><label className="text-xs text-text-secondary">研究窗口<input type="number" min={30} max={730} value={days} onChange={(event) => setDays(Math.min(730, Math.max(30, Number(event.target.value) || 365)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><label className="text-xs text-text-secondary">持仓数量<input type="number" min={1} max={50} value={topN} onChange={(event) => setTopN(Math.min(50, Math.max(1, Number(event.target.value) || 10)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><label className="text-xs text-text-secondary">动量回看<input type="number" min={10} max={120} value={lookback} onChange={(event) => setLookback(Math.min(120, Math.max(10, Number(event.target.value) || 20)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><label className="text-xs text-text-secondary">持有期<input type="number" min={1} max={20} value={holding} onChange={(event) => setHolding(Math.min(20, Math.max(1, Number(event.target.value) || 5)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><label className="text-xs text-text-secondary">参考资金<input type="number" min={10000} max={100000000} step={10000} value={capital} onChange={(event) => setCapital(Math.min(100000000, Math.max(10000, Number(event.target.value) || 400000)))} className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label><button type="button" onClick={runResearch} disabled={running || !selected?.supported} className="inline-flex items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs text-white disabled:opacity-50"><Play size={14} className={running ? 'animate-pulse' : ''} />{running ? '研究计算中' : selected?.supported ? '运行研究' : '该实验缺关键数据'}</button></div>{running && <div className="mt-3 border border-accent/50 bg-[#1F6FEB18] rounded-md p-2.5"><div className="flex justify-between gap-3 text-xs text-text"><span className="inline-flex items-center gap-1.5"><Loader2 size={13} className="animate-spin text-accent shrink-0" />{job?.message || '正在提交研究任务'}</span><span className="font-mono text-accent">{progress}%</span></div><div className="mt-2 h-1.5 bg-bg rounded-full overflow-hidden"><div className="h-full bg-accent transition-[width] duration-300" style={{ width: `${progress}%` }} /></div><div className="mt-1 text-[10px] text-text-secondary">阶段：{job?.phase || 'queued'} · 可留在本页等待，也可稍后返回查看</div></div>}</section>
     {error && <div className="border border-down/50 bg-[#EF535022] rounded-md p-3 text-xs text-down flex gap-2"><AlertTriangle size={14} className="shrink-0" />{error}</div>}
 
     {report && <ReportView report={report} />}

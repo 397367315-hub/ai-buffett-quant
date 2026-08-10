@@ -144,6 +144,7 @@ export interface BackgroundJob {
   message: string;
   error?: string | null;
   result?: Record<string, unknown> | null;
+  already_running?: boolean;
 }
 
 export interface FQEHolding {
@@ -322,6 +323,7 @@ export interface ResearchDataset {
     available_time_field?: string | null;
     note?: string;
   };
+  researchability?: Record<string, string>;
 }
 
 export interface ResearchPartition {
@@ -416,6 +418,7 @@ export interface ResearchWorkspace {
   hard_gates: Array<{ id: string; label: string; threshold: string }>;
   dataset: ResearchDataset;
   latest_report?: ResearchReport | null;
+  active_job?: BackgroundJob | null;
   research_contract: Record<string, string>;
 }
 

@@ -19,8 +19,11 @@ historical simulation.
 
 from __future__ import annotations
 
+import asyncio
 import math
-from collections import defaultdict
+from array import array
+from bisect import bisect_left
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -113,6 +116,36 @@ def _rank(values: list[float]) -> list[float]:
     return ranks
 
 
+@dataclass(slots=True)
+class BarSeries:
+    """Compact per-stock storage for million-row research windows."""
+
+    dates: array = field(default_factory=lambda: array("I"))
+    opens: array = field(default_factory=lambda: array("d"))
+    closes: array = field(default_factory=lambda: array("d"))
+    amounts: array = field(default_factory=lambda: array("d"))
+    ordered: bool = True
+
+    def append(self, trade_date: date, open_price: float, close_price: float, amount: float | None) -> None:
+        ordinal = trade_date.toordinal()
+        if self.dates and ordinal < self.dates[-1]:
+            self.ordered = False
+        self.dates.append(ordinal)
+        self.opens.append(open_price)
+        self.closes.append(close_price)
+        self.amounts.append(amount if amount is not None else math.nan)
+
+    def ensure_ordered(self) -> None:
+        if self.ordered:
+            return
+        positions = sorted(range(len(self.dates)), key=self.dates.__getitem__)
+        self.dates = array("I", (self.dates[index] for index in positions))
+        self.opens = array("d", (self.opens[index] for index in positions))
+        self.closes = array("d", (self.closes[index] for index in positions))
+        self.amounts = array("d", (self.amounts[index] for index in positions))
+        self.ordered = True
+
+
 class QuantResearchEngine:
     """Run a fixed, source-backed stock daily-bar experiment."""
 
@@ -123,37 +156,46 @@ class QuantResearchEngine:
     SENSITIVITY_LOOKBACKS = (15, 20, 25)
 
     @classmethod
-    async def _load_bars(cls, days: int, lookback_days: int, holding_days: int) -> list[dict]:
+    def _bar_query(cls, days: int, lookback_days: int, holding_days: int):
         today = shanghai_now().date()
         # Extra calendar days provide enough observations for the lookback
         # around weekends, holidays, and a few suspended sessions.
         calendar_window = days + lookback_days * 2 + holding_days * 2 + 30
         cutoff = today - timedelta(days=calendar_window)
-        async with async_session() as session:
-            result = await session.execute(
-                select(StockDailyBar)
-                .where(
-                    StockDailyBar.trade_date >= cutoff,
-                    StockDailyBar.trade_date <= today,
-                )
-                .order_by(StockDailyBar.trade_date, StockDailyBar.stock_code)
+        statement = (
+            select(
+                StockDailyBar.stock_code.label("code"),
+                StockDailyBar.trade_date.label("date"),
+                StockDailyBar.open_price.label("open"),
+                StockDailyBar.close_price.label("close"),
+                StockDailyBar.amount.label("amount"),
+                StockDailyBar.source.label("source"),
             )
-            rows = result.scalars().all()
-        return [
-            {
-                "code": row.stock_code,
-                "date": row.trade_date,
-                "open": row.open_price,
-                "close": row.close_price,
-                "amount": row.amount,
-                "source": row.source,
-            }
-            for row in rows
-        ]
+            .where(
+                StockDailyBar.trade_date >= cutoff,
+                StockDailyBar.trade_date <= today,
+            )
+            .order_by(StockDailyBar.stock_code, StockDailyBar.trade_date)
+        )
+        return statement, today
 
-    @staticmethod
-    def _normalise_bars(rows: list[dict], end_date: date) -> dict[str, list[dict]]:
-        grouped: dict[str, list[dict]] = defaultdict(list)
+    @classmethod
+    async def _load_bars(cls, days: int, lookback_days: int, holding_days: int) -> list[Any]:
+        """Small/test loader; production runs use the bounded streaming loader."""
+        statement, _ = cls._bar_query(days, lookback_days, holding_days)
+        async with async_session() as session:
+            result = await session.execute(statement)
+            return list(result.mappings().all())
+
+    @classmethod
+    def _append_normalised_rows(
+        cls,
+        grouped: dict[str, BarSeries],
+        rows: list[Any],
+        end_date: date,
+    ) -> tuple[int, set[str]]:
+        accepted = 0
+        sources: set[str] = set()
         for raw in rows:
             code = str(raw.get("code") or raw.get("stock_code") or "").strip()
             trade_date = _date_value(raw.get("date") or raw.get("trade_date"))
@@ -163,16 +205,59 @@ class QuantResearchEngine:
                 continue
             if open_price <= 0 or close_price <= 0:
                 continue
-            grouped[code].append({
-                "date": trade_date,
-                "open": open_price,
-                "close": close_price,
-                "amount": _number(raw.get("amount")),
-                "source": raw.get("source") or "stock_daily_bars",
-            })
-        for code in grouped:
-            grouped[code].sort(key=lambda item: item["date"])
-        return dict(grouped)
+            grouped.setdefault(code, BarSeries()).append(
+                trade_date,
+                open_price,
+                close_price,
+                _number(raw.get("amount")),
+            )
+            sources.add(str(raw.get("source") or "stock_daily_bars"))
+            accepted += 1
+        return accepted, sources
+
+    @classmethod
+    def _normalise_bars(cls, rows: list[dict], end_date: date) -> dict[str, BarSeries]:
+        grouped: dict[str, BarSeries] = {}
+        cls._append_normalised_rows(grouped, rows, end_date)
+        for series in grouped.values():
+            series.ensure_ordered()
+        return grouped
+
+    @classmethod
+    async def _load_grouped_bars(
+        cls,
+        days: int,
+        lookback_days: int,
+        holding_days: int,
+        progress_callback=None,
+    ) -> tuple[dict[str, BarSeries], int, list[str]]:
+        """Stream rows in bounded chunks so Render's web process stays responsive."""
+        statement, today = cls._bar_query(days, lookback_days, holding_days)
+        grouped: dict[str, BarSeries] = {}
+        row_count = 0
+        source_names: set[str] = set()
+        next_progress_count = 100_000
+        async with async_session() as session:
+            result = await session.stream(statement.execution_options(yield_per=5_000))
+            async for partition in result.mappings().partitions(5_000):
+                accepted, sources = await asyncio.to_thread(
+                    cls._append_normalised_rows,
+                    grouped,
+                    list(partition),
+                    today,
+                )
+                row_count += accepted
+                source_names.update(sources)
+                if progress_callback is not None and row_count >= next_progress_count:
+                    await progress_callback(
+                        min(34, 18 + row_count // 100_000),
+                        "loading_bars",
+                        f"已流式读取 {row_count:,} 条日线，内存保持在受控范围",
+                    )
+                    next_progress_count += 100_000
+        for series in grouped.values():
+            series.ensure_ordered()
+        return grouped, row_count, sorted(source_names)
 
     @classmethod
     def _cost_rate(cls, capital_per_position: float, average_amount: float | None) -> tuple[float, float]:
@@ -194,7 +279,7 @@ class QuantResearchEngine:
     @classmethod
     def _simulate(
         cls,
-        grouped: dict[str, list[dict]],
+        grouped: dict[str, BarSeries],
         *,
         evaluation_start: date,
         evaluation_end: date,
@@ -212,18 +297,16 @@ class QuantResearchEngine:
                 "ic_values": [],
             }
 
-        date_set = sorted({bar["date"] for bars in grouped.values() for bar in bars})
+        date_set = sorted({ordinal for series in grouped.values() for ordinal in series.dates})
         date_index = {trade_date: index for index, trade_date in enumerate(date_set)}
-        positions_by_code = {
-            code: {bar["date"]: index for index, bar in enumerate(bars)}
-            for code, bars in grouped.items()
-        }
         portfolio_rows: list[dict] = []
         ic_values: list[float] = []
+        evaluation_start_ordinal = evaluation_start.toordinal()
+        evaluation_end_ordinal = evaluation_end.toordinal()
         signal_dates = [
             trade_date
             for trade_date in date_set
-            if evaluation_start <= trade_date <= evaluation_end
+            if evaluation_start_ordinal <= trade_date <= evaluation_end_ordinal
         ]
         next_rebalance_index = 0
 
@@ -237,30 +320,33 @@ class QuantResearchEngine:
             exit_date = date_set[global_index + holding_days]
             eligible: list[dict] = []
 
-            for code, bars in grouped.items():
-                position = positions_by_code[code].get(signal_date)
-                if position is None or position < lookback_days:
+            for code, series in grouped.items():
+                position = bisect_left(series.dates, signal_date)
+                if position >= len(series.dates) or series.dates[position] != signal_date or position < lookback_days:
                     continue
-                if position + holding_days >= len(bars):
+                if position + holding_days >= len(series.dates):
                     continue
-                entry = bars[position + 1]
-                exit_bar = bars[position + holding_days]
                 # A suspension must not silently turn T+1/T+N into an unknown
                 # later trade. Drop the sample and expose the missing-data risk.
-                if entry["date"] != entry_date or exit_bar["date"] != exit_date:
+                if series.dates[position + 1] != entry_date or series.dates[position + holding_days] != exit_date:
                     continue
-                trailing = bars[position - lookback_days:position + 1]
-                start_close = trailing[0]["close"]
-                momentum = (bars[position]["close"] / start_close - 1) if start_close else None
+                start_close = series.closes[position - lookback_days]
+                momentum = (series.closes[position] / start_close - 1) if start_close else None
                 if momentum is None:
                     continue
-                gross_return = exit_bar["close"] / entry["open"] - 1
-                amounts = [bar["amount"] for bar in trailing if bar["amount"] and bar["amount"] > 0]
+                gross_return = series.closes[position + holding_days] / series.opens[position + 1] - 1
+                amount_total = 0.0
+                amount_count = 0
+                for amount_index in range(position - lookback_days, position + 1):
+                    amount = series.amounts[amount_index]
+                    if math.isfinite(amount) and amount > 0:
+                        amount_total += amount
+                        amount_count += 1
                 eligible.append({
                     "code": code,
                     "factor": momentum,
                     "gross_return": gross_return,
-                    "average_amount": _mean(amounts) if amounts else None,
+                    "average_amount": amount_total / amount_count if amount_count else None,
                 })
 
             if not eligible:
@@ -301,9 +387,9 @@ class QuantResearchEngine:
             benchmark_previous = portfolio_rows[-1]["cumulative_benchmark_pct"] if portfolio_rows else 0.0
             cumulative_benchmark = ((1 + benchmark_previous / 100) * (1 + benchmark_net) - 1) * 100
             portfolio_rows.append({
-                "date": signal_date.isoformat(),
-                "entry_date": entry_date.isoformat(),
-                "exit_date": exit_date.isoformat(),
+                "date": date.fromordinal(signal_date).isoformat(),
+                "entry_date": date.fromordinal(entry_date).isoformat(),
+                "exit_date": date.fromordinal(exit_date).isoformat(),
                 "selected_count": len(selected),
                 "valid_count": len(eligible),
                 "avg_gross_return_pct": round(gross_return * 100, 3),
@@ -370,6 +456,7 @@ class QuantResearchEngine:
         lookback_days: int = DEFAULT_LOOKBACK,
         holding_days: int = DEFAULT_HOLDING,
         capital: float = ResearchProtocol.REFERENCE_CAPITAL,
+        progress_callback=None,
     ) -> dict:
         days = max(30, min(int(days), 730))
         top_n = max(1, min(int(top_n), 50))
@@ -379,8 +466,19 @@ class QuantResearchEngine:
         today = shanghai_now().date()
         evaluation_start = today - timedelta(days=days)
 
+        async def progress(value: int, phase: str, message: str) -> None:
+            if progress_callback is not None:
+                await progress_callback(value, phase, message)
+
         try:
-            rows = await cls._load_bars(days, lookback_days, holding_days)
+            await progress(18, "loading_bars", "正在从数据库读取研究窗口内的6个必要字段")
+            grouped, row_count, source_names = await cls._load_grouped_bars(
+                days,
+                lookback_days,
+                holding_days,
+                progress_callback=progress,
+            )
+            await progress(40, "normalising", f"已整理 {row_count:,} 条日线、{len(grouped):,} 只股票")
         except Exception as exc:
             return {
                 "available": False,
@@ -388,8 +486,9 @@ class QuantResearchEngine:
                 "data_quality": {"grade": "不足", "warnings": ["数据库不可用，未生成回测结果"]},
             }
 
-        grouped = cls._normalise_bars(rows, today)
-        simulation = cls._simulate(
+        await progress(48, "baseline", f"已整理 {len(grouped):,} 只股票，正在运行T+1基线回测")
+        simulation = await asyncio.to_thread(
+            cls._simulate,
             grouped,
             evaluation_start=evaluation_start,
             evaluation_end=today,
@@ -406,15 +505,17 @@ class QuantResearchEngine:
                 "period": {"from": evaluation_start.isoformat(), "to": today.isoformat()},
                 "data_quality": {
                     "grade": "不足",
-                    "bar_count": len(rows),
+                    "bar_count": row_count,
                     "stock_count": len(grouped),
                     "warnings": ["至少需要完整的回看窗口、T+1开盘和持有期收盘数据"],
                 },
             }
 
         sensitivity = []
-        for candidate_lookback in cls.SENSITIVITY_LOOKBACKS:
-            candidate = cls._simulate(
+        for index, candidate_lookback in enumerate(cls.SENSITIVITY_LOOKBACKS):
+            await progress(62 + index * 8, "sensitivity", f"正在复核 {candidate_lookback} 日动量参数敏感性")
+            candidate = await asyncio.to_thread(
+                cls._simulate,
                 grouped,
                 evaluation_start=evaluation_start,
                 evaluation_end=today,
@@ -431,7 +532,7 @@ class QuantResearchEngine:
                 "information_coefficient": candidate_metrics["information_coefficient"],
             })
 
-        source_names = sorted({str(row.get("source") or "stock_daily_bars") for row in rows})
+        await progress(88, "report", "回测与参数复核完成，正在生成审计报告")
         quality_grade = "充分" if len(simulation["daily_results"]) >= 30 else "一般" if len(simulation["daily_results"]) >= 12 else "不足"
         warnings = [
             "股票池来自当前可见日线缓存，未包含完整历史退市、停牌和并购股票，存在幸存者偏差。",
@@ -465,11 +566,12 @@ class QuantResearchEngine:
                 "t_plus_one": True,
             },
             **metrics,
+            "_daily_results_internal": simulation["_daily_results_internal"],
             "daily_details": simulation["daily_results"][-20:],
             "parameter_sensitivity": sensitivity,
             "data_quality": {
                 "grade": quality_grade,
-                "bar_count": len(rows),
+                "bar_count": row_count,
                 "stock_count": simulation["stock_count"],
                 "candidate_observations": simulation["candidate_count"],
                 "warnings": warnings,

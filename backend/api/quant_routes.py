@@ -315,15 +315,23 @@ async def get_quant_research_workspace():
     return {"code": 0, "data": await quant_research_workspace.workspace()}
 
 
-@router.post("/research/run")
+@router.post("/research/run", status_code=status.HTTP_202_ACCEPTED)
 async def run_quant_research(payload: ResearchRunRequest):
     try:
-        report = await quant_research_workspace.run_experiment(payload.model_dump(mode="json"))
+        job = await quant_research_workspace.start_experiment(payload.model_dump(mode="json"))
     except ValueError as exc:
         raise _unprocessable(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"研究任务暂时不可用：{type(exc).__name__}") from exc
-    return {"code": 0, "data": report}
+    return {"code": 0, "data": job, "message": "量化研究任务已提交"}
+
+
+@router.get("/research/run/status/{job_id}")
+async def get_quant_research_status(job_id: str):
+    job = quant_research_workspace.job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="研究任务不存在或状态已过期")
+    return {"code": 0, "data": job}
 
 
 @router.post("/research/dsl/validate")
