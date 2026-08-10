@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 from services.topic_strength import (
     TopicStrengthService,
     _aggregate_daily_rows,
+    _topic_date_metadata,
 )
 
 
@@ -29,6 +30,36 @@ class TopicStrengthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0]["low"], 9.8)
         self.assertEqual(result[0]["volume"], 300)
         self.assertAlmostEqual(result[1]["change_pct"], 14.2857, places=4)
+
+    def test_topic_date_metadata_matches_the_snapshot_displayed_by_the_page(self):
+        class CacheRow:
+            def __init__(self, key, payload):
+                self.key = key
+                self.payload = payload
+
+        rows = [
+            CacheRow(
+                "topic_strength_v1:2026-08-10",
+                {
+                    "data_date": "2026-08-10",
+                    "market": {
+                        "emotion": {"zt_count": 99, "zb_count": 14},
+                        "sentiment": {"total": 5459},
+                    },
+                },
+            ),
+            CacheRow(
+                "topic_strength_v1:2026-08-09",
+                {"data_date": "2026-08-08", "market": {}},
+            ),
+        ]
+
+        result = _topic_date_metadata(rows)
+
+        self.assertEqual(result[date(2026, 8, 10)]["limit_up_count"], 99)
+        self.assertEqual(result[date(2026, 8, 10)]["failed_limit_count"], 14)
+        self.assertEqual(result[date(2026, 8, 10)]["stock_count"], 5459)
+        self.assertNotIn(date(2026, 8, 8), result)
 
     def test_linked_topic_requires_observed_breadth_before_strong_label(self):
         limit_rows = [

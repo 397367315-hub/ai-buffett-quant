@@ -84,6 +84,26 @@ def _normalize_trade_date(value: object) -> str | None:
     return parsed.isoformat() if parsed else None
 
 
+def _topic_date_metadata(rows: Iterable[object]) -> dict[date, dict]:
+    """Read date counters from the exact topic snapshots shown by the page."""
+    output: dict[date, dict] = {}
+    for row in rows:
+        payload = getattr(row, "payload", None)
+        data_date = _date(payload.get("data_date")) if isinstance(payload, dict) else None
+        if data_date is None or getattr(row, "key", None) != f"{TOPIC_CACHE_PREFIX}{data_date.isoformat()}":
+            continue
+        market = payload.get("market") or {}
+        emotion = market.get("emotion") or {}
+        sentiment = market.get("sentiment") or {}
+        output[data_date] = {
+            "limit_up_count": _integer(emotion.get("zt_count")),
+            "failed_limit_count": _integer(emotion.get("zb_count")),
+            "stock_count": _integer(sentiment.get("total")),
+            "source": "topic_strength_cache",
+        }
+    return output
+
+
 def _breadth_label(up: int, down: int) -> tuple[float | None, str]:
     directional = up + down
     if directional <= 0:
@@ -234,20 +254,34 @@ class TopicStrengthService:
                     .order_by(desc(StockDailyBar.trade_date))
                     .limit(limit)
                 )).scalars().all())
+                topic_cache_rows = list((await session.execute(
+                    select(MarketDataCache)
+                    .where(MarketDataCache.key.like(f"{TOPIC_CACHE_PREFIX}%"))
+                    .order_by(desc(MarketDataCache.key))
+                    .limit(limit)
+                )).scalars().all())
         except Exception:
             sentiment_rows = []
             bar_dates = []
+            topic_cache_rows = []
         sentiment_by_date = {row.trade_date: row for row in sentiment_rows}
+        topic_by_date = _topic_date_metadata(topic_cache_rows)
         available_dates = sorted(
-            set(bar_dates) | set(sentiment_by_date),
+            set(bar_dates) | set(sentiment_by_date) | set(topic_by_date),
             reverse=True,
         )[:limit]
-        return [{
-            "date": trade_date.isoformat(),
-            "limit_up_count": sentiment_by_date[trade_date].limit_up_count if trade_date in sentiment_by_date else None,
-            "failed_limit_count": sentiment_by_date[trade_date].failed_limit_count if trade_date in sentiment_by_date else None,
-            "stock_count": sentiment_by_date[trade_date].stock_count if trade_date in sentiment_by_date else None,
-        } for trade_date in reversed(available_dates)]
+        output = []
+        for trade_date in reversed(available_dates):
+            snapshot = topic_by_date.get(trade_date)
+            sentiment = sentiment_by_date.get(trade_date)
+            output.append({
+                "date": trade_date.isoformat(),
+                "limit_up_count": snapshot["limit_up_count"] if snapshot else sentiment.limit_up_count if sentiment else None,
+                "failed_limit_count": snapshot["failed_limit_count"] if snapshot else sentiment.failed_limit_count if sentiment else None,
+                "stock_count": snapshot["stock_count"] if snapshot else sentiment.stock_count if sentiment else None,
+                "source": snapshot["source"] if snapshot else "market_sentiment_cache" if sentiment else "stock_daily_bars",
+            })
+        return output
 
     @staticmethod
     def _verified_pool(payload: dict, target: date) -> dict:
