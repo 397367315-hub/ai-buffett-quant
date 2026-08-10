@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -10,6 +10,7 @@ const proSubItems = [
   { href: '/market', label: '今日速览', icon: Home },
   { href: '/pro', label: '资金排名', icon: TrendingUp },
   { href: '/pro/sentiment', label: '市场情绪', icon: TrendingUp },
+  { href: '/pro/topic-strength', label: '题材强弱', icon: Flame },
   { href: '/pro/north-flow', label: '北向资金', icon: TrendingUp },
   { href: '/pro/limit-board', label: '涨跌停板', icon: Zap },
   { href: '/pro/potential', label: '潜力股分析', icon: Sparkles },

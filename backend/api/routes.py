@@ -39,6 +39,7 @@ from models import (
 from database import async_session
 from services.history_cache import history_cache
 from services.sector_flow_network import build_inferred_transfers
+from services.topic_strength import topic_strength_service
 from quant.market_cache import load_quant_market_snapshot
 
 router = APIRouter(prefix="/api/v1")
@@ -1090,6 +1091,66 @@ async def get_market_sentiment():
             **_quote_metadata(available=available),
         },
     }
+
+
+# ── 市场环境与题材强弱 ──
+
+
+@router.get("/topic-strength")
+async def get_topic_strength(
+    target_date: Optional[str] = Query(None, alias="date"),
+    refresh: bool = Query(False),
+):
+    parsed_date = None
+    if target_date:
+        try:
+            parsed_date = date.fromisoformat(target_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必须是 YYYY-MM-DD") from exc
+    try:
+        data = await topic_strength_service.get(parsed_date, force=refresh)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.get("/topic-strength/dates")
+async def get_topic_strength_dates(limit: int = Query(120, ge=1, le=500)):
+    dates = await topic_strength_service.dates(limit)
+    return {"code": 0, "data": {"dates": dates, "count": len(dates), "source": "database_cache"}}
+
+
+@router.post("/topic-strength/analysis")
+async def analyze_topic_strength(request: dict | None = None):
+    payload = request or {}
+    parsed_date = None
+    if payload.get("date"):
+        try:
+            parsed_date = date.fromisoformat(str(payload["date"])[:10])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必须是 YYYY-MM-DD") from exc
+    try:
+        data = await topic_strength_service.analyze(
+            parsed_date,
+            force=bool(payload.get("refresh", False)),
+            use_ai=bool(payload.get("use_ai", True)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.get("/kline")
+async def get_kline(
+    code: str = Query(..., min_length=6, max_length=16),
+    category: int = Query(4),
+    offset: int = Query(60, ge=1, le=800),
+):
+    try:
+        data = await topic_strength_service.kline(code, category=category, offset=offset)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
 
 
 # ── 轮动追踪接口 ──

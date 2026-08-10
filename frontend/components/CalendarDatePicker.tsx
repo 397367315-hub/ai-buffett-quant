@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, Calendar } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 
 interface CalendarDatePickerProps {
@@ -76,10 +76,11 @@ export default function CalendarDatePicker({ selectedDate, onSelectDate, onClose
   const monthName = `${currentMonth.year}年${currentMonth.month}月`;
 
   return (
-    <div className="bg-card border border-border rounded-lg p-4 shadow-xl w-[320px]">
+    <div className="max-h-[calc(100dvh-2rem)] w-full max-w-[320px] overflow-y-auto rounded-lg border border-border bg-card p-4 shadow-xl">
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <button
+          type="button"
           onClick={goToPrevMonth}
           className="p-1 rounded hover:bg-[#21262D] text-text-secondary hover:text-text transition-colors"
         >
@@ -87,6 +88,7 @@ export default function CalendarDatePicker({ selectedDate, onSelectDate, onClose
         </button>
         <span className="text-sm font-medium text-text">{monthName}</span>
         <button
+          type="button"
           onClick={goToNextMonth}
           className="p-1 rounded hover:bg-[#21262D] text-text-secondary hover:text-text transition-colors"
         >
@@ -135,6 +137,7 @@ export default function CalendarDatePicker({ selectedDate, onSelectDate, onClose
           return (
             <button
               key={day}
+              type="button"
               className={cellClass}
               disabled={future}
               onClick={() => handleSelect(day)}

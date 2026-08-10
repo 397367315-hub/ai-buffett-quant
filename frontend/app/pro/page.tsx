@@ -187,6 +187,7 @@ export default function ProDashboard() {
             {(Object.keys(RANGE_LABELS) as TimeRange[]).filter(r => r !== 'date').map((range) => (
               <button
                 key={range}
+                type="button"
                 className={`px-3 py-1.5 text-sm transition-colors ${
                   timeRange === range
                     ? 'bg-accent text-white'
@@ -202,6 +203,7 @@ export default function ProDashboard() {
           {/* 日历按钮 */}
           <div className="relative">
             <button
+              type="button"
               className={`flex items-center gap-1 px-3 py-1.5 text-sm border rounded-lg transition-colors ${
                 timeRange === 'date'
                   ? 'bg-accent border-accent text-white'
@@ -214,13 +216,21 @@ export default function ProDashboard() {
             </button>
 
             {calendarOpen && (
-              <div className="absolute top-full left-0 mt-2 z-50">
-                <CalendarDatePicker
-                  selectedDate={selectedDate}
-                  onSelectDate={handleDateSelect}
-                  onClose={() => setCalendarOpen(false)}
+              <>
+                <button
+                  type="button"
+                  aria-label="关闭日期选择器"
+                  className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+                  onClick={() => setCalendarOpen(false)}
                 />
-              </div>
+                <div className="fixed inset-x-3 top-1/2 z-50 flex -translate-y-1/2 justify-center lg:absolute lg:inset-x-auto lg:right-0 lg:top-full lg:mt-2 lg:block lg:translate-y-0">
+                  <CalendarDatePicker
+                    selectedDate={selectedDate}
+                    onSelectDate={handleDateSelect}
+                    onClose={() => setCalendarOpen(false)}
+                  />
+                </div>
+              </>
             )}
           </div>
         </div>
