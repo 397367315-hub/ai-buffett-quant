@@ -30,6 +30,11 @@ const RANGE_LABELS: Record<TimeRange, string> = {
   date: '按日期',
 };
 
+function finiteNumber(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 export default function ProDashboard() {
   const [conceptData, setConceptData] = useState<FlowRankItem[]>([]);
   const [rawRankings, setRawRankings] = useState<any[]>([]);
@@ -52,13 +57,13 @@ export default function ProDashboard() {
         code: r.code,
         name: r.name || r.code,
         close_price: 0,
-        change_pct: r.change_pct || 0,
-        main_net_inflow: r.main_net_inflow || 0,
-        main_net_inflow_pct: r.main_net_inflow_pct || 0,
-        super_large_net_inflow: r.super_large_net_inflow || 0,
-        large_net_inflow: r.large_net_inflow || 0,
-        up_count: r.up_count || 0,
-        down_count: r.down_count || 0,
+        change_pct: finiteNumber(r.change_pct),
+        main_net_inflow: finiteNumber(r.main_net_inflow),
+        main_net_inflow_pct: finiteNumber(r.main_net_inflow_pct),
+        super_large_net_inflow: finiteNumber(r.super_large_net_inflow),
+        large_net_inflow: finiteNumber(r.large_net_inflow),
+        up_count: finiteNumber(r.up_count),
+        down_count: finiteNumber(r.down_count),
         leading_stock: r.leading_stock || '',
       }));
       setConceptData(mapped);
@@ -89,13 +94,13 @@ export default function ProDashboard() {
           code: r.code,
           name: r.name || r.code,
           close_price: 0,
-          change_pct: r.avg_change_pct || 0,
-          main_net_inflow: range === 'today' ? r.main_net_inflow : r.avg_daily_inflow || r.total_inflow,
+          change_pct: finiteNumber(r.avg_change_pct ?? r.change_pct),
+          main_net_inflow: finiteNumber(r.main_net_inflow ?? r.avg_daily_inflow ?? r.total_inflow),
           main_net_inflow_pct: 0,
-          super_large_net_inflow: r.super_large_net_inflow || 0,
-          large_net_inflow: r.large_net_inflow || 0,
-          up_count: r.up_count || 0,
-          down_count: r.down_count || 0,
+          super_large_net_inflow: finiteNumber(r.super_large_net_inflow),
+          large_net_inflow: finiteNumber(r.large_net_inflow),
+          up_count: finiteNumber(r.up_count),
+          down_count: finiteNumber(r.down_count),
           leading_stock: r.leading_stock || '',
         }));
         setConceptData(mapped);
