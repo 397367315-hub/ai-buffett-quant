@@ -200,6 +200,7 @@ class FQEReferenceDataService:
                     error=None,
                 )
                 master = await self._sync_security_master()
+                master_warnings = list(master.get("warnings") or [])
                 await self._set_run(
                     run_id,
                     master_count=master["master_count"],
@@ -225,7 +226,7 @@ class FQEReferenceDataService:
                     evidence_warning = f"战略市场证据同步失败: {type(exc).__name__}"
 
                 coverage = await self.coverage()
-                warnings = []
+                warnings = list(master_warnings)
                 if failures:
                     warnings.append(f"PE历史仍有 {len(failures)} 只上游失败")
                 if evidence_warning:
@@ -255,8 +256,21 @@ class FQEReferenceDataService:
         semaphore = asyncio.Semaphore(self._STATUS_CONCURRENCY)
 
         async def fetch_batch(batch: list[str]) -> list[dict[str, Any]]:
-            async with semaphore:
-                result = await ftshare_mcp_client.get_stock_status_changes(batch)
+            result: dict[str, Any] | None = None
+            for attempt in range(3):
+                try:
+                    async with semaphore:
+                        result = await ftshare_mcp_client.get_stock_status_changes(batch)
+                    break
+                except Exception:
+                    if attempt < 2:
+                        await asyncio.sleep(0.35 * (2 ** attempt))
+            if result is None:
+                if len(batch) == 1:
+                    return []
+                middle = max(1, len(batch) // 2)
+                left, right = await asyncio.gather(fetch_batch(batch[:middle]), fetch_batch(batch[middle:]))
+                return [*left, *right]
             metadata = result.get("metadata") if isinstance(result, dict) else {}
             if isinstance(metadata, dict) and metadata.get("truncated") and len(batch) > 1:
                 middle = max(1, len(batch) // 2)
@@ -273,13 +287,34 @@ class FQEReferenceDataService:
                     output.extend(result)
         return output
 
-    async def _sync_security_master(self) -> dict[str, int]:
-        directory = await collector.fetch_security_directory()
+    async def _sync_security_master(self) -> dict[str, Any]:
+        warnings: list[str] = []
+        try:
+            directory_snapshot = await collector.fetch_security_directory_snapshot(allow_partial=True)
+        except Exception as exc:
+            directory_snapshot = {
+                "records": [], "complete": False, "failed_pages": [],
+                "errors": {"directory": type(exc).__name__},
+            }
+        directory = [item for item in (directory_snapshot.get("records") or []) if isinstance(item, dict)]
+        if not directory_snapshot.get("complete"):
+            failed_pages = directory_snapshot.get("failed_pages") or []
+            detail = f"，失败页 {','.join(map(str, failed_pages[:12]))}" if failed_pages else ""
+            warnings.append(f"东方财富证券目录部分不可用{detail}，已使用FTShare及数据库主表补齐")
+
         catalog_rows: list[dict[str, Any]] = []
         try:
             catalog_rows = await ftshare_mcp_client.get_full_stock_filter()
         except Exception as exc:
             print(f"FTShare listing-date catalog unavailable: {type(exc).__name__}")
+            warnings.append(f"FTShare现存股票目录暂不可用：{type(exc).__name__}")
+
+        async with async_session() as session:
+            existing_rows = list((await session.execute(
+                select(SecurityMaster).order_by(SecurityMaster.stock_code.asc())
+            )).scalars().all())
+        existing = {row.stock_code: row for row in existing_rows}
+
         catalog: dict[str, dict[str, Any]] = {}
         for item in catalog_rows:
             raw = str(item.get("symbol") or "").split(".", 1)[0]
@@ -288,10 +323,26 @@ class FQEReferenceDataService:
             except ValueError:
                 continue
 
-        inactive_codes = [
-            str(item["code"]) for item in directory
-            if not item.get("is_currently_listed") and str(item["code"]) not in catalog
-        ]
+        directory_by_code = {
+            str(item.get("code")): item
+            for item in directory
+            if item.get("code")
+        }
+        all_codes = sorted({*directory_by_code, *catalog, *existing})
+        if not all_codes:
+            raise RuntimeError("东方财富、FTShare及数据库均无可用证券主表")
+        if not directory and not catalog_rows and existing_rows:
+            warnings.append("两个证券目录上游均不可用，本轮完整保留数据库已有主表")
+
+        def active_for(code: str) -> bool:
+            if code in catalog:
+                return True
+            if code in directory_by_code:
+                return bool(directory_by_code[code].get("is_currently_listed"))
+            previous = existing.get(code)
+            return bool(previous.is_currently_listed) if previous else False
+
+        inactive_codes = [code for code in all_codes if not active_for(code)]
         events: list[dict[str, Any]] = []
         if inactive_codes:
             try:
@@ -329,11 +380,12 @@ class FQEReferenceDataService:
 
         now = datetime.utcnow()
         masters: list[dict[str, Any]] = []
-        for item in directory:
-            code = str(item["code"])
-            active = bool(item.get("is_currently_listed")) or code in catalog
+        for code in all_codes:
+            item = directory_by_code.get(code) or {}
+            previous = existing.get(code)
+            active = active_for(code)
             catalog_item = catalog.get(code) or {}
-            listing_date = _date(catalog_item.get("listing_date"))
+            listing_date = _date(catalog_item.get("listing_date")) or (previous.list_date if previous else None)
             terminal_dates: list[date] = []
             listing_dates: list[date] = []
             latest_event_type = ""
@@ -352,32 +404,56 @@ class FQEReferenceDataService:
                 latest_event_type = max(dated_events)[1]
             if listing_date is None and listing_dates:
                 listing_date = min(listing_dates)
-            delist_date = max(terminal_dates) if terminal_dates else None
+            delist_date = max(terminal_dates) if terminal_dates else (previous.delist_date if previous else None)
             if active:
                 status = "listed"
             elif delist_date:
                 status = "delisted"
             elif "暂停" in latest_event_type:
                 status = "suspended"
+            elif previous and previous.status in {"suspended", "inactive", "delisted"}:
+                status = previous.status
             else:
                 status = "inactive"
-            quality = "status_event" if listing_dates or delist_date else "ftshare_catalog" if listing_date else "missing"
+            if listing_dates or terminal_dates:
+                quality = "status_event"
+            elif _date(catalog_item.get("listing_date")):
+                quality = "ftshare_catalog"
+            elif previous and previous.date_quality:
+                quality = previous.date_quality
+            else:
+                quality = "missing"
+            source_parts = []
+            if item:
+                source_parts.append("eastmoney_directory")
+            if catalog_item:
+                source_parts.append("ftshare")
+            if previous:
+                source_parts.append("database")
             masters.append({
                 "stock_code": code,
-                "stock_name": str(catalog_item.get("name") or item.get("name") or code),
+                "stock_name": str(catalog_item.get("name") or item.get("name") or (previous.stock_name if previous else None) or code),
                 "exchange": _exchange(code),
                 "list_date": listing_date,
                 "delist_date": delist_date,
                 "status": status,
                 "is_currently_listed": active,
                 "date_quality": quality,
-                "source": "eastmoney_directory+ftshare" if catalog_rows else "eastmoney_directory",
+                "source": "+".join(source_parts) or "database",
                 "source_updated_at": now,
                 "updated_at": now,
             })
         for batch in _chunks(masters, 500):
             await self._upsert(SecurityMaster, batch, ["stock_code"])
-        return {"master_count": len(masters), "inactive_count": len(inactive_codes)}
+        return {
+            "master_count": len(masters),
+            "inactive_count": sum(not item["is_currently_listed"] for item in masters),
+            "directory_complete": bool(directory_snapshot.get("complete")),
+            "directory_count": len(directory),
+            "catalog_count": len(catalog),
+            "database_count": len(existing),
+            "warnings": warnings,
+        }
 
     async def _fetch_eastmoney_valuation(self, code: str, start: date, end: date) -> list[dict[str, Any]]:
         base = {
@@ -697,7 +773,7 @@ class FQEReferenceDataService:
     async def enrich(self, stocks: list[dict[str, Any]], as_of: date) -> dict[str, Any]:
         codes = [str(item.get("code") or "") for item in stocks if item.get("code")]
         masters: dict[str, tuple[date | None, date | None, str]] = {}
-        valuations: dict[str, tuple[float | None, int, int, date | None, str]] = {}
+        valuations: dict[str, dict[str, Any]] = {}
         if codes:
             async with async_session() as session:
                 master_rows = (await session.execute(
@@ -709,7 +785,7 @@ class FQEReferenceDataService:
                 valuation_rows = (await session.execute(
                     select(
                         StockValuationHistory.stock_code,
-                        StockValuationHistory.pe_percentile_3y,
+                        StockValuationHistory.history,
                         StockValuationHistory.sample_count,
                         StockValuationHistory.positive_sample_count,
                         StockValuationHistory.history_end,
@@ -718,8 +794,14 @@ class FQEReferenceDataService:
                 )).all()
             masters = {str(code): (listed, delisted, status) for code, listed, delisted, status in master_rows}
             valuations = {
-                str(code): (percentile, int(samples or 0), int(positive or 0), history_end, status)
-                for code, percentile, samples, positive, history_end, status in valuation_rows
+                str(code): {
+                    "history": history if isinstance(history, list) else [],
+                    "sample_count": int(samples or 0),
+                    "positive_sample_count": int(positive or 0),
+                    "history_end": history_end,
+                    "status": status,
+                }
+                for code, history, samples, positive, history_end, status in valuation_rows
             }
 
         enriched = []
@@ -733,11 +815,24 @@ class FQEReferenceDataService:
                 item["security_status"] = master[2]
             valuation = valuations.get(code)
             if valuation:
-                item["pe_percentile_3y"] = valuation[0]
-                item["pe_history_count"] = valuation[1]
-                item["pe_positive_history_count"] = valuation[2]
-                item["pe_history_end"] = valuation[3].isoformat() if valuation[3] else None
-                item["pe_history_status"] = valuation[4]
+                cutoff = as_of - timedelta(days=365 * 3 + 10)
+                dated_history = []
+                for raw in valuation["history"]:
+                    if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+                        continue
+                    history_date = _date(raw[0])
+                    pe_value = _number(raw[1])
+                    if history_date is None or pe_value is None or not cutoff <= history_date <= as_of:
+                        continue
+                    dated_history.append((history_date, pe_value))
+                positive_history = [pe for _, pe in dated_history if pe > 0]
+                current_pe = _number(item.get("pe_ttm") if "pe_ttm" in item else item.get("pe"))
+                item["pe_percentile_3y"] = _percentile_rank(current_pe, positive_history)
+                item["pe_history_count"] = len(dated_history)
+                item["pe_positive_history_count"] = len(positive_history)
+                latest_history_date = max((day for day, _ in dated_history), default=None)
+                item["pe_history_end"] = latest_history_date.isoformat() if latest_history_date else None
+                item["pe_history_status"] = valuation["status"]
             enriched.append(item)
 
         global_coverage = await self.coverage()

@@ -16,7 +16,7 @@ export interface KlineRow {
 
 interface Props {
   rows: KlineRow[];
-  height?: number;
+  height?: number | string;
 }
 
 function finite(value: number | null | undefined): number {

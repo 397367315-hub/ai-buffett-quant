@@ -359,6 +359,124 @@ class StockMinuteBar(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class StockIntradayEvidence(Base):
+    """Auditable VWAP and active-side trade evidence captured for one session."""
+
+    __tablename__ = "stock_intraday_evidence"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trade_date", name="uq_stock_intraday_evidence_code_date"),
+        Index("idx_stock_intraday_evidence_date", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    trade_date = Column(Date, nullable=False)
+    latest_bar_at = Column(DateTime)
+    last_price = Column(Float)
+    vwap = Column(Float)
+    vwap_distance_pct = Column(Float)
+    above_vwap = Column(Boolean)
+    minute_bar_count = Column(Integer, nullable=False, default=0)
+    active_buy_amount = Column(BigInteger)
+    active_sell_amount = Column(BigInteger)
+    neutral_amount = Column(BigInteger)
+    active_net_amount = Column(BigInteger)
+    active_buy_ratio = Column(Float)
+    active_direction = Column(String(20))
+    trade_detail_count = Column(Integer, nullable=False, default=0)
+    trade_detail_complete = Column(Boolean, nullable=False, default=False)
+    source = Column(String(80), nullable=False, default="eastmoney")
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StockUniverseSnapshot(Base):
+    """Daily point-in-time universe, industry and market-cap observation."""
+
+    __tablename__ = "stock_universe_snapshots"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trade_date", name="uq_stock_universe_code_date"),
+        Index("idx_stock_universe_date", "trade_date"),
+        Index("idx_stock_universe_industry_date", "industry", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    exchange = Column(String(10), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    industry = Column(String(100))
+    market_cap = Column(BigInteger)
+    close_price = Column(Float)
+    is_suspended = Column(Boolean)
+    status_quality = Column(String(30), nullable=False, default="observed_quote")
+    source = Column(String(50), nullable=False, default="eastmoney")
+    observed_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StockAuctionSnapshot(Base):
+    """09:24-09:27 full-universe call-auction observation captured forward in time."""
+
+    __tablename__ = "stock_auction_snapshots"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trade_date", name="uq_stock_auction_code_date"),
+        Index("idx_stock_auction_date", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    trade_date = Column(Date, nullable=False)
+    quote_at = Column(DateTime, nullable=False)
+    auction_price = Column(Float)
+    previous_close = Column(Float)
+    high_open_pct = Column(Float)
+    auction_volume = Column(BigInteger)
+    auction_amount = Column(BigInteger)
+    auction_volume_ratio = Column(Float)
+    industry = Column(String(100))
+    market_cap = Column(BigInteger)
+    source = Column(String(50), nullable=False, default="tencent")
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class FinancialPITSnapshot(Base):
+    """Financial values keyed by their actual public disclosure timestamp."""
+
+    __tablename__ = "financial_pit_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "stock_code", "report_date", "disclosed_at",
+            name="uq_financial_pit_code_report_disclosed",
+        ),
+        Index("idx_financial_pit_disclosed", "disclosed_at"),
+        Index("idx_financial_pit_code_disclosed", "stock_code", "disclosed_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    report_date = Column(Date, nullable=False)
+    disclosed_at = Column(Date, nullable=False)
+    roe = Column(Float)
+    gross_margin = Column(Float)
+    revenue_growth = Column(Float)
+    deducted_profit_growth = Column(Float)
+    ocf_to_profit = Column(Float)
+    debt_ratio = Column(Float)
+    receivable_to_revenue = Column(Float)
+    revenue = Column(Float)
+    deducted_profit = Column(Float)
+    net_profit = Column(Float)
+    operating_cf = Column(Float)
+    source = Column(String(50), nullable=False, default="eastmoney")
+    captured_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class OvernightStrategyRun(Base):
     """One auditable preliminary, entry, or exit pass of the overnight strategy."""
 

@@ -15,7 +15,9 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from database import async_session
 from models import (
@@ -23,7 +25,10 @@ from models import (
     MarketBoard,
     MarketDataCache,
     MarketSentimentDaily,
+    NorthboundDealDaily,
     StockDailyBar,
+    StockIntradayEvidence,
+    StockMinuteBar,
 )
 from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
 from services.ai_service import ai_service
@@ -35,10 +40,12 @@ from services.data_collector import (
 )
 
 
-TOPIC_CACHE_PREFIX = "topic_strength_v1:"
-TOPIC_LATEST_CACHE_KEY = "topic_strength_latest_v1"
+TOPIC_CACHE_PREFIX = "topic_strength_v2:"
+TOPIC_LATEST_CACHE_KEY = "topic_strength_latest_v2"
+LEGACY_TOPIC_CACHE_PREFIXES = ("topic_strength_v1:",)
 MAX_TOPICS = 12
 MAX_MEMBERS = 8
+MAX_INTRADAY_STOCKS = 8
 
 
 def _number(value: object) -> float | None:
@@ -87,10 +94,20 @@ def _normalize_trade_date(value: object) -> str | None:
 def _topic_date_metadata(rows: Iterable[object]) -> dict[date, dict]:
     """Read date counters from the exact topic snapshots shown by the page."""
     output: dict[date, dict] = {}
+    priorities: dict[date, int] = {}
+    accepted_prefixes = (*LEGACY_TOPIC_CACHE_PREFIXES, TOPIC_CACHE_PREFIX)
     for row in rows:
         payload = getattr(row, "payload", None)
         data_date = _date(payload.get("data_date")) if isinstance(payload, dict) else None
-        if data_date is None or getattr(row, "key", None) != f"{TOPIC_CACHE_PREFIX}{data_date.isoformat()}":
+        key = str(getattr(row, "key", None) or "")
+        matched_prefix = next(
+            (prefix for prefix in accepted_prefixes if key == f"{prefix}{data_date.isoformat()}"),
+            None,
+        ) if data_date else None
+        if data_date is None or matched_prefix is None:
+            continue
+        priority = accepted_prefixes.index(matched_prefix)
+        if priority < priorities.get(data_date, -1):
             continue
         market = payload.get("market") or {}
         emotion = market.get("emotion") or {}
@@ -101,6 +118,7 @@ def _topic_date_metadata(rows: Iterable[object]) -> dict[date, dict]:
             "stock_count": _integer(sentiment.get("total")),
             "source": "topic_strength_cache",
         }
+        priorities[data_date] = priority
     return output
 
 
@@ -256,7 +274,10 @@ class TopicStrengthService:
                 )).scalars().all())
                 topic_cache_rows = list((await session.execute(
                     select(MarketDataCache)
-                    .where(MarketDataCache.key.like(f"{TOPIC_CACHE_PREFIX}%"))
+                    .where(or_(
+                        MarketDataCache.key.like(f"{TOPIC_CACHE_PREFIX}%"),
+                        *(MarketDataCache.key.like(f"{prefix}%") for prefix in LEGACY_TOPIC_CACHE_PREFIXES),
+                    ))
                     .order_by(desc(MarketDataCache.key))
                     .limit(limit)
                 )).scalars().all())
@@ -310,12 +331,50 @@ class TopicStrengthService:
             "down_count": row.down_count,
             "flat_count": row.flat_count,
             "stock_count": row.stock_count,
+            "market_amount": row.market_amount,
+            "amount_count": row.amount_count,
+            "average_turnover": row.average_turnover,
+            "turnover_count": row.turnover_count,
             "limit_up_count": row.limit_up_count,
             "limit_down_count": row.limit_down_count,
             "failed_limit_count": row.failed_limit_count,
             "failed_limit_rate": row.failed_limit_rate,
             "max_streak_height": row.max_streak_height,
             "source": row.source,
+        }
+
+    async def _northbound_snapshot(self, target: date) -> dict:
+        """Return the latest disclosed northbound deal record at the target date."""
+        try:
+            async with async_session() as session:
+                row = (await session.execute(
+                    select(NorthboundDealDaily)
+                    .where(NorthboundDealDaily.trade_date <= target)
+                    .order_by(desc(NorthboundDealDaily.trade_date))
+                    .limit(1)
+                )).scalar_one_or_none()
+        except Exception:
+            row = None
+        if row is None:
+            return {
+                "available": False,
+                "data_date": None,
+                "deal_amount": None,
+                "net_inflow": None,
+                "net_inflow_available": False,
+                "source": "unavailable",
+                "frequency": "盘后披露",
+            }
+        return {
+            "available": True,
+            "data_date": row.trade_date.isoformat(),
+            "deal_amount": row.deal_amount,
+            "net_inflow": row.net_inflow,
+            "net_inflow_available": row.net_inflow is not None,
+            "source": row.source,
+            "frequency": "盘后披露",
+            "is_target_date": row.trade_date == target,
+            "note": "现行公开口径优先展示北向成交额；净买入停止公开时保持为空。",
         }
 
     async def _cached_industry_flow(self, target: date) -> list[dict]:
@@ -382,6 +441,218 @@ class TopicStrengthService:
                 "history_source": "stock_daily_bars",
             }
         return output
+
+    @staticmethod
+    def _intraday_view(row: StockIntradayEvidence) -> dict:
+        return {
+            "stock_code": row.stock_code,
+            "stock_name": row.stock_name,
+            "trade_date": row.trade_date.isoformat(),
+            "latest_bar_at": row.latest_bar_at.isoformat(timespec="minutes") if row.latest_bar_at else None,
+            "last_price": row.last_price,
+            "vwap": row.vwap,
+            "vwap_distance_pct": row.vwap_distance_pct,
+            "above_vwap": row.above_vwap,
+            "minute_bar_count": row.minute_bar_count,
+            "active_buy_amount": row.active_buy_amount,
+            "active_sell_amount": row.active_sell_amount,
+            "neutral_amount": row.neutral_amount,
+            "active_net_amount": row.active_net_amount,
+            "active_buy_ratio": row.active_buy_ratio,
+            "active_direction": row.active_direction,
+            "trade_detail_count": row.trade_detail_count,
+            "trade_detail_complete": row.trade_detail_complete,
+            "source": row.source,
+            "is_realtime": bool(row.is_realtime),
+        }
+
+    async def _cached_intraday_evidence(self, codes: list[str], target: date) -> dict[str, dict]:
+        if not codes:
+            return {}
+        try:
+            async with async_session() as session:
+                rows = list((await session.execute(
+                    select(StockIntradayEvidence).where(
+                        StockIntradayEvidence.stock_code.in_(codes),
+                        StockIntradayEvidence.trade_date == target,
+                    )
+                )).scalars().all())
+        except Exception:
+            rows = []
+        return {row.stock_code: self._intraday_view(row) for row in rows}
+
+    @staticmethod
+    async def _persist_intraday(minute_payloads: list[dict], evidence_rows: list[dict]) -> None:
+        minute_rows = []
+        for payload in minute_payloads:
+            for item in payload.get("bars") or []:
+                try:
+                    bar_time = datetime.fromisoformat(str(item.get("bar_time") or ""))
+                except ValueError:
+                    continue
+                minute_rows.append({
+                    "stock_code": str(item.get("stock_code") or payload.get("stock_code") or ""),
+                    "stock_name": str(item.get("stock_name") or payload.get("stock_name") or ""),
+                    "bar_time": bar_time.replace(tzinfo=None),
+                    "interval_minutes": int(item.get("interval_minutes") or 1),
+                    "open_price": _number(item.get("open")),
+                    "close_price": _number(item.get("close")),
+                    "high_price": _number(item.get("high")),
+                    "low_price": _number(item.get("low")),
+                    "volume": _integer(item.get("volume")),
+                    "amount": _integer(item.get("amount")),
+                    "average_price": _number(item.get("average")),
+                    "source": str(payload.get("source") or "eastmoney"),
+                    "updated_at": datetime.utcnow(),
+                })
+        try:
+            async with async_session() as session:
+                insert = postgresql_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
+                for model, rows, keys in (
+                    (StockMinuteBar, minute_rows, ["stock_code", "bar_time", "interval_minutes"]),
+                    (StockIntradayEvidence, evidence_rows, ["stock_code", "trade_date"]),
+                ):
+                    for start in range(0, len(rows), 500):
+                        batch = rows[start:start + 500]
+                        if not batch:
+                            continue
+                        statement = insert(model).values(batch)
+                        updates = {
+                            column.name: getattr(statement.excluded, column.name)
+                            for column in model.__table__.columns
+                            if column.name not in {"id", *keys}
+                        }
+                        await session.execute(statement.on_conflict_do_update(index_elements=keys, set_=updates))
+                await session.commit()
+        except Exception as exc:
+            print(f"Topic intraday evidence persistence failed: {type(exc).__name__}")
+
+    async def _intraday_evidence(
+        self,
+        topics: list[dict],
+        target: date,
+        live_requested: bool,
+    ) -> tuple[dict[str, dict], dict]:
+        codes: list[str] = []
+        for topic in topics:
+            for stock in [topic.get("leader") or {}, *(topic.get("members") or [])]:
+                code = str(stock.get("code") or "")
+                if code and code not in codes:
+                    codes.append(code)
+                if len(codes) >= MAX_INTRADAY_STOCKS:
+                    break
+            if len(codes) >= MAX_INTRADAY_STOCKS:
+                break
+        candidate_codes = list(dict.fromkeys(
+            str(stock.get("code") or "")
+            for topic in topics
+            for stock in topic.get("members") or []
+            if stock.get("code")
+        ))
+        cached = await self._cached_intraday_evidence(candidate_codes, target)
+        if not live_requested or not codes:
+            vwap_covered = sum(item.get("vwap") is not None for item in cached.values())
+            active_covered = sum(item.get("active_direction") is not None for item in cached.values())
+            return cached, {
+                "candidate_count": len(candidate_codes),
+                "requested": 0,
+                "captured": len(cached),
+                "vwap_covered": vwap_covered,
+                "active_direction_covered": active_covered,
+                "capture_scope": "database_cache",
+            }
+
+        async def fetch_one(code: str) -> tuple[str, dict, dict]:
+            minute, trades = await asyncio.gather(
+                self._safe(collector.fetch_stock_minute_trends(code, days=1), {}, 7.0),
+                self._safe(collector.fetch_stock_trade_details(code, limit=500), {}, 7.0),
+            )
+            return code, minute if isinstance(minute, dict) else {}, trades if isinstance(trades, dict) else {}
+
+        results = await asyncio.gather(*(fetch_one(code) for code in codes))
+        minute_payloads: list[dict] = []
+        rows: list[dict] = []
+        fresh: dict[str, dict] = {}
+        now = shanghai_now()
+        for code, minute, trades in results:
+            if _date(minute.get("data_date")) != target:
+                minute = {}
+            bars = list(minute.get("bars") or [])
+            if bars:
+                minute_payloads.append(minute)
+            latest = bars[-1] if bars else {}
+            last_price = _number(latest.get("close"))
+            vwap = _number(latest.get("average"))
+            if vwap is None and bars:
+                total_amount = sum(_number(item.get("amount")) or 0 for item in bars)
+                total_volume = sum(_number(item.get("volume")) or 0 for item in bars)
+                vwap = total_amount / total_volume if total_amount > 0 and total_volume > 0 else None
+            distance = (
+                (last_price / vwap - 1) * 100
+                if last_price is not None and vwap not in (None, 0) else None
+            )
+            latest_bar_at = None
+            try:
+                latest_bar_at = datetime.fromisoformat(str(latest.get("bar_time") or "")).replace(tzinfo=None)
+            except ValueError:
+                pass
+            active_direction = trades.get("active_direction") if trades.get("detail_count") else None
+            evidence = {
+                "stock_code": code,
+                "stock_name": str(minute.get("stock_name") or ""),
+                "trade_date": target,
+                "latest_bar_at": latest_bar_at,
+                "last_price": last_price,
+                "vwap": vwap,
+                "vwap_distance_pct": round(distance, 4) if distance is not None else None,
+                "above_vwap": last_price >= vwap if last_price is not None and vwap is not None else None,
+                "minute_bar_count": len(bars),
+                "active_buy_amount": _integer(trades.get("active_buy_amount")),
+                "active_sell_amount": _integer(trades.get("active_sell_amount")),
+                "neutral_amount": _integer(trades.get("neutral_amount")),
+                "active_net_amount": _integer(trades.get("active_net_amount")),
+                "active_buy_ratio": _number(trades.get("active_buy_ratio")),
+                "active_direction": active_direction,
+                "trade_detail_count": int(trades.get("detail_count") or 0),
+                "trade_detail_complete": bool(trades.get("complete")),
+                "source": "+".join(filter(None, [minute.get("source"), trades.get("source")])) or "unavailable",
+                "is_realtime": bool(minute.get("is_realtime") and target == now.date()),
+                "updated_at": datetime.utcnow(),
+            }
+            if bars or trades.get("detail_count"):
+                rows.append(evidence)
+                view = dict(evidence)
+                view["trade_date"] = target.isoformat()
+                view["latest_bar_at"] = latest_bar_at.isoformat(timespec="minutes") if latest_bar_at else None
+                view.pop("updated_at", None)
+                fresh[code] = view
+        if rows:
+            await self._persist_intraday(minute_payloads, rows)
+        merged = {**cached, **fresh}
+        return merged, {
+            "candidate_count": len(candidate_codes),
+            "requested": len(codes),
+            "captured": len(merged),
+            "vwap_covered": sum(item.get("vwap") is not None for item in merged.values()),
+            "active_direction_covered": sum(item.get("active_direction") is not None for item in merged.values()),
+            "capture_scope": f"题材核心与前排最多{MAX_INTRADAY_STOCKS}只",
+        }
+
+    @staticmethod
+    def _attach_intraday(topics: list[dict], evidence: dict[str, dict]) -> None:
+        for topic in topics:
+            for stock in topic.get("members") or []:
+                intraday = evidence.get(str(stock.get("code") or ""))
+                stock["intraday"] = intraday
+                if not intraday or intraday.get("vwap") is None:
+                    stock["data_gaps"].append("分时均价线")
+                if not intraday or intraday.get("active_direction") is None:
+                    stock["data_gaps"].append("主动买卖方向")
+            leader_code = str((topic.get("leader") or {}).get("code") or "")
+            topic["leader"] = next(
+                (item for item in topic.get("members") or [] if str(item.get("code") or "") == leader_code),
+                topic.get("leader"),
+            )
 
     @staticmethod
     def _approximate_limit_rows(stocks: list[dict], direction: str) -> list[dict]:
@@ -502,7 +773,8 @@ class TopicStrengthService:
                 "turnover": turnover,
                 "industry": sector,
                 "first_limit_time": raw.get("first_limit_time"),
-                "main_net_inflow": _integer(raw.get("main_net_inflow")) if _integer(raw.get("main_net_inflow")) is not None else _integer(quote.get("main_net_inflow")),
+                "main_net_inflow": _integer(quote.get("main_net_inflow")),
+                "seal_amount": _integer(raw.get("seal_amount")),
                 "return_5d_pct": return_5d,
                 "heat_status": heat_status,
                 "overheated": overheated if heat_fields_available >= 2 else None,
@@ -612,7 +884,26 @@ class TopicStrengthService:
         limit_down: dict,
         failed: dict,
         industry_flow: list[dict],
+        northbound: dict | None = None,
+        intraday_coverage: dict | None = None,
     ) -> dict:
+        northbound = northbound or {
+            "available": False,
+            "data_date": None,
+            "deal_amount": None,
+            "net_inflow": None,
+            "net_inflow_available": False,
+            "source": "unavailable",
+            "frequency": "盘后披露",
+        }
+        intraday_coverage = intraday_coverage or {
+            "candidate_count": 0,
+            "requested": 0,
+            "captured": 0,
+            "vwap_covered": 0,
+            "active_direction_covered": 0,
+            "capture_scope": "unavailable",
+        }
         if snapshot_stocks:
             changes = [_number(item.get("change_pct")) for item in snapshot_stocks]
             changes = [item for item in changes if item is not None]
@@ -629,6 +920,14 @@ class TopicStrengthService:
             sentiment_source = sentiment.get("source") or "unavailable"
         up_ratio, breadth = _breadth_label(up, down)
 
+        snapshot_amounts = [
+            value for item in snapshot_stocks
+            if (value := _integer(item.get("amount"))) is not None and value >= 0
+        ]
+        market_amount = sum(snapshot_amounts) if snapshot_amounts else _integer(sentiment.get("market_amount"))
+        amount_count = len(snapshot_amounts) if snapshot_amounts else _integer(sentiment.get("amount_count")) or 0
+        amount_complete = bool(total >= 1_000 and amount_count >= total * 0.9)
+
         zt = _integer(limit_up.get("total")) if limit_up.get("verified") else None
         dt = _integer(limit_down.get("total")) if limit_down.get("verified") else None
         zb = _integer(failed.get("total")) if failed.get("verified") else None
@@ -643,6 +942,16 @@ class TopicStrengthService:
             if zt is not None and zb is not None
             else _number(sentiment.get("failed_limit_rate"))
         )
+        up_seals = [
+            value for item in limit_up.get("stocks") or []
+            if (value := _integer(item.get("seal_amount"))) is not None
+        ] if limit_up.get("verified") else []
+        down_seals = [
+            value for item in limit_down.get("stocks") or []
+            if (value := _integer(item.get("seal_amount"))) is not None
+        ] if limit_down.get("verified") else []
+        up_pool_count = len(limit_up.get("stocks") or []) if limit_up.get("verified") else 0
+        down_pool_count = len(limit_down.get("stocks") or []) if limit_down.get("verified") else 0
 
         top_sectors = []
         for rank, row in enumerate(
@@ -669,13 +978,33 @@ class TopicStrengthService:
                 "breadth": breadth,
                 "source": sentiment_source,
             },
+            "liquidity": {
+                "market_amount": market_amount,
+                "amount_count": amount_count,
+                "amount_complete": amount_complete,
+                "average_turnover": _number(sentiment.get("average_turnover")),
+                "source": "complete_market_snapshot" if snapshot_amounts else sentiment.get("source") or "unavailable",
+            },
             "emotion": {
                 "zt_count": zt,
                 "dt_count": dt,
                 "zb_count": zb,
                 "break_rate": break_rate,
+                "limit_up_seal_amount": sum(up_seals) if up_seals else None,
+                "limit_down_seal_amount": sum(down_seals) if down_seals else None,
+                "limit_up_seal_coverage": {
+                    "covered": len(up_seals),
+                    "total": up_pool_count,
+                },
+                "limit_down_seal_coverage": {
+                    "covered": len(down_seals),
+                    "total": down_pool_count,
+                },
+                "seal_amount_semantic": "涨跌停池fund字段：盘口封单资金，不是主力净流入",
                 "source": "limit_pool" if any(item.get("verified") for item in (limit_up, limit_down, failed)) else sentiment_source,
             },
+            "northbound": northbound,
+            "intraday": intraday_coverage,
             "top_sectors": top_sectors,
             "note": "交易时段优先实时源；闭市、周末和上游不可用时读取最近核验缓存。",
         }
@@ -688,6 +1017,11 @@ class TopicStrengthService:
         leaders = [item["leader"] for item in topics[:3]]
         overheated = [stock for topic in topics for stock in topic["members"] if stock.get("overheated")]
         heat_unknown = [stock for topic in topics for stock in topic["members"] if stock.get("overheated") is None]
+        intraday = market.get("intraday") or {}
+        intraday_candidates = int(intraday.get("candidate_count") or 0)
+        vwap_covered = int(intraday.get("vwap_covered") or 0)
+        active_covered = int(intraday.get("active_direction_covered") or 0)
+        intraday_available = bool(vwap_covered and active_covered)
         return [
             {
                 "step": 1,
@@ -732,8 +1066,14 @@ class TopicStrengthService:
             {
                 "step": 6,
                 "title": "分时与资金确认",
-                "classification": "数据缺口",
-                "result": "当前底稿没有逐只核验分时均价线与盘中主动买卖，必须盘中人工确认。",
+                "classification": "事实" if intraday_available else "数据缺口",
+                "result": (
+                    f"候选共{intraday_candidates}只，已核验分时均价线{vwap_covered}只、"
+                    f"主动买卖明细方向{active_covered}只；逐股结果见题材明细。"
+                    if intraday_available
+                    else f"候选共{intraday_candidates}只，分时均价线覆盖{vwap_covered}只、"
+                    f"主动买卖方向覆盖{active_covered}只；未覆盖标的必须盘中人工确认。"
+                ),
             },
             {
                 "step": 7,
@@ -803,7 +1143,22 @@ class TopicStrengthService:
             self._previous_topic_names(effective),
         )
         topics = self._build_topics(limit_rows, snapshot_stocks, industry_flow, history_features, previous_names)
-        market = self._market_payload(sentiment, snapshot_stocks, limit_up, limit_down, failed, industry_flow)
+        intraday_result, northbound = await asyncio.gather(
+            self._intraday_evidence(topics, effective, live_requested),
+            self._northbound_snapshot(effective),
+        )
+        evidence_by_code, intraday_coverage = intraday_result
+        self._attach_intraday(topics, evidence_by_code)
+        market = self._market_payload(
+            sentiment,
+            snapshot_stocks,
+            limit_up,
+            limit_down,
+            failed,
+            industry_flow,
+            northbound,
+            intraday_coverage,
+        )
         steps = self._steps(topics, market, previous_names)
         gaps = []
         if previous_names is None:
@@ -814,7 +1169,22 @@ class TopicStrengthService:
             gaps.append("行业资金与上涨宽度")
         if event_source != "eastmoney_limit_pool":
             gaps.append("源生涨停池与连板高度")
-        gaps.extend(["逐股分时均价线", "盘中主动买卖方向"])
+        candidate_count = int(intraday_coverage.get("candidate_count") or 0)
+        vwap_covered = int(intraday_coverage.get("vwap_covered") or 0)
+        active_covered = int(intraday_coverage.get("active_direction_covered") or 0)
+        if candidate_count and vwap_covered < candidate_count:
+            gaps.append(f"逐股分时均价线（{vwap_covered}/{candidate_count}）")
+        if candidate_count and active_covered < candidate_count:
+            gaps.append(f"盘中主动买卖方向（{active_covered}/{candidate_count}）")
+        if market["liquidity"].get("market_amount") is None:
+            gaps.append("全市场成交额")
+        seal_coverage = market["emotion"].get("limit_up_seal_coverage") or {}
+        seal_total = int(seal_coverage.get("total") or 0)
+        seal_covered = int(seal_coverage.get("covered") or 0)
+        if seal_total and seal_covered < seal_total:
+            gaps.append(f"涨停封单资金（{seal_covered}/{seal_total}）")
+        if not northbound.get("available"):
+            gaps.append("北向盘后成交披露")
 
         now = shanghai_now()
         is_realtime = bool(
@@ -840,7 +1210,7 @@ class TopicStrengthService:
             "risk": [
                 "本模块只做客观数据聚合与研究观察，不自动荐股、不自动下单。",
                 "题材标签来自个股行业字段，不等同于完整概念题材成分表。",
-                "缺失的分时、资金、历史过热字段保持待核验，不能按满足处理。",
+                "分时与主动买卖明细按实际覆盖显示；未采集标的不按满足处理。",
                 "连板与资金数据可能来自不同更新时间，必须以数据日和来源标记为准。",
                 "大盘普跌、板块宽度收缩或龙头断板时，当前强度结论失效。",
             ],
@@ -849,6 +1219,10 @@ class TopicStrengthService:
                 "limit_pool": bool(limit_up.get("verified")),
                 "industry_flow": bool(industry_flow),
                 "sentiment_cache": bool(sentiment),
+                "market_amount": market["liquidity"].get("market_amount") is not None,
+                "northbound_disclosure": bool(northbound.get("available")),
+                "limit_seal_amount": market["emotion"].get("limit_up_seal_amount") is not None,
+                "intraday": intraday_coverage,
                 "missing_fields": list(dict.fromkeys(gaps)),
                 "missing_policy": "未知字段不计为通过，事实、推断与数据缺口分层展示。",
             },
@@ -868,6 +1242,8 @@ class TopicStrengthService:
         market = snapshot.get("market") or {}
         sentiment = market.get("sentiment") or {}
         emotion = market.get("emotion") or {}
+        liquidity = market.get("liquidity") or {}
+        northbound = market.get("northbound") or {}
         topics = snapshot.get("topics") or []
         leaders = "、".join(
             f"{item['leader']['name']}（{item['name']}，{item['leader']['boards']}板）"
@@ -876,7 +1252,11 @@ class TopicStrengthService:
         return (
             "## 市场环境\n"
             f"数据日 {snapshot.get('data_date')}，市场{sentiment.get('breadth', '数据不足')}；"
-            f"涨停 {emotion.get('zt_count')}、炸板 {emotion.get('zb_count')}。\n\n"
+            f"涨停 {emotion.get('zt_count')}、炸板 {emotion.get('zb_count')}；"
+            f"全市场成交额 {liquidity.get('market_amount') if liquidity.get('market_amount') is not None else '待核验'} 元；"
+            f"涨停封单资金 {emotion.get('limit_up_seal_amount') if emotion.get('limit_up_seal_amount') is not None else '待核验'} 元；"
+            f"北向成交额 {northbound.get('deal_amount') if northbound.get('available') else '待核验'} 元"
+            f"（披露日 {northbound.get('data_date') or '--'}）。\n\n"
             "## 题材强弱排序\n"
             + ("\n".join(f"{item['rank']}. {item['name']}：{item['status']}，{item['evidence']}。" for item in topics[:6]) or "暂无完整题材样本。")
             + "\n\n## 候选龙头（只作观察）\n"

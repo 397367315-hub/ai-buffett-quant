@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query, status
 
 from quant.backtest import quant_backtest_service
@@ -67,6 +69,33 @@ async def get_templates():
 @router.get("/zhaban/config")
 async def get_zhaban_strategy_config():
     return {"code": 0, "data": zhaban_strategy_service.config()}
+
+
+@router.get("/zhaban/bootstrap")
+async def get_zhaban_bootstrap():
+    """Return controls immediately even when a cached-result database read is slow."""
+    warnings: list[str] = []
+
+    async def cached(label: str, awaitable):
+        try:
+            return await asyncio.wait_for(awaitable, timeout=3.0)
+        except Exception as exc:
+            warnings.append(f"{label}缓存暂不可用：{type(exc).__name__}")
+            return None
+
+    research, backtest = await asyncio.gather(
+        cached("扫描", zhaban_strategy_service.latest()),
+        cached("回测", zhaban_strategy_service.latest_backtest()),
+    )
+    return {
+        "code": 0,
+        "data": {
+            "config": zhaban_strategy_service.config(),
+            "research": research,
+            "backtest": backtest,
+            "warnings": warnings,
+        },
+    }
 
 
 @router.get("/zhaban/latest")

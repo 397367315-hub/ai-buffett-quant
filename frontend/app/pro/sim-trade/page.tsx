@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
 import { Play, RotateCcw, Bot, Target, Shield, PieChart, FileText, Activity, BarChart3 } from 'lucide-react';
+import StockKlineButton from '@/components/StockKlineButton';
 
 interface StrategyInfo {
   name: string;
@@ -234,7 +235,7 @@ export default function SimTradePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
             {account.positions.map((p: any) => (
               <div key={p.stock_code} className="bg-[#0D1117] border border-border rounded p-2.5 text-xs">
-                <div className="flex justify-between mb-1"><span className="font-medium text-text">{p.stock_name}</span><span className={getChangeColor(p.pnl_pct)}>{p.pnl_pct>=0?'+':''}{p.pnl_pct?.toFixed(2)}%</span></div>
+                <div className="flex justify-between mb-1"><StockKlineButton code={p.stock_code} name={p.stock_name} className="font-medium text-text">{p.stock_name}</StockKlineButton><span className={getChangeColor(p.pnl_pct)}>{p.pnl_pct>=0?'+':''}{p.pnl_pct?.toFixed(2)}%</span></div>
                 <div className="flex gap-3 text-text-secondary"><span>{p.shares}股</span><span>¥{p.avg_cost?.toFixed(2)}</span><span>¥{p.current_price?.toFixed(2)}</span></div>
                 <div className="mt-1.5 w-full bg-[#30363D] h-1 rounded-full overflow-hidden"><div className={`h-full rounded-full ${p.pnl_pct>=0?'bg-up':'bg-down'}`} style={{width:`${Math.min(Math.abs(p.pnl_pct||0)*3,100)}%`}}/></div>
               </div>
@@ -260,7 +261,7 @@ export default function SimTradePage() {
                   const gc: Record<string,string>={S:'bg-[#D2992222] text-warn',A:'bg-[#26A69A22] text-up',B:'bg-[#58A6FF22] text-accent',C:'bg-[#21262D] text-text-secondary',D:'bg-[#EF535022] text-down'};
                   return (<tr key={s.code} className="border-b border-border/30 hover:bg-[#21262D]">
                     <td className="py-1.5 px-1.5 text-text-secondary">{i+1}</td>
-                    <td className="py-1.5 px-1.5"><div className="font-medium text-text">{s.name}</div><div className="text-text-secondary text-xs">{s.code}</div></td>
+                    <td className="py-1.5 px-1.5"><StockKlineButton code={s.code} name={s.name} className="font-medium text-text">{s.name}</StockKlineButton><div className="text-text-secondary text-xs">{s.code}</div></td>
                     <td className="py-1.5 px-1.5 text-right"><span className={`font-mono font-bold ${s.grade==='S'?'text-warn':s.grade==='A'?'text-up':'text-text'}`}>{s.quant_score}</span></td>
                     <td className="py-1.5 px-1.5 text-center"><span className={`px-1.5 py-0.5 rounded text-xs font-bold ${gc[s.grade]||''}`}>{s.grade}</span></td>
                     <td className="py-1.5 px-1.5 text-right font-mono text-text-secondary">{fd.fund_flow?.score||'-'}<div className="text-xs" style={{fontSize:'9px'}}>{fd.fund_flow?.raw>0?'买':'卖'}{Math.abs(fd.fund_flow?.raw||0).toFixed(1)}亿</div></td>
@@ -285,7 +286,7 @@ export default function SimTradePage() {
             {trades.slice(0,15).map((t: any, i: number) => (
               <div key={i} className="flex items-center gap-2 py-1.5 border-b border-border/30 text-xs">
                 <span className={`px-1.5 py-0.5 rounded font-bold ${t.trade_type==='buy'?'bg-[#26A69A22] text-up':'bg-[#EF535022] text-down'}`}>{t.trade_type==='buy'?'买':'卖'}</span>
-                <span className="font-medium text-text">{t.stock_name}</span>
+                <StockKlineButton code={t.stock_code || ''} name={t.stock_name} className="font-medium text-text">{t.stock_name}</StockKlineButton>
                 <span className="text-text-secondary">{t.shares}股 @ ¥{t.price?.toFixed(2)}</span>
                 {t.pnl ? <span className={`font-mono ${getChangeColor(t.pnl)}`}>{t.pnl>=0?'+':''}{(t.pnl/1e4).toFixed(2)}万</span>:null}
                 <span className="text-text-secondary ml-auto text-xs">{t.trade_date}</span>

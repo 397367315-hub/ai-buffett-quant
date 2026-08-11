@@ -40,11 +40,48 @@ interface MarketOverview {
   snapshot_saved_at?: string | null;
   is_realtime?: boolean;
   cache_used?: boolean;
+  snapshot_status?: 'complete' | 'partial';
+  refresh_status?: string;
+  data_warnings?: string[];
+  component_dates?: Record<string, string | null>;
 }
 
 interface OverviewResponse {
   code: number;
   data: MarketOverview;
+}
+
+interface MarketSyncJob {
+  job_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: number;
+  message: string;
+  error?: string | null;
+  result?: {
+    status?: string;
+    data_date?: string | null;
+    overview?: {
+      refresh_status?: string;
+      snapshot_status?: string;
+      data_date?: string | null;
+      source_updated_at?: string | null;
+      warnings?: string[];
+    };
+  };
+}
+
+const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+function neutralYi(value: number): string {
+  return `${(value / 1e8).toFixed(2)}亿`;
+}
+
+function readableError(caught: unknown, fallback: string): string {
+  const message = caught instanceof Error ? caught.message : '';
+  if (['Load failed', 'Failed to fetch', 'NetworkError when attempting to fetch resource.'].includes(message)) {
+    return '后端连接暂时中断，请稍后重试；已显示最近核验缓存。';
+  }
+  return message || fallback;
 }
 
 function generatePlainSummary(data: MarketOverview): string[] {
@@ -126,11 +163,13 @@ export default function MarketOverviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [isEmpty, setIsEmpty] = useState(false);
   const [loadProgress, setLoadProgress] = useState(8);
+  const [syncJob, setSyncJob] = useState<MarketSyncJob | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
 
   const fetchOverview = useCallback(async () => {
     setLoadProgress(8);
     try {
-      const res = await apiFetch<OverviewResponse>('/market/overview');
+      const res = await apiFetch<OverviewResponse>('/market/overview', { cache: 'no-store' });
       if (res.code === 0 && res.data) {
         const d = normalizeOverview(res.data);
         const hasMarketData = d.market_index.sh_index != null && d.market_index.sh_index > 0;
@@ -167,19 +206,40 @@ export default function MarketOverviewPage() {
 
   const fetchCacheStats = async () => {
     try {
-      const res = await apiFetch<any>('/data/cache-stats');
+      const res = await apiFetch<any>('/data/cache-stats', { cache: 'no-store' });
       setCacheStats(res.data);
     } catch {}
   };
 
   const handleSync = async () => {
     setSyncing(true);
+    setSyncNotice(null);
     try {
-      await apiFetch<any>('/data/sync?force=true', { method: 'POST' });
+      const response = await apiFetch<{ data: MarketSyncJob }>('/data/sync?force=true', { method: 'POST' });
+      let job = response.data;
+      setSyncJob(job);
+      for (let attempt = 0; attempt < 300 && ['queued', 'running'].includes(job.status); attempt += 1) {
+        await wait(1200);
+        const statusResponse = await apiFetch<{ data: MarketSyncJob }>(`/data/sync/status/${job.job_id}`, { cache: 'no-store' });
+        job = statusResponse.data;
+        setSyncJob(job);
+      }
+      if (job.status === 'failed') throw new Error(job.error || job.message || '市场数据同步失败');
+      if (job.status !== 'completed') throw new Error('同步任务仍在后台执行，请稍后刷新查看');
       await fetchOverview();
       await fetchCacheStats();
-    } catch (e) { console.error(e); }
-    setSyncing(false);
+      const overview = job.result?.overview;
+      const dataDate = overview?.data_date || job.result?.data_date || '--';
+      setSyncNotice(
+        overview?.refresh_status === 'updated'
+          ? `同步完成：市场速览已更新至 ${dataDate}${overview.snapshot_status === 'complete' ? '，核心字段为同日快照。' : '，部分来源缺失已明确标记。'}`
+          : `基础数据同步完成，但未获得可替换的同日完整速览；当前继续使用 ${dataDate} 的最近核验缓存。`,
+      );
+    } catch (caught) {
+      setSyncNotice(readableError(caught, '市场数据同步失败'));
+    } finally {
+      setSyncing(false);
+    }
   };
 
   if (loading) {
@@ -258,7 +318,7 @@ export default function MarketOverviewPage() {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent text-white rounded-md hover:opacity-90 disabled:opacity-50"
           >
             <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? '同步中...' : '同步最新数据'}
+            {syncing ? `同步中 ${syncJob?.progress ?? 0}%` : '同步最新数据'}
           </button>
           {cacheStats && (
             <span className="max-w-full text-xs text-text-secondary text-right">
@@ -268,6 +328,22 @@ export default function MarketOverviewPage() {
         </div>
       </div>
 
+      {(syncing || syncNotice) && (
+        <div className={`mb-5 border px-3 py-2.5 text-xs ${syncing ? 'border-accent/50 bg-[#1F6FEB14] text-text' : syncNotice?.startsWith('同步完成') ? 'border-up/50 bg-[#26A69A12] text-up' : 'border-warn/50 bg-[#D2992212] text-warn'}`}>
+          <div className="flex items-center justify-between gap-3">
+            <span>{syncing ? syncJob?.message || '正在同步市场数据' : syncNotice}</span>
+            {syncing && <span className="shrink-0 font-mono text-accent">{syncJob?.progress ?? 0}%</span>}
+          </div>
+          {syncing && <div className="mt-2 h-1 overflow-hidden bg-[#21262D]"><div className="h-full bg-accent transition-[width]" style={{ width: `${syncJob?.progress ?? 3}%` }} /></div>}
+        </div>
+      )}
+
+      {(data.data_warnings || []).length > 0 && (
+        <div className="mb-5 border-l-2 border-warn bg-[#D299220D] px-3 py-2 text-[11px] leading-5 text-text-secondary">
+          {data.data_warnings?.slice(0, 3).map((warning) => <div key={warning}>{warning}</div>)}
+        </div>
+      )}
+
       {/* ── 核心指标卡片 ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
         {/* 大盘指数卡片 */}
@@ -276,7 +352,7 @@ export default function MarketOverviewPage() {
             <div className="w-9 h-9 rounded-lg bg-[#1F6FEB22] flex items-center justify-center">
               <BarChart3 size={18} className="text-accent" />
             </div>
-            <span className="text-sm text-text-secondary">上证指数今天怎么走</span>
+            <span className="text-sm text-text-secondary">{data.is_realtime ? '上证指数盘中走势' : '上证指数最近交易日'}</span>
           </div>
           <div className="text-2xl font-mono font-bold text-text mb-1">
             {(market_index.sh_index ?? 0).toFixed(2)}
@@ -304,7 +380,7 @@ export default function MarketOverviewPage() {
             <span className="text-sm text-text-secondary">北向资金当天成交额</span>
           </div>
           <div className="text-2xl font-mono font-bold text-text">
-            {north_bound.latest_deal_amount == null ? '--' : formatYi(north_bound.latest_deal_amount)}
+            {north_bound.latest_deal_amount == null ? '--' : neutralYi(north_bound.latest_deal_amount)}
           </div>
           <div className="flex items-center gap-1 mt-2">
             <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-[#21262D] text-text-secondary">
@@ -361,7 +437,7 @@ export default function MarketOverviewPage() {
             <div className="w-9 h-9 rounded-lg bg-[#1F6FEB22] flex items-center justify-center">
               <Activity size={18} className="text-accent" />
             </div>
-            <span className="text-sm text-text-secondary">今天多少股票涨停 / 跌停</span>
+            <span className="text-sm text-text-secondary">{data.is_realtime ? '盘中涨停 / 跌停' : '数据日涨停 / 跌停'}</span>
           </div>
           <div className="flex items-center gap-6">
             <div>
@@ -388,7 +464,7 @@ export default function MarketOverviewPage() {
             <div className="w-9 h-9 rounded-lg bg-[#EF535022] flex items-center justify-center">
               <TrendingUp size={18} className="text-up" />
             </div>
-            <span className="text-sm text-text-secondary">哪些板块今天最热门</span>
+            <span className="text-sm text-text-secondary">{data.is_realtime ? '盘中热门板块' : '数据日热门板块'}</span>
           </div>
           <div className="space-y-3">
             {hot_sectors.length > 0 ? (

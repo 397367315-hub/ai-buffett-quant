@@ -381,6 +381,11 @@ class EastMoneyDataCollector:
     def _pool_item(self, item: dict, direction: str) -> dict:
         limit_stats = item.get("zttj") if isinstance(item.get("zttj"), dict) else {}
         streak_height = item.get("lbc") if direction == "up" else None
+        # In the Topic ZT/DT pool ``fund`` is the amount resting on the limit
+        # order book (封单资金), not an intraday main-fund net inflow.  Keeping
+        # the semantic explicit prevents a sealed order from being presented as
+        # a completed capital-flow transaction.
+        seal_amount = as_int(item.get("fund")) if direction in {"up", "down"} else None
         return {
             "code": str(item.get("c", "")),
             "name": item.get("n", ""),
@@ -398,7 +403,8 @@ class EastMoneyDataCollector:
             "limit_count_in_window": as_int(limit_stats.get("ct")),
             "failed_attempts": as_int(item.get("zbc")),
             "sector": item.get("hybk", ""),
-            "main_net_inflow": as_int(item.get("fund")),
+            "seal_amount": seal_amount,
+            "seal_amount_source_field": "fund" if seal_amount is not None else None,
             "first_limit_time": item.get("fbt"),
             "last_limit_time": item.get("lbt"),
             "limit_direction": direction,
@@ -773,11 +779,11 @@ class EastMoneyDataCollector:
             for item in self._history_in_window(history, days)
         ]
 
-    async def fetch_security_directory(self) -> list[dict]:
-        """Return the complete A-share directory, retaining inactive symbols."""
+    async def fetch_security_directory_snapshot(self, *, allow_partial: bool = False) -> dict:
+        """Return a retried directory snapshot with explicit completeness metadata."""
         page_size = self.MAX_LIST_PAGE_SIZE
 
-        async def fetch_page(page: int) -> tuple[list[dict], int]:
+        async def fetch_page_once(page: int) -> tuple[list[dict], int]:
             params = {
                 "pn": str(page), "pz": str(page_size), "po": "0", "np": "1", "fid": "f12",
                 "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
@@ -787,23 +793,53 @@ class EastMoneyDataCollector:
             payload = data.get("data") or {}
             return payload.get("diff") or [], as_int(payload.get("total"))
 
+        async def fetch_page(page: int) -> tuple[list[dict], int]:
+            last_error: Exception | None = None
+            for attempt in range(3):
+                try:
+                    rows, total = await fetch_page_once(page)
+                    if not rows:
+                        raise RuntimeError(f"股票清单第 {page} 页为空")
+                    return rows, total
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < 2:
+                        await asyncio.sleep(0.3 * (2 ** attempt))
+            raise RuntimeError(f"股票清单第 {page} 页重试失败") from last_error
+
+        failed_pages: list[int] = []
+        page_errors: dict[str, str] = {}
         try:
             first_page, total = await fetch_page(1)
-            if not first_page:
-                raise RuntimeError("股票清单为空")
-            pages = max(1, (total + page_size - 1) // page_size)
-            rows = list(first_page)
-            for start in range(2, pages + 1, self.PAGE_FETCH_CONCURRENCY):
-                page_numbers = range(start, min(start + self.PAGE_FETCH_CONCURRENCY, pages + 1))
-                responses = await asyncio.gather(*(fetch_page(page) for page in page_numbers))
-                for page_rows, _ in responses:
-                    rows.extend(page_rows)
         except Exception as exc:
-            raise RuntimeError(f"获取全市场股票清单失败: {type(exc).__name__}") from exc
+            if not allow_partial:
+                raise RuntimeError(f"获取全市场股票清单失败: {type(exc).__name__}") from exc
+            return {
+                "records": [], "total": 0, "complete": False,
+                "failed_pages": [1], "errors": {"1": type(exc).__name__},
+                "source": "eastmoney_directory",
+            }
+
+        pages = max(1, (total + page_size - 1) // page_size)
+        rows = list(first_page)
+        for start in range(2, pages + 1, self.PAGE_FETCH_CONCURRENCY):
+            page_numbers = list(range(start, min(start + self.PAGE_FETCH_CONCURRENCY, pages + 1)))
+            responses = await asyncio.gather(
+                *(fetch_page(page) for page in page_numbers),
+                return_exceptions=True,
+            )
+            for page, result in zip(page_numbers, responses):
+                if isinstance(result, Exception):
+                    failed_pages.append(page)
+                    page_errors[str(page)] = type(result.__cause__ or result).__name__
+                    continue
+                page_rows, _ = result
+                rows.extend(page_rows)
 
         records = []
         seen_codes: set[str] = set()
-        if total and len(rows) < total:
+        complete = not failed_pages and (not total or len(rows) >= total)
+        if not complete and not allow_partial:
             raise RuntimeError(f"股票清单不完整: expected={total}, received={len(rows)}")
         for item in rows:
             try:
@@ -824,7 +860,19 @@ class EastMoneyDataCollector:
                 "is_currently_listed": bool(price is not None and price > 0),
                 "last_price": price,
             })
-        return records
+        return {
+            "records": records,
+            "total": total,
+            "complete": complete,
+            "failed_pages": failed_pages,
+            "errors": page_errors,
+            "source": "eastmoney_directory",
+        }
+
+    async def fetch_security_directory(self) -> list[dict]:
+        """Return the complete A-share directory, retaining inactive symbols."""
+        snapshot = await self.fetch_security_directory_snapshot(allow_partial=False)
+        return list(snapshot["records"])
 
     async def fetch_stock_universe(self) -> list[dict]:
         directory = await self.fetch_security_directory()
@@ -962,7 +1010,7 @@ class EastMoneyDataCollector:
     async def fetch_market_turnover(self) -> dict:
         url = "https://push2.eastmoney.com/api/qt/stock/get"
         params = {
-            "secid": "1.000001", "fields": "f43,f47,f48,f57,f58,f169,f170", "ut": EASTMONEY_UT,
+            "secid": "1.000001", "fields": "f43,f47,f48,f57,f58,f124,f169,f170", "ut": EASTMONEY_UT,
         }
         try:
             data = await self.fetch_json(url, params)
@@ -972,14 +1020,25 @@ class EastMoneyDataCollector:
         row = data.get("data") or {}
         if not row:
             return {}
+        quote_at = self._quote_timestamp_datetime(row.get("f124"))
         now = shanghai_now()
+        quote_age_seconds = (now - quote_at).total_seconds() if quote_at else None
         return {
             "sh_index": round(as_float(row.get("f43")) / 100, 2),
             "sh_change": round(as_float(row.get("f169")) / 100, 2),
             "sh_change_pct": round(as_float(row.get("f170")) / 100, 2),
             "sh_volume": as_int(row.get("f47")),
             "sh_amount": as_int(row.get("f48")),
-            "data_date": now.date().isoformat() if is_a_share_market_session(now) else None,
+            "data_date": quote_at.date().isoformat() if quote_at else None,
+            "source_updated_at": quote_at.isoformat() if quote_at else None,
+            "is_realtime": bool(
+                quote_at
+                and quote_at.date() == now.date()
+                and quote_age_seconds is not None
+                and 0 <= quote_age_seconds <= 15 * 60
+                and is_a_share_market_session(now)
+            ),
+            "source": "eastmoney",
         }
 
     async def fetch_dragon_board(
@@ -1496,6 +1555,86 @@ class EastMoneyDataCollector:
             ),
             "complete": bool(bars),
             "fetched_at": now.isoformat(),
+        }
+
+    async def fetch_stock_trade_details(self, stock_code: str, limit: int = 500) -> dict:
+        """Aggregate recent source-labelled buy/sell prints for intraday audit.
+
+        EastMoney's ``f55`` side flag is 2 for active buy, 1 for active sell,
+        and any other value for neutral.  The public endpoint exposes a bounded
+        recent window rather than a guaranteed full tape, so completeness is
+        deliberately kept false and the returned sample size remains visible.
+        """
+        code = normalize_stock_code(stock_code)
+        bounded = min(max(int(limit), 1), 2000)
+        data = await self.fetch_json(
+            "https://push2.eastmoney.com/api/qt/stock/details/get",
+            {
+                "secid": stock_secid(code),
+                "fltt": "2",
+                "fields1": "f1,f2,f3,f4",
+                "fields2": "f51,f52,f53,f54,f55",
+                "pos": str(-bounded),
+                "iscr": "0",
+                "ut": EASTMONEY_UT,
+            },
+        )
+        payload = data.get("data") or {}
+        details = []
+        buy_amount = 0
+        sell_amount = 0
+        neutral_amount = 0
+        for line in payload.get("details") or []:
+            values = str(line).split(",")
+            if len(values) < 5:
+                continue
+            price = as_optional_float(values[1])
+            volume = self._eastmoney_volume_in_shares(values[2])
+            if price is None or price <= 0 or volume is None or volume < 0:
+                continue
+            amount = int(round(price * volume))
+            side_flag = str(values[4]).strip()
+            side = "buy" if side_flag == "2" else "sell" if side_flag == "1" else "neutral"
+            if side == "buy":
+                buy_amount += amount
+            elif side == "sell":
+                sell_amount += amount
+            else:
+                neutral_amount += amount
+            details.append({
+                "time": values[0],
+                "price": price,
+                "volume": volume,
+                "amount": amount,
+                "side": side,
+            })
+        directional = buy_amount + sell_amount
+        active_net = buy_amount - sell_amount if directional else None
+        buy_ratio = buy_amount / directional * 100 if directional else None
+        if active_net is None:
+            direction = None
+        elif abs(active_net) <= directional * 0.05:
+            direction = "balanced"
+        else:
+            direction = "buy" if active_net > 0 else "sell"
+        return {
+            "stock_code": code,
+            "pre_close": as_optional_float(payload.get("prePrice")),
+            "details": details,
+            "detail_count": len(details),
+            "latest_trade_time": details[-1]["time"] if details else None,
+            "active_buy_amount": buy_amount if details else None,
+            "active_sell_amount": sell_amount if details else None,
+            "neutral_amount": neutral_amount if details else None,
+            "active_net_amount": active_net,
+            "active_buy_ratio": round(buy_ratio, 2) if buy_ratio is not None else None,
+            "active_direction": direction,
+            "complete": False,
+            "sample_limit": bounded,
+            "source": "eastmoney_trade_details",
+            "method": "f55主动买卖标志；金额按成交价×成交股数汇总",
+            "warning": "公开源仅提供最近成交明细窗口，不代表全天逐笔完整成交",
+            "fetched_at": shanghai_now().isoformat(),
         }
 
     async def fetch_shanghai_index_minute_trends(self, days: int = 1) -> dict:

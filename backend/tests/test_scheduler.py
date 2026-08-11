@@ -1,5 +1,7 @@
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from services import scheduler as scheduler_module
 
@@ -83,6 +85,60 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(calls["overnight_force_exit"].args[0], scheduler_module.force_overnight_exits)
         self.assertIs(calls["resume_fqe_data_sync"].args[0], scheduler_module.resume_incomplete_fqe_syncs)
         self.assertIs(calls["fqe_audit_data_close"].args[0], scheduler_module.refresh_fqe_audit_data)
+
+    async def test_startup_recovery_uses_recent_cache_during_market_session(self):
+        fake_scheduler = MagicMock()
+        fake_scheduler.running = True
+        fake_data_sync = MagicMock()
+        fake_data_sync.get_cache_stats = AsyncMock(
+            return_value={"stock_bars": {"to": "2026-08-11"}}
+        )
+        fake_data_sync.sync_market_snapshot = AsyncMock()
+        refreshed = AsyncMock(return_value={"code": 0, "data": {"data_date": "2026-08-11"}})
+
+        with (
+            patch.object(scheduler_module, "scheduler", fake_scheduler),
+            patch("services.data_sync.data_sync", fake_data_sync),
+            patch(
+                "services.data_collector.shanghai_now",
+                return_value=datetime(2026, 8, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            ),
+            patch("api.routes.refresh_market_overview_after_sync", refreshed),
+        ):
+            await scheduler_module.start_scheduler()
+            recovery_call = next(
+                call
+                for call in fake_scheduler.add_job.call_args_list
+                if call.kwargs["id"] == "startup_cache_recovery"
+            )
+            result = await recovery_call.args[0]()
+
+        self.assertEqual(result["status"], "cache_refreshed")
+        refreshed.assert_awaited_once_with({"data_date": "2026-08-11"})
+        fake_data_sync.sync_market_snapshot.assert_not_awaited()
+
+    async def test_startup_recovery_defers_full_sync_when_cache_is_missing(self):
+        fake_scheduler = MagicMock()
+        fake_scheduler.running = True
+        fake_data_sync = MagicMock()
+        fake_data_sync.get_cache_stats = AsyncMock(return_value={"stock_bars": {"to": None}})
+        fake_data_sync.sync_market_snapshot = AsyncMock()
+
+        with (
+            patch.object(scheduler_module, "scheduler", fake_scheduler),
+            patch("services.data_sync.data_sync", fake_data_sync),
+        ):
+            await scheduler_module.start_scheduler()
+            recovery_call = next(
+                call
+                for call in fake_scheduler.add_job.call_args_list
+                if call.kwargs["id"] == "startup_cache_recovery"
+            )
+            result = await recovery_call.args[0]()
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["reason"], "recent_stock_cache_unavailable")
+        fake_data_sync.sync_market_snapshot.assert_not_awaited()
 
 
 if __name__ == "__main__":

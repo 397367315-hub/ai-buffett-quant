@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
 import { Search, Sparkles, TrendingUp, AlertTriangle, BarChart3, Layers } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
+import StockKlineButton from '@/components/StockKlineButton';
 
 interface BoardInfo {
   code: string;
@@ -305,7 +306,7 @@ export default function PotentialStocksPage() {
                     {filteredStocks.map((s) => (
                       <tr key={s.code} className="border-b border-border/50 hover:bg-[#21262D] transition-colors">
                         <td className="px-4 py-2">
-                          <div className="font-medium text-text text-xs">{s.name}</div>
+                          <StockKlineButton code={s.code} name={s.name} className="font-medium text-text text-xs">{s.name}</StockKlineButton>
                           <div className="text-xs text-text-secondary">{s.code}</div>
                         </td>
                         <td className="px-3 py-2 text-right font-mono text-text text-xs">{s.price}</td>

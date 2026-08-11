@@ -3,6 +3,7 @@
 import { AlertTriangle, ArrowUpRight, Clock3, Database, Loader2, RefreshCw, Send, Signal, Wifi } from 'lucide-react';
 import type { BackgroundJob, SignalSnapshot, TradeSignal } from '../types';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
+import StockKlineButton from '@/components/StockKlineButton';
 
 function formatTime(value?: string | null) {
   if (!value) return '尚未扫描';
@@ -69,7 +70,7 @@ export default function SignalList({ snapshot, job, onRefresh, onAddToPaper, his
         {signals.length ? <div className="overflow-x-auto"><table className="w-full min-w-[860px] text-xs">
           <thead className="bg-[#161B22] text-text-secondary"><tr><th className="text-left px-3 py-2">股票</th><th className="text-left px-3 py-2">所属板块</th><th className="text-right px-3 py-2">价格</th><th className="text-right px-3 py-2">涨跌幅</th><th className="text-right px-3 py-2">匹配度</th><th className="text-left px-3 py-2">命中策略</th><th className="text-left px-3 py-2">规则证据</th><th className="text-right px-3 py-2">操作</th></tr></thead>
           <tbody>{signals.map((signal) => <tr key={signal.signal_id} className="border-t border-border/70 hover:bg-[#161B22]">
-            <td className="px-3 py-2.5"><div className="font-medium text-text">{signal.stock_name}</div><div className="font-mono text-text-secondary mt-0.5">{signal.stock_code}</div></td>
+            <td className="px-3 py-2.5"><StockKlineButton code={signal.stock_code} name={signal.stock_name} className="font-medium text-text">{signal.stock_name}</StockKlineButton><div className="font-mono text-text-secondary mt-0.5">{signal.stock_code}</div></td>
             <td className="px-3 py-2.5 text-text-secondary">{signal.sector || '未分类'}</td>
             <td className="px-3 py-2.5 text-right font-mono text-text">{Number(signal.price || 0).toFixed(2)}</td>
             <td className={`px-3 py-2.5 text-right font-mono ${priceColor(signal.change_pct || 0)}`}>{(signal.change_pct || 0) >= 0 ? '+' : ''}{Number(signal.change_pct || 0).toFixed(2)}%</td>

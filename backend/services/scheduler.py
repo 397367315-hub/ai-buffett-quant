@@ -1,5 +1,5 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
@@ -99,6 +99,38 @@ async def refresh_personal_report_calendar():
         return None
 
 
+async def capture_financial_pit_snapshot():
+    from services.stock_features import stock_feature_service
+
+    try:
+        return await stock_feature_service.capture_financial_pit()
+    except Exception as exc:
+        print(f"[Scheduler] 公告日财务PIT快照失败: {type(exc).__name__}")
+        return None
+
+
+async def capture_market_auction_snapshot():
+    from services.pit_market_data import pit_market_data_service
+
+    try:
+        result = await pit_market_data_service.capture_auction()
+        print(f"[Scheduler] 全市场竞价PIT快照: {result}")
+        return result
+    except Exception as exc:
+        print(f"[Scheduler] 全市场竞价PIT快照失败: {type(exc).__name__}")
+        return None
+
+
+async def refresh_topic_intraday_evidence():
+    from services.topic_strength import topic_strength_service
+
+    try:
+        return await topic_strength_service.get(force=True)
+    except Exception as exc:
+        print(f"[Scheduler] 题材分时资金证据刷新失败: {type(exc).__name__}")
+        return None
+
+
 async def refresh_dragon_board_cache():
     from services.dragon_board import dragon_board_service
 
@@ -177,13 +209,42 @@ async def start_scheduler(data_collector=None, db_session=None):
         print(f"[Scheduler] 开始盘后数据采集: {datetime.now()}")
         try:
             result = await data_sync.sync_market_snapshot()
-            from api.routes import get_market_overview
+            from services.pit_market_data import pit_market_data_service
+            universe = await pit_market_data_service.capture_universe()
+            result["pit_universe"] = universe
+            from api.routes import refresh_market_overview_after_sync
             from services.ai_robot import ai_robot_service
-            await get_market_overview()
+            result["overview"] = (await refresh_market_overview_after_sync(result)).get("data", {})
             await ai_robot_service.warm_market_cache()
             print(f"[Scheduler] 数据采集完成: {result}")
+            return result
         except Exception as e:
             print(f"[Scheduler] 数据采集失败: {e}")
+            return None
+
+    async def startup_cache_recovery():
+        """Refresh the lightweight overview first and avoid a cold-start data stampede."""
+        latest_date = None
+        try:
+            from services.data_collector import shanghai_now
+            stats = await data_sync.get_cache_stats()
+            latest_value = (stats.get("stock_bars") or {}).get("to")
+            latest_date = date.fromisoformat(str(latest_value)) if latest_value else None
+            now = shanghai_now()
+            cache_is_recent = bool(latest_date and 0 <= (now.date() - latest_date).days <= 3)
+            if cache_is_recent:
+                from api.routes import refresh_market_overview_after_sync
+                overview = await refresh_market_overview_after_sync({"data_date": latest_date.isoformat()})
+                print(f"[Scheduler] 冷启动使用近期行情缓存并重建速览: {latest_date}")
+                return {"status": "cache_refreshed", "overview": overview.get("data", {})}
+        except Exception as exc:
+            print(f"[Scheduler] 冷启动缓存检查失败: {type(exc).__name__}")
+        print(f"[Scheduler] 冷启动无近期行情缓存，延后至定时或手动全市场同步: {latest_date}")
+        return {
+            "status": "deferred",
+            "data_date": latest_date.isoformat() if latest_date else None,
+            "reason": "recent_stock_cache_unavailable",
+        }
 
     scheduler.add_job(
         daily_data_collection,
@@ -193,7 +254,7 @@ async def start_scheduler(data_collector=None, db_session=None):
         replace_existing=True,
     )
     scheduler.add_job(
-        daily_data_collection,
+        startup_cache_recovery,
         "date",
         run_date=datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(seconds=20),
         id="startup_cache_recovery",
@@ -310,6 +371,24 @@ async def start_scheduler(data_collector=None, db_session=None):
         CronTrigger(hour=8, minute=20, day_of_week="mon-fri"),
         id="personal_report_calendar", name="个人池财报日历刷新", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
+    )
+    scheduler.add_job(
+        capture_financial_pit_snapshot,
+        CronTrigger(hour=16, minute=35, day_of_week="mon-fri"),
+        id="financial_pit_close", name="公告日财务PIT增量快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        capture_market_auction_snapshot,
+        CronTrigger(hour=9, minute=25, day_of_week="mon-fri"),
+        id="market_auction_pit", name="全市场09:25竞价PIT快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=60,
+    )
+    scheduler.add_job(
+        refresh_topic_intraday_evidence,
+        CronTrigger(hour="9,10,14", minute="35,55", day_of_week="mon-fri"),
+        id="topic_intraday_evidence", name="题材分时均价与主动资金证据", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         quant_signal_scan,

@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
+from zoneinfo import ZoneInfo
 
 from services.data_collector import EastMoneyDataCollector, normalize_stock_code, stock_secid
 
@@ -279,26 +280,83 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_market_turnover_uses_change_amount_and_change_percent(self):
         collector = EastMoneyDataCollector()
+        source_at = datetime(2026, 8, 12, 14, 55, tzinfo=ZoneInfo("Asia/Shanghai"))
 
         async def fake_fetch_json(url, params, headers=None):
             del url, headers
-            self.assertEqual(params["fields"], "f43,f47,f48,f57,f58,f169,f170")
+            self.assertEqual(params["fields"], "f43,f47,f48,f57,f58,f124,f169,f170")
             return {
                 "data": {
                     "f43": 380469,
                     "f47": 592298923,
                     "f48": 1106477266461.8,
+                    "f124": int(source_at.timestamp()),
                     "f169": -2378,
                     "f170": -62,
                 }
             }
 
         collector.fetch_json = fake_fetch_json
-        result = await collector.fetch_market_turnover()
+        with patch(
+            "services.data_collector.shanghai_now",
+            return_value=datetime(2026, 8, 12, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        ):
+            result = await collector.fetch_market_turnover()
 
         self.assertEqual(result["sh_index"], 3804.69)
         self.assertEqual(result["sh_change"], -23.78)
         self.assertEqual(result["sh_change_pct"], -0.62)
+        self.assertEqual(result["data_date"], "2026-08-12")
+        self.assertTrue(result["is_realtime"])
+
+    async def test_security_directory_retries_a_timed_out_first_page(self):
+        collector = EastMoneyDataCollector()
+        attempts = 0
+
+        async def fake_fetch_json(url, params, headers=None):
+            nonlocal attempts
+            del url, headers
+            self.assertEqual(params["pn"], "1")
+            attempts += 1
+            if attempts < 3:
+                raise TimeoutError("upstream timeout")
+            return {"data": {"total": 1, "diff": [
+                {"f2": 10.2, "f12": "600000", "f13": 1, "f14": "浦发银行", "f100": "银行"},
+            ]}}
+
+        collector.fetch_json = fake_fetch_json
+        with patch("services.data_collector.asyncio.sleep", new=AsyncMock()):
+            result = await collector.fetch_security_directory_snapshot(allow_partial=False)
+
+        self.assertEqual(attempts, 3)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["records"][0]["code"], "600000")
+
+    async def test_security_directory_returns_explicit_partial_metadata(self):
+        collector = EastMoneyDataCollector()
+        page_two_attempts = 0
+        first_page = [
+            {"f2": 10, "f12": f"600{index:03d}", "f13": 1, "f14": f"测试{index}", "f100": "测试"}
+            for index in range(100)
+        ]
+
+        async def fake_fetch_json(url, params, headers=None):
+            nonlocal page_two_attempts
+            del url, headers
+            if params["pn"] == "1":
+                return {"data": {"total": 150, "diff": first_page}}
+            page_two_attempts += 1
+            raise TimeoutError("page two timeout")
+
+        collector.fetch_json = fake_fetch_json
+        with patch("services.data_collector.asyncio.sleep", new=AsyncMock()):
+            result = await collector.fetch_security_directory_snapshot(allow_partial=True)
+
+        self.assertEqual(page_two_attempts, 3)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["failed_pages"], [2])
+        self.assertEqual(result["errors"], {"2": "TimeoutError"})
+        self.assertEqual(len(result["records"]), 100)
 
     async def test_board_flow_normalizes_eastmoney_sort_direction(self):
         collector = EastMoneyDataCollector()

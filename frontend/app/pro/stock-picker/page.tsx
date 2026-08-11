@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
+import StockKlineButton from '@/components/StockKlineButton';
 
 type SelectionMode = 'quick' | 'full';
 type RiskProfile = 'conservative' | 'balanced' | 'aggressive';
@@ -1038,7 +1039,7 @@ export default function StockPickerPage() {
                                 <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
                                   <span className="w-4 sm:w-5 shrink-0 text-xs font-mono text-text-secondary">{stock.rank}</span>
                                   <div className="min-w-0">
-                                    <div className="font-medium text-text">{stock.name}</div>
+                                    <StockKlineButton code={stock.code} name={stock.name} className="font-medium text-text">{stock.name}</StockKlineButton>
                                     <div className="text-xs text-text-secondary leading-4 break-words">{stock.code} · {stock.sector || '行业未标注'} · {stock.selection_sources.map(sourceLabel).join(' / ')}</div>
                                   </div>
                                 </div>
@@ -1070,7 +1071,7 @@ export default function StockPickerPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
                     <div>
                       <h2 className="text-lg font-bold text-text flex items-center gap-2">
-                        <Target size={18} className="text-warn" /> {selected.name}
+                        <Target size={18} className="text-warn" /> <StockKlineButton code={selected.code} name={selected.name} className="font-bold text-text">{selected.name}</StockKlineButton>
                         <span className="text-sm font-mono text-text-secondary">{selected.code}</span>
                       </h2>
                       <p className="text-xs text-text-secondary mt-1">{selected.sector || '行业未标注'} · 置信度 {selected.confidence.toFixed(0)}% · 现价 {selected.price.toFixed(2)} · 换手率 {selected.turnover.toFixed(2)}%</p>

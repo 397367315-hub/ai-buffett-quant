@@ -15,8 +15,11 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
 from database import async_session
-from models import MarketDataCache
+from models import FinancialPITSnapshot, MarketDataCache
 from services.data_collector import collector, normalize_stock_code, shanghai_now
 
 
@@ -258,6 +261,29 @@ class StockFeatureService:
                 rows.extend(page_rows)
         return rows
 
+    @staticmethod
+    async def _persist_financial_pit(rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        written = 0
+        async with async_session() as session:
+            insert = postgresql_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
+            for start in range(0, len(rows), 500):
+                batch = rows[start:start + 500]
+                statement = insert(FinancialPITSnapshot).values(batch)
+                updates = {
+                    column.name: getattr(statement.excluded, column.name)
+                    for column in FinancialPITSnapshot.__table__.columns
+                    if column.name not in {"id", "stock_code", "report_date", "disclosed_at"}
+                }
+                await session.execute(statement.on_conflict_do_update(
+                    index_elements=["stock_code", "report_date", "disclosed_at"],
+                    set_=updates,
+                ))
+                written += len(batch)
+            await session.commit()
+        return written
+
     async def _financial_snapshot(self, codes: set[str], as_of: date) -> dict[str, dict]:
         history: dict[str, dict[date, dict]] = defaultdict(dict)
         columns = (
@@ -290,6 +316,7 @@ class StockFeatureService:
                 if ocf_to_profit is None and net_profit not in (None, 0) and operating_cf is not None:
                     ocf_to_profit = operating_cf / net_profit
                 record = {
+                    "stock_name": str(row.get("SECURITY_NAME_ABBR") or ""),
                     "roe": _number(row.get("ROEJQ")),
                     "gross_margin": _number(row.get("XSMLL")),
                     "revenue_growth": _number(row.get("TOTALOPERATEREVETZ")),
@@ -310,6 +337,35 @@ class StockFeatureService:
             if len(history) >= 5000:
                 break
 
+        pit_rows = [
+            {
+                "stock_code": code,
+                "stock_name": record.get("stock_name"),
+                "report_date": report_day,
+                "disclosed_at": record["disclosed_at"],
+                "roe": record.get("roe"),
+                "gross_margin": record.get("gross_margin"),
+                "revenue_growth": record.get("revenue_growth"),
+                "deducted_profit_growth": record.get("deducted_profit_growth"),
+                "ocf_to_profit": record.get("ocf_to_profit"),
+                "debt_ratio": record.get("debt_ratio"),
+                "receivable_to_revenue": record.get("receivable_to_revenue"),
+                "revenue": record.get("revenue"),
+                "deducted_profit": record.get("deducted_profit"),
+                "net_profit": record.get("net_profit"),
+                "operating_cf": record.get("operating_cf"),
+                "source": "eastmoney",
+                "captured_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow(),
+            }
+            for code, periods in history.items()
+            for report_day, record in periods.items()
+        ]
+        try:
+            await self._persist_financial_pit(pit_rows)
+        except Exception as exc:
+            print(f"Financial PIT snapshot persistence failed: {type(exc).__name__}")
+
         output: dict[str, dict] = {}
         for code, rows_by_period in history.items():
             if not rows_by_period:
@@ -324,6 +380,7 @@ class StockFeatureService:
                 field for field in TTM_VALUE_FIELDS
                 if ttm_values.get(f"{field}_ttm") is not None
             ]
+            complete_ttm = len(available_ttm) == len(TTM_VALUE_FIELDS)
             ttm_profit = ttm_values.get("net_profit_ttm")
             ttm_cashflow = ttm_values.get("operating_cf_ttm")
             ttm_ratio = (
@@ -332,10 +389,11 @@ class StockFeatureService:
                 else None
             )
             output[code] = {
-                **{key: value for key, value in latest.items() if key not in {"report_date", "disclosed_at"}},
+                **{key: value for key, value in latest.items() if key not in {"report_date", "disclosed_at", "stock_name"}},
                 **ttm_values,
                 "ocf_to_profit_ttm": ttm_ratio,
-                "ttm_available": bool(available_ttm),
+                "ttm_available": complete_ttm,
+                "ttm_partial": bool(available_ttm) and not complete_ttm,
                 "ttm_available_fields": available_ttm,
                 "financial_period_count": len(rows_by_period),
                 "financial_report_date": current_period.isoformat(),
@@ -343,6 +401,17 @@ class StockFeatureService:
                 "ttm_formula": "current_period + prior_year_full_year - prior_year_same_period",
             }
         return output
+
+    async def capture_financial_pit(self, as_of: date | None = None) -> dict[str, Any]:
+        """Refresh disclosure-dated financial rows for forward PIT research."""
+        effective = as_of or shanghai_now().date()
+        values = await self._financial_snapshot(set(), effective)
+        return {
+            "status": "success" if values else "unavailable",
+            "as_of_date": effective.isoformat(),
+            "stocks": len(values),
+            "source": "eastmoney",
+        }
 
     async def _shareholder_snapshot(self, codes: set[str], as_of: date) -> dict[str, dict]:
         history: dict[str, list[dict]] = defaultdict(list)

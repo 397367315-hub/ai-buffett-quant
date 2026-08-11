@@ -11,6 +11,7 @@ import {
   WalletCards,
 } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
+import StockKlineButton from '@/components/StockKlineButton';
 import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
 
 type WindowKey = 'week' | 'two_weeks' | 'month';
@@ -299,7 +300,7 @@ export default function DragonBoardPage() {
                 <tbody>
                   {data.stocks.map((stock) => (
                     <tr key={`${stock.date}-${stock.code}`} className="border-b border-border/60 last:border-b-0 hover:bg-[#21262D]">
-                      <td className="px-4 py-3"><div className="font-medium text-text">{stock.name}</div><div className="font-mono text-xs text-text-secondary mt-0.5">{stock.code}</div></td>
+                      <td className="px-4 py-3"><StockKlineButton code={stock.code} name={stock.name} className="font-medium text-text">{stock.name}</StockKlineButton><div className="font-mono text-xs text-text-secondary mt-0.5">{stock.code}</div></td>
                       <td className="px-3 py-3 text-right font-mono text-text">{number(stock.price)}</td>
                       <td className={`px-3 py-3 text-right font-mono ${getChangeColor(stock.change_pct || 0)}`}>{typeof stock.change_pct === 'number' && stock.change_pct > 0 ? '+' : ''}{number(stock.change_pct)}%</td>
                       <td className="px-3 py-3 text-right font-mono text-text-secondary">{number(stock.turnover)}%</td>

@@ -14,10 +14,20 @@ import math
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 from database import async_session
-from models import MarketDataCache, StockDailyBar
+from models import (
+    FinancialPITSnapshot,
+    MarketDataCache,
+    MarketSentimentDaily,
+    SecurityMaster,
+    SecurityStatusEvent,
+    StockAuctionSnapshot,
+    StockDailyBar,
+    StockMinuteBar,
+    StockUniverseSnapshot,
+)
 from quant.jobs import create_job, get_job, latest_running_job, spawn, update_job
 from services.quant_research import quant_research_engine
 
@@ -207,9 +217,9 @@ def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _status_summary() -> dict[str, int]:
+def _status_summary(factors: list[dict[str, Any]] | None = None) -> dict[str, int]:
     summary = {key: 0 for key in STATUS_LABELS}
-    for factor in FACTOR_CATALOG:
+    for factor in factors or FACTOR_CATALOG:
         summary[factor["status"]] = summary.get(factor["status"], 0) + 1
     return summary
 
@@ -228,10 +238,70 @@ class QuantResearchWorkspaceService:
     async def dataset_manifest(self) -> dict[str, Any]:
         try:
             async with async_session() as session:
-                count = int((await session.execute(select(func.count(StockDailyBar.id)))).scalar_one() or 0)
-                stock_count = int((await session.execute(select(func.count(func.distinct(StockDailyBar.stock_code))))).scalar_one() or 0)
-                date_bounds = (await session.execute(select(func.min(StockDailyBar.trade_date), func.max(StockDailyBar.trade_date)))).one()
+                daily = (await session.execute(select(
+                    func.count(StockDailyBar.id),
+                    func.count(func.distinct(StockDailyBar.stock_code)),
+                    func.count(func.distinct(StockDailyBar.trade_date)),
+                    func.min(StockDailyBar.trade_date),
+                    func.max(StockDailyBar.trade_date),
+                ))).one()
                 sources = list((await session.execute(select(StockDailyBar.source).distinct().order_by(StockDailyBar.source))).scalars().all())
+                security = (await session.execute(select(
+                    func.count(SecurityMaster.stock_code),
+                    func.sum(case((SecurityMaster.is_currently_listed.is_(True), 1), else_=0)),
+                    func.sum(case((SecurityMaster.is_currently_listed.is_(False), 1), else_=0)),
+                    func.sum(case((SecurityMaster.list_date.is_not(None), 1), else_=0)),
+                    func.sum(case((
+                        SecurityMaster.is_currently_listed.is_(False)
+                        & SecurityMaster.delist_date.is_not(None), 1
+                    ), else_=0)),
+                ))).one()
+                status_events = int((await session.execute(
+                    select(func.count(SecurityStatusEvent.id))
+                )).scalar_one() or 0)
+                universe = (await session.execute(select(
+                    func.count(StockUniverseSnapshot.id),
+                    func.count(func.distinct(StockUniverseSnapshot.stock_code)),
+                    func.count(func.distinct(StockUniverseSnapshot.trade_date)),
+                    func.min(StockUniverseSnapshot.trade_date),
+                    func.max(StockUniverseSnapshot.trade_date),
+                    func.sum(case((StockUniverseSnapshot.industry.is_not(None), 1), else_=0)),
+                    func.sum(case((StockUniverseSnapshot.market_cap.is_not(None), 1), else_=0)),
+                ))).one()
+                auction = (await session.execute(select(
+                    func.count(StockAuctionSnapshot.id),
+                    func.count(func.distinct(StockAuctionSnapshot.stock_code)),
+                    func.count(func.distinct(StockAuctionSnapshot.trade_date)),
+                    func.min(StockAuctionSnapshot.trade_date),
+                    func.max(StockAuctionSnapshot.trade_date),
+                    func.sum(case((StockAuctionSnapshot.auction_volume_ratio.is_not(None), 1), else_=0)),
+                ))).one()
+                financial = (await session.execute(select(
+                    func.count(FinancialPITSnapshot.id),
+                    func.count(func.distinct(FinancialPITSnapshot.stock_code)),
+                    func.count(func.distinct(FinancialPITSnapshot.disclosed_at)),
+                    func.min(FinancialPITSnapshot.disclosed_at),
+                    func.max(FinancialPITSnapshot.disclosed_at),
+                ))).one()
+                minute = (await session.execute(select(
+                    func.count(StockMinuteBar.id),
+                    func.count(func.distinct(StockMinuteBar.stock_code)),
+                    func.count(func.distinct(func.date(StockMinuteBar.bar_time))),
+                    func.min(StockMinuteBar.bar_time),
+                    func.max(StockMinuteBar.bar_time),
+                ))).one()
+                sentiment = (await session.execute(select(
+                    func.count(MarketSentimentDaily.trade_date),
+                    func.min(MarketSentimentDaily.trade_date),
+                    func.max(MarketSentimentDaily.trade_date),
+                    func.sum(case((
+                        MarketSentimentDaily.market_amount.is_not(None)
+                        & MarketSentimentDaily.up_count.is_not(None)
+                        & MarketSentimentDaily.down_count.is_not(None)
+                        & MarketSentimentDaily.failed_limit_rate.is_not(None)
+                        & MarketSentimentDaily.max_streak_height.is_not(None), 1
+                    ), else_=0)),
+                ))).one()
         except Exception as exc:
             return {
                 "available": False,
@@ -239,8 +309,103 @@ class QuantResearchWorkspaceService:
                 "error": f"数据清单读取失败：{type(exc).__name__}",
                 "warnings": ["数据库不可用，研究任务不会生成结果。"],
             }
-        start_date = _safe_date(date_bounds[0])
-        end_date = _safe_date(date_bounds[1])
+        count = int(daily[0] or 0)
+        stock_count = int(daily[1] or 0)
+        daily_sessions = int(daily[2] or 0)
+        start_date = _safe_date(daily[3])
+        end_date = _safe_date(daily[4])
+        security_total = int(security[0] or 0)
+        currently_listed = int(security[1] or 0)
+        inactive_total = int(security[2] or 0)
+        listing_dated = int(security[3] or 0)
+        inactive_dated = int(security[4] or 0)
+
+        def inventory(
+            key: str,
+            label: str,
+            row: tuple,
+            *,
+            target_sessions: int,
+            note: str,
+            records_index: int = 0,
+            stocks_index: int = 1,
+            sessions_index: int = 2,
+            start_index: int = 3,
+            end_index: int = 4,
+        ) -> dict[str, Any]:
+            records = int(row[records_index] or 0)
+            stocks = int(row[stocks_index] or 0)
+            sessions = int(row[sessions_index] or 0)
+            status = "missing" if not records else "ready" if sessions >= target_sessions else "collecting"
+            return {
+                "key": key,
+                "label": label,
+                "status": status,
+                "record_count": records,
+                "stock_count": stocks,
+                "session_count": sessions,
+                "target_sessions": target_sessions,
+                "coverage_pct": round(min(sessions / max(target_sessions, 1), 1) * 100, 1),
+                "date_range": [_safe_date(row[start_index]), _safe_date(row[end_index])],
+                "note": note,
+            }
+
+        inventories = [
+            {
+                "key": "daily_bars",
+                "label": "A股日线",
+                "status": "ready" if count and daily_sessions >= 120 else "collecting" if count else "missing",
+                "record_count": count,
+                "stock_count": stock_count,
+                "session_count": daily_sessions,
+                "target_sessions": 120,
+                "coverage_pct": round(min(daily_sessions / 120, 1) * 100, 1),
+                "date_range": [start_date, end_date],
+                "note": "按股票代码和交易日唯一的行情缓存。",
+            },
+            inventory(
+                "universe", "点时股票池/行业/市值", universe,
+                target_sessions=250,
+                note="从首次采集日开始保留每日成员、行业和市值；采集前历史不会回填造数。",
+            ),
+            inventory(
+                "auction", "09:25竞价快照", auction,
+                target_sessions=60,
+                note="交易日09:24-09:27采集竞价价、量、金额、量比和时间戳。",
+            ),
+            inventory(
+                "financial_pit", "公告日财务PIT", financial,
+                target_sessions=8,
+                note="按真实公告日保存财务字段，同一报告期的后续修订单独留痕。",
+            ),
+            inventory(
+                "minute_bars", "分时分钟线", minute,
+                target_sessions=20,
+                note="保留策略候选和题材核心的分钟线；不是全市场逐分钟历史。",
+            ),
+            {
+                "key": "market_sentiment",
+                "label": "市场宽度/炸板/连板/换手",
+                "status": "ready" if int(sentiment[3] or 0) >= 120 else "collecting" if int(sentiment[0] or 0) else "missing",
+                "record_count": int(sentiment[0] or 0),
+                "stock_count": 1,
+                "session_count": int(sentiment[3] or 0),
+                "target_sessions": 120,
+                "coverage_pct": round(min(int(sentiment[3] or 0) / 120, 1) * 100, 1),
+                "date_range": [_safe_date(sentiment[1]), _safe_date(sentiment[2])],
+                "note": "完整字段日同时含成交额、涨跌宽度、炸板率与最高连板。",
+            },
+        ]
+        inventory_by_key = {item["key"]: item for item in inventories}
+        universe_sessions = inventory_by_key["universe"]["session_count"]
+        auction_sessions = inventory_by_key["auction"]["session_count"]
+        financial_dates = inventory_by_key["financial_pit"]["session_count"]
+        sentiment_complete_sessions = inventory_by_key["market_sentiment"]["session_count"]
+        universe_ready = bool(
+            universe_sessions >= 250
+            and inactive_total > 0
+            and inactive_dated >= inactive_total * 0.8
+        )
         manifest = {
             "dataset_id": f"ashare_daily_bars_{end_date or 'unknown'}_v1",
             "source": [str(item) for item in sources if item],
@@ -248,26 +413,50 @@ class QuantResearchWorkspaceService:
             "record_count": count,
             "stock_count": stock_count,
             "universe": {
-                "status": "partial",
-                "historical_membership": False,
-                "note": "日线动量研究可以运行；历史退市、停牌和并购股票覆盖不完整，因此结果存在幸存者偏差。",
+                "status": "ready" if universe_ready else "partial" if security_total or universe_sessions else "missing",
+                "historical_membership": universe_ready,
+                "security_total": security_total,
+                "currently_listed": currently_listed,
+                "inactive_total": inactive_total,
+                "inactive_dated": inactive_dated,
+                "listing_dated": listing_dated,
+                "status_events": status_events,
+                "snapshot_sessions": universe_sessions,
+                "note": (
+                    f"证券主表{security_total}只（历史非活跃/退市{inactive_total}只），"
+                    f"每日点时股票池已积累{universe_sessions}个交易日。"
+                ),
             },
             "point_in_time": {
-                "status": "partial",
+                "status": "ready" if universe_ready and financial_dates >= 8 else "partial" if any((universe_sessions, auction_sessions, financial_dates)) else "missing",
                 "observation_time": "trade_date",
-                "available_time_field": None,
-                "note": "行情可按T日收盘后、T+1开盘执行；财务公告日和历史行业生效日尚未完整登记。",
+                "available_time_field": "disclosed_at / observed_at / quote_at",
+                "note": "新采集记录均带可用时间；系统上线前未采集的竞价和行业历史不会静默回填。",
             },
             "cache_used": True,
-            "warnings": [
+            "data_inventory": inventories,
+            "warnings": [item for item in [
                 "当前日线基线可计算，但数据集清单不能替代逐原始文件审计。",
-                "历史股票池和财务披露日期缺口会降低可信度，不会被静默填补。",
-            ],
+                (
+                    f"点时股票池从{inventory_by_key['universe']['date_range'][0] or '尚未开始'}起积累，"
+                    "此前历史仍存在幸存者偏差。"
+                    if not universe_ready else None
+                ),
+                (
+                    f"竞价快照已积累{auction_sessions}/60个交易日；不足部分保持阻断。"
+                    if auction_sessions < 60 else None
+                ),
+                (
+                    f"公告日财务PIT已覆盖{financial_dates}个披露日；完整跨周期研究仍需继续积累。"
+                    if financial_dates < 8 else None
+                ),
+            ] if item],
             "researchability": {
                 "daily_bar_baseline": "ready_with_bias_warning",
-                "auction_history": "missing",
-                "pit_financials": "missing",
-                "sector_membership_history": "partial",
+                "auction_history": inventory_by_key["auction"]["status"],
+                "pit_financials": inventory_by_key["financial_pit"]["status"],
+                "sector_membership_history": inventory_by_key["universe"]["status"],
+                "market_sentiment_history": "ready" if sentiment_complete_sessions >= 120 else "collecting" if sentiment_complete_sessions else "missing",
             },
         }
         manifest["manifest_hash"] = _canonical_hash(manifest)

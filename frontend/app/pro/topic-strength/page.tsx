@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -18,6 +17,7 @@ import {
   Users,
 } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
+import StockKlineButton from '@/components/StockKlineButton';
 import { apiFetch, formatYi } from '@/lib/api';
 
 interface TopicStock {
@@ -215,9 +215,9 @@ export default function TopicStrengthPage() {
   };
 
   return (
-    <div className="mx-auto max-w-[1480px] px-4 py-5">
+    <div className="mx-auto w-full min-w-0 max-w-[1480px] px-4 py-5">
       <header className="mb-5 flex flex-col gap-4 border-b border-border pb-5 lg:flex-row lg:items-end lg:justify-between">
-        <div>
+        <div className="min-w-0">
           <h1 className="flex items-center gap-2 text-xl font-bold text-text"><Flame size={21} className="text-warn" />题材强弱</h1>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-secondary">
             <span>数据日 {data?.data_date || '--'}</span>
@@ -225,13 +225,13 @@ export default function TopicStrengthPage() {
             <span>更新时间 {data?.updated || '--'}</span>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="flex h-9 items-center gap-2 rounded-md border border-border bg-[#0D1117] px-2.5 text-xs text-text-secondary">
-            <CalendarDays size={14} />
+        <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_36px_auto] items-center gap-2 sm:flex sm:w-auto sm:flex-wrap">
+          <label className="flex h-9 min-w-0 items-center gap-2 rounded-md border border-border bg-[#0D1117] px-2.5 text-xs text-text-secondary sm:w-auto">
+            <CalendarDays size={14} className="shrink-0" />
             <select
               value={selectedDate}
               onChange={(event) => void load(event.target.value)}
-              className="min-w-[140px] bg-transparent text-text outline-none"
+              className="w-full min-w-0 bg-transparent text-text outline-none sm:min-w-[140px]"
               aria-label="题材强弱交易日"
             >
               {!selectedDate && <option value="">最近有效日</option>}
@@ -282,8 +282,8 @@ export default function TopicStrengthPage() {
             <span className="lg:ml-auto">{data.data_quality.missing_policy}</span>
           </section>
 
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
-            <section>
+          <div className="grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(320px,0.85fr)]">
+            <section className="w-full min-w-0">
               <div className="mb-3 flex items-center justify-between">
                 <h2 className="text-sm font-semibold text-text">题材强度排序</h2>
                 <span className="text-[11px] text-text-secondary">共 {data.topics.length} 组</span>
@@ -293,7 +293,7 @@ export default function TopicStrengthPage() {
               </div>
             </section>
 
-            <aside className="xl:border-l xl:border-border xl:pl-6">
+            <aside className="w-full min-w-0 xl:border-l xl:border-border xl:pl-6">
               <h2 className="mb-3 text-sm font-semibold text-text">八步分析链路</h2>
               <div className="border-y border-border">
                 {data.steps.map((step) => (
@@ -346,7 +346,7 @@ export default function TopicStrengthPage() {
                 <h2 className="text-sm font-semibold text-text">AI题材分析</h2>
                 <span className="text-[10px] text-text-secondary">{analysis.ai_generated ? '模型生成' : '规则底稿'} · 数据日 {analysis.data_date}</span>
               </div>
-              <div className="prose prose-invert max-w-none text-sm leading-7 text-text-secondary prose-headings:text-text prose-h2:mt-5 prose-h2:text-base prose-strong:text-text prose-li:my-1">
+              <div className="prose prose-invert max-w-full overflow-x-auto touch-pan-x text-sm leading-7 text-text-secondary prose-headings:text-text prose-h2:mt-5 prose-h2:text-base prose-strong:text-text prose-li:my-1 [&_table]:min-w-[620px] [&_table]:w-full [-webkit-overflow-scrolling:touch]">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{analysis.report}</ReactMarkdown>
               </div>
             </section>
@@ -372,7 +372,7 @@ function Metric({ label, value: metricValue, hint, icon, tone }: { label: string
 
 function TopicRow({ topic }: { topic: TopicGroup }) {
   return (
-    <article className="overflow-hidden rounded-md border border-border bg-card">
+    <article className="w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card">
       <div className="flex flex-col gap-3 border-b border-border px-4 py-3 md:flex-row md:items-center">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-border font-mono text-xs text-text-secondary">{topic.rank}</span>
@@ -385,14 +385,14 @@ function TopicRow({ topic }: { topic: TopicGroup }) {
             <p className="mt-1 text-[11px] leading-5 text-text-secondary">{topic.evidence}</p>
           </div>
         </div>
-        <div className="grid grid-cols-4 gap-px border border-border bg-border md:ml-auto md:min-w-[360px]">
+        <div className="grid w-full min-w-0 grid-cols-4 gap-px border border-border bg-border md:ml-auto md:w-auto md:min-w-[360px]">
           <TopicMetric label="强度" value={value(topic.strength_score)} />
           <TopicMetric label="涨停联动" value={`${topic.member_count}只`} />
           <TopicMetric label="上涨宽度" value={topic.breadth == null ? '--' : `${value(topic.breadth)}%`} />
           <TopicMetric label="资金排名" value={topic.sector_flow_rank == null ? '--' : `#${topic.sector_flow_rank}`} />
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div className="max-w-full overflow-x-auto overscroll-x-contain touch-pan-x [-webkit-overflow-scrolling:touch]" tabIndex={0} aria-label={`${topic.name}观察标的，横向滑动查看更多字段`}>
         <table className="w-full min-w-[760px] text-xs">
           <thead className="bg-[#0D1117] text-text-secondary">
             <tr><th className="px-4 py-2 text-left font-medium">观察标的</th><th className="px-3 py-2 text-right font-medium">连板</th><th className="px-3 py-2 text-right font-medium">涨幅</th><th className="px-3 py-2 text-right font-medium">成交额</th><th className="px-3 py-2 text-right font-medium">5日涨幅</th><th className="px-3 py-2 text-left font-medium">过热审计</th><th className="px-4 py-2 text-right font-medium">个人池</th></tr>
@@ -401,7 +401,7 @@ function TopicRow({ topic }: { topic: TopicGroup }) {
             {topic.members.map((stock, index) => (
               <tr key={stock.code} className="border-t border-border/60">
                 <td className="px-4 py-2.5">
-                  <Link href={`/pro/stock?code=${stock.code}`} className="font-medium text-text hover:text-accent">{stock.name}<span className="ml-2 font-mono text-[10px] text-text-secondary">{stock.code}</span></Link>
+                  <StockKlineButton code={stock.code} name={stock.name} className="font-medium text-text">{stock.name}<span className="ml-2 font-mono text-[10px] text-text-secondary">{stock.code}</span></StockKlineButton>
                   {index === 0 && <span className="ml-2 text-[10px] text-accent">核心</span>}
                 </td>
                 <td className={`px-3 py-2.5 text-right font-mono ${stock.boards_verified ? 'text-up' : 'text-warn'}`}>{stock.boards_verified ? stock.boards : '待核验'}</td>

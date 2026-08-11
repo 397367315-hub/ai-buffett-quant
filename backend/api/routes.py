@@ -115,18 +115,20 @@ async def _read_json_snapshot(key: str) -> dict | None:
         return None
 
 
-async def _write_json_snapshot(key: str, payload: dict) -> None:
+async def _write_json_snapshot(key: str, payload: dict) -> str | None:
+    saved_at = shanghai_now().isoformat()
     try:
         async with async_session() as session:
             row = await session.get(MarketDataCache, key)
-            snapshot = {**payload, "snapshot_saved_at": shanghai_now().isoformat()}
+            snapshot = {**payload, "snapshot_saved_at": saved_at}
             if row is None:
                 session.add(MarketDataCache(key=key, payload=snapshot))
             else:
                 row.payload = snapshot
             await session.commit()
+        return saved_at
     except Exception:
-        pass
+        return None
 
 
 def _normalize_market_overview_payload(payload: dict) -> dict:
@@ -176,6 +178,16 @@ def _cached_market_overview_payload(payload: dict) -> dict:
         "cache_used": True,
     })
     return cached
+
+
+def _market_date(value: object) -> str | None:
+    candidate = str(value or "").strip()[:10]
+    if len(candidate) == 8 and candidate.isdigit():
+        candidate = f"{candidate[:4]}-{candidate[4:6]}-{candidate[6:8]}"
+    try:
+        return date.fromisoformat(candidate).isoformat()
+    except ValueError:
+        return None
 
 
 def _flow_ranking(item: dict, rank: int) -> dict:
@@ -1569,25 +1581,31 @@ async def get_stock_selection_run(run_id: int):
 # ── 历史数据查询接口 ──
 
 
-@router.get("/market/overview")
-async def get_market_overview():
+async def _build_market_overview(
+    *,
+    bypass_cache: bool = False,
+    expected_data_date: str | None = None,
+):
     """今日速览：聚合所有看板的核心数据（小白友好首页）"""
     cache_key = "market_overview_v1"
     # During evenings, weekends, and holidays the live endpoints can spend
     # several seconds timing out even though the last verified snapshot is
     # already available. Return that snapshot first; scheduled cache jobs keep
     # it current and live sessions still use the source-backed path below.
-    if not is_a_share_market_session(shanghai_now()):
+    if not bypass_cache and not is_a_share_market_session(shanghai_now()):
         cached = await _read_json_snapshot(cache_key)
         if cached:
             return {"code": 0, "data": _cached_market_overview_payload(cached)}
+
+    expected_data_date = _market_date(expected_data_date)
+    target_date = date.fromisoformat(expected_data_date) if expected_data_date else None
 
     north, concept_inflow, concept_outflow, limit_up, limit_down, breadth, turnover = await asyncio.gather(
         _fetch_market_component("northbound", collector.fetch_north_bound_daily(days=5), []),
         _fetch_market_component("concept-inflow", collector.fetch_concept_flow(page_size=20), []),
         _fetch_market_component("concept-outflow", collector.fetch_concept_flow(sort_order=1, page_size=20), []),
-        _fetch_market_component("limit-up", collector.fetch_limit_up_pool(), {"stocks": [], "total": 0, "trade_date": None}),
-        _fetch_market_component("limit-down", collector.fetch_limit_down_pool(), {"stocks": [], "total": 0, "trade_date": None}),
+        _fetch_market_component("limit-up", collector.fetch_limit_up_pool(target_date=target_date), {"stocks": [], "total": 0, "trade_date": None}),
+        _fetch_market_component("limit-down", collector.fetch_limit_down_pool(target_date=target_date), {"stocks": [], "total": 0, "trade_date": None}),
         _fetch_market_component("breadth", collector.fetch_market_breadth(), {}),
         _fetch_market_component("turnover", collector.fetch_market_turnover(), {}),
     )
@@ -1607,10 +1625,56 @@ async def get_market_overview():
         }
         for row in top_inflow
     ]
-    limit_up_available = limit_up.get("trade_date") is not None
-    limit_down_available = limit_down.get("trade_date") is not None
+    latest_north_date = _market_date(latest_north.get("date"))
+    turnover_date = _market_date(turnover.get("data_date"))
+    breadth_date = _market_date((breadth.get("全市场") or {}).get("data_date"))
+    limit_up_date = _market_date(limit_up.get("trade_date"))
+    limit_down_date = _market_date(limit_down.get("trade_date"))
+    data_date = (
+        expected_data_date
+        or turnover_date
+        or breadth_date
+        or limit_up_date
+        or limit_down_date
+        or latest_north_date
+    )
+    component_dates = {
+        "market_index": turnover_date,
+        "market_breadth": breadth_date,
+        "concept_flow": data_date if concept_inflow or concept_outflow else None,
+        "limit_up": limit_up_date,
+        "limit_down": limit_down_date,
+        "northbound": latest_north_date,
+    }
+    date_warnings: list[str] = []
+
+    def same_snapshot(component: str, component_date: str | None) -> bool:
+        if not component_date:
+            return False
+        if data_date and component_date != data_date:
+            date_warnings.append(f"{component}数据日{component_date}与看板数据日{data_date}不一致，已从本次看板剔除")
+            return False
+        return True
+
+    turnover_available = bool(turnover) and same_snapshot("上证指数", turnover_date)
+    breadth_available = bool(breadth) and same_snapshot("市场宽度", breadth_date)
+    limit_up_available = same_snapshot("涨停池", limit_up_date)
+    limit_down_available = same_snapshot("跌停池", limit_down_date)
+    north_available = bool(north) and same_snapshot("北向成交额", latest_north_date)
+    if not turnover_available:
+        turnover = {}
+    if not breadth_available:
+        breadth = {}
+    if not north_available:
+        latest_north = {}
     available = bool(turnover or concept_inflow or concept_outflow or breadth or limit_up_available or limit_down_available)
-    data_date = turnover.get("data_date") or latest_north.get("date")
+    now = shanghai_now()
+    is_realtime = bool(
+        available
+        and data_date == now.date().isoformat()
+        and is_a_share_market_session(now)
+        and turnover.get("is_realtime")
+    )
 
     response = {
         "code": 0,
@@ -1633,15 +1697,32 @@ async def get_market_overview():
             "market_breadth": breadth,
             "hot_sectors": hot_sectors,
             "source_status": {
-                "northbound": bool(north),
+                "northbound": north_available,
                 "concept_inflow": bool(concept_inflow),
                 "concept_outflow": bool(concept_outflow),
                 "limit_up": limit_up_available,
                 "limit_down": limit_down_available,
-                "market_breadth": bool(breadth),
-                "market_turnover": bool(turnover),
+                "market_breadth": breadth_available,
+                "market_turnover": turnover_available,
             },
-            **_quote_metadata(available=available, data_date=data_date if available else None),
+            "component_dates": component_dates,
+            "data_warnings": date_warnings,
+            "snapshot_status": "complete" if all((
+                turnover_available,
+                breadth_available,
+                bool(concept_inflow),
+                bool(concept_outflow),
+                limit_up_available,
+                limit_down_available,
+            )) else "partial",
+            **_market_metadata(
+                available=available,
+                data_date=data_date if available else None,
+                is_realtime=is_realtime,
+                source="eastmoney",
+            ),
+            "source_updated_at": turnover.get("source_updated_at"),
+            "cache_used": False,
         }),
     }
     source_status = response["data"]["source_status"]
@@ -1654,13 +1735,40 @@ async def get_market_overview():
         and source_status["concept_outflow"]
         and turnover_complete
     )
-    if cacheable:
-        await _write_json_snapshot(cache_key, response["data"])
+    if cacheable and not any("上证指数" in warning for warning in date_warnings):
+        saved_at = await _write_json_snapshot(cache_key, response["data"])
+        response["data"]["snapshot_saved_at"] = saved_at
+        response["data"]["refresh_status"] = "updated" if saved_at else "write_failed"
         return response
     cached = await _read_json_snapshot(cache_key)
     if cached:
-        return {"code": 0, "data": _cached_market_overview_payload(cached)}
+        payload = _cached_market_overview_payload(cached)
+        if bypass_cache:
+            payload["refresh_status"] = "unchanged"
+            payload["data_warnings"] = list(dict.fromkeys([
+                *(payload.get("data_warnings") or []),
+                *date_warnings,
+                "本次数据源未形成同日完整快照，已保留上一次核验缓存",
+            ]))
+        return {"code": 0, "data": payload}
+    response["data"]["refresh_status"] = "not_cached"
     return response
+
+
+async def refresh_market_overview_after_sync(sync_result: dict) -> dict:
+    expected_data_date = _market_date(
+        sync_result.get("data_date")
+        or (sync_result.get("stock_bars") or {}).get("data_date")
+    )
+    return await _build_market_overview(
+        bypass_cache=True,
+        expected_data_date=expected_data_date,
+    )
+
+
+@router.get("/market/overview")
+async def get_market_overview(refresh: bool = False):
+    return await _build_market_overview(bypass_cache=refresh)
 
 
 @router.get("/flow/concept/history")
@@ -2274,14 +2382,90 @@ async def generate_daily_report(request: dict):
 # ── 数据同步 + 缓存 ──
 
 from services.data_sync import data_sync
+from quant.jobs import create_job, get_job, latest_running_job, spawn, update_job
 
 
-@router.post("/data/sync")
+async def _run_data_sync_job(job_id: str) -> None:
+    update_job(
+        "market_sync",
+        job_id,
+        status="running",
+        phase="starting",
+        progress=2,
+        message="正在启动市场数据同步",
+        started_at=shanghai_now().isoformat(),
+    )
+
+    def report(progress: int, phase: str, message: str) -> None:
+        update_job(
+            "market_sync",
+            job_id,
+            progress=progress,
+            phase=phase,
+            message=message,
+        )
+
+    try:
+        result = await data_sync.sync_market_snapshot(progress=report)
+        overview_response = await refresh_market_overview_after_sync(result)
+        overview = overview_response.get("data") or {}
+        overview_summary = {
+            "refresh_status": overview.get("refresh_status"),
+            "snapshot_status": overview.get("snapshot_status"),
+            "data_date": overview.get("data_date"),
+            "source_updated_at": overview.get("source_updated_at"),
+            "snapshot_saved_at": overview.get("snapshot_saved_at"),
+            "is_realtime": bool(overview.get("is_realtime")),
+            "cache_used": bool(overview.get("cache_used")),
+            "warnings": overview.get("data_warnings") or [],
+        }
+        result["overview"] = overview_summary
+        refreshed = overview_summary["refresh_status"] == "updated"
+        data_date = overview_summary.get("data_date") or result.get("data_date") or "未知日期"
+        update_job(
+            "market_sync",
+            job_id,
+            status="completed",
+            phase="completed",
+            progress=100,
+            message=(
+                f"市场速览已更新至 {data_date}"
+                if refreshed
+                else f"基础数据已同步；速览快照仍保留在 {data_date}，请查看数据源提示"
+            ),
+            result=result,
+            completed_at=shanghai_now().isoformat(),
+        )
+    except Exception as exc:
+        update_job(
+            "market_sync",
+            job_id,
+            status="failed",
+            phase="failed",
+            progress=100,
+            message="市场数据同步失败",
+            error=f"{type(exc).__name__}: {exc}"[:500],
+            completed_at=shanghai_now().isoformat(),
+        )
+
+
+@router.post("/data/sync", status_code=202)
 async def trigger_data_sync(force: bool = False):
-    """手动同步当前真实概念板块行情。"""
-    del force
-    result = await data_sync.sync_market_snapshot()
-    return {"code": 0, "data": result}
+    """Queue a full verified snapshot without holding the browser request open."""
+    running = latest_running_job("market_sync")
+    if running:
+        return {"code": 0, "data": running, "message": "已有市场同步任务正在运行"}
+    job = create_job("market_sync", "market_sync", {"force": bool(force)})
+    spawn(_run_data_sync_job(job["job_id"]))
+    return {"code": 0, "data": job, "message": "市场数据同步任务已提交"}
+
+
+@router.get("/data/sync/status/{job_id}")
+async def get_data_sync_status(job_id: str):
+    job = get_job("market_sync", job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="市场同步任务不存在或已过期")
+    return {"code": 0, "data": job}
 
 
 @router.get("/data/cache-stats")

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle, BarChart3, CheckCircle2, Clock3, Database, Layers3, Loader2, RefreshCw, ShieldAlert, SlidersHorizontal, Wifi } from 'lucide-react';
 import { apiFetch } from '@/lib/api';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
+import StockKlineButton from '@/components/StockKlineButton';
 import type { BackgroundJob, FQEDataSyncStatus, FQEHolding, FQEPortfolio, FQEResult } from '../types';
 
 const CONTRACT_LABELS: Record<string, string> = {
@@ -143,7 +144,7 @@ function HoldingTable({ portfolio }: { portfolio: FQEPortfolio }) {
         <tbody>
           {portfolio.holdings.map((holding: FQEHolding) => (
             <tr key={holding.code} className="border-t border-border/70 align-top hover:bg-[#161B22]">
-              <td className="px-3 py-2.5"><div className="font-medium text-text">{holding.name || '--'}</div><div className="mt-0.5 font-mono text-text-secondary">{holding.code}</div></td>
+              <td className="px-3 py-2.5"><StockKlineButton code={holding.code} name={holding.name} className="font-medium text-text">{holding.name || '--'}</StockKlineButton><div className="mt-0.5 font-mono text-text-secondary">{holding.code}</div></td>
               <td className="px-3 py-2.5 text-text-secondary">{holding.industry || '未知行业'}</td>
               {institutional ? <>
                 <td className="px-3 py-2.5 text-right font-mono text-accent">{number(holding.alpha_neutral, 4)}</td>

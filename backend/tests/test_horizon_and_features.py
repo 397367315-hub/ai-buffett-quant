@@ -121,6 +121,22 @@ class RiskAndFeatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["600519"]["ocf_to_profit"], 1.2)
         self.assertEqual(result["600519"]["financial_disclosed_at"], "2026-08-03")
 
+    async def test_partial_ttm_fields_are_not_reported_as_complete(self):
+        service = StockFeatureService()
+        service._fetch_report = AsyncMock(return_value=[{
+            "SECURITY_CODE": "600519", "SECURITY_NAME_ABBR": "贵州茅台",
+            "REPORT_DATE": "2025-12-31", "NOTICE_DATE": "2026-04-17",
+            "TOTALOPERATEREVE": 1000,
+        }])
+        service._persist_financial_pit = AsyncMock(return_value=1)
+
+        result = await service._financial_snapshot({"600519"}, date(2026, 8, 3))
+
+        self.assertEqual(result["600519"]["revenue_ttm"], 1000)
+        self.assertFalse(result["600519"]["ttm_available"])
+        self.assertTrue(result["600519"]["ttm_partial"])
+        self.assertEqual(result["600519"]["ttm_available_fields"], ["revenue"])
+
     async def test_cache_from_another_research_date_is_never_used_as_fallback(self):
         service = StockFeatureService()
         service._read_cache = AsyncMock(return_value={
