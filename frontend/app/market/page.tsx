@@ -1,507 +1,806 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
-import { TrendingUp, TrendingDown, DollarSign, Activity, Zap, BarChart3, Loader2, AlertCircle, Clock, RefreshCw } from 'lucide-react';
-import { formatYi, getChangeColor } from '@/lib/api';
-import { apiFetch } from '@/lib/api';
+import Link from 'next/link';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  Activity,
+  AlertCircle,
+  ArrowRight,
+  BarChart3,
+  BrainCircuit,
+  CheckCircle2,
+  ChevronRight,
+  CircleAlert,
+  Clock3,
+  Database,
+  Gauge,
+  Layers3,
+  Loader2,
+  RefreshCw,
+  ShieldAlert,
+  Target,
+  XCircle,
+} from 'lucide-react';
+import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
+import StockKlineButton from '@/components/StockKlineButton';
+import { apiFetch, friendlyApiError } from '@/lib/api';
 
-interface HotSector {
+interface WorkbenchMeta {
+  decision_date: string | null;
+  calculated_at: string;
+  updated_at: string;
+  is_realtime: boolean;
+  cache_used: boolean;
+  source: string;
+  coverage_pct: number;
+  confidence_pct: number;
+  decision_scope: string;
+}
+
+interface ScoreDimension {
+  id: string;
+  label: string;
+  weight: number;
+  score: number | null;
+  observed: boolean;
+  contribution: number | null;
+  metrics: Record<string, unknown>;
+  evidence: string[];
+  method: string;
+}
+
+interface MarketState {
+  state_code: string;
+  state_label: string;
+  score: number | null;
+  execution_level: string;
+  coverage_pct: number;
+  confidence_pct: number;
+  dimensions: ScoreDimension[];
+  version: string;
+  missing_policy: string;
+}
+
+interface HeadlineMetrics {
+  sentiment_temperature: number | null;
+  market_amount: number | null;
+  up_count: number | null;
+  down_count: number | null;
+  up_down_ratio: number | null;
+  limit_up: number | null;
+  limit_down: number | null;
+  failed_limit_rate: number | null;
+  main_line: string | null;
+}
+
+interface AIJudgement {
+  market_summary: string;
+  key_evidence: string[];
+  dominant_sectors: string[];
+  preferred_strategies: string[];
+  avoid_conditions: string[];
+  conclusion: string;
+  confidence_pct: number;
+  note: string;
+}
+
+type StrategyStatus = 'allowed' | 'limited' | 'forbidden';
+
+interface StrategyItem {
+  id: string;
+  name: string;
+  status: StrategyStatus;
+  priority: number;
+  max_position_pct: number;
+  reason: string;
+  href: string;
+}
+
+interface StrategySelector {
+  conclusion: string;
+  max_total_position_pct: number;
+  strategies: StrategyItem[];
+  allowed: string[];
+  limited: string[];
+  forbidden: string[];
+  loss_alert: {
+    warning?: boolean;
+    consecutive_losses?: number;
+    reason?: string;
+  };
+  policy: string;
+}
+
+interface MainLine {
+  rank: number;
+  name: string;
+  classification: string;
+  lifecycle: string;
+  strength_score: number | null;
+  breadth: number | null;
+  change_pct: number | null;
+  main_net_inflow: number | null;
+  member_count: number | null;
+  evidence: string;
+  leader: {
+    code: string;
+    name: string;
+    price: number | null;
+    change_pct: number | null;
+    boards: number | null;
+    heat_status: string;
+  };
+  risk_flags: string[];
+}
+
+interface Candidate {
   code: string;
   name: string;
-  main_net_inflow: number;
-  change_pct: number;
+  sector: string;
+  price: number | null;
+  change_pct: number | null;
+  score: number | null;
+  confidence_pct: number | null;
+  score_breakdown: {
+    market_fit?: number | null;
+    sector_strength?: number | null;
+    trend?: number | null;
+    volume_price?: number | null;
+    relative_strength?: number | null;
+    capital?: number | null;
+    risk_penalty?: number | null;
+  };
+  score_method: string;
+  strategy: string;
+  pool: string;
+  status: string;
+  execution_eligible: boolean;
+  stale: boolean;
+  data_date: string | null;
+  why_selected: string[];
+  why_not_full: string[];
+  abandon_conditions: string[];
+  source: string;
 }
 
-interface MarketOverview {
-  market_index: {
-    sh_index: number | null;
-    sh_change: number | null;
-    sh_change_pct: number | null;
-    sh_volume: number | null;
-    sh_amount: number | null;
-  };
-  north_bound: {
-    latest_deal_amount: number | null;
-    latest_inflow: number | null;
-    net_inflow_available: boolean;
-  };
-  fund_flow: {
-    top_inflow: { name: string; inflow: number }[];
-    top_outflow: { name: string; outflow: number }[];
-  };
-  limit_board: {
-    limit_up: number | null;
-    limit_down: number | null;
-  };
-  hot_sectors: HotSector[];
-  source?: string;
-  data_date?: string | null;
-  source_updated_at?: string | null;
-  snapshot_saved_at?: string | null;
-  is_realtime?: boolean;
-  cache_used?: boolean;
-  snapshot_status?: 'complete' | 'partial';
-  refresh_status?: string;
-  data_warnings?: string[];
-  component_dates?: Record<string, string | null>;
-}
-
-interface OverviewResponse {
-  code: number;
-  data: MarketOverview;
-}
-
-interface MarketSyncJob {
-  job_id: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  progress: number;
+interface ExecutionPhase {
+  id: string;
+  label: string;
+  scheduled_at: string;
+  status: string;
+  display_status: string;
+  data_date: string | null;
+  candidate_count: number;
   message: string;
-  error?: string | null;
-  result?: {
-    status?: string;
-    data_date?: string | null;
-    overview?: {
-      refresh_status?: string;
-      snapshot_status?: string;
-      data_date?: string | null;
-      source_updated_at?: string | null;
-      warnings?: string[];
-    };
+  run_id: number | null;
+}
+
+interface WorkbenchData {
+  available: boolean;
+  meta: WorkbenchMeta;
+  market_state: MarketState;
+  headline_metrics: HeadlineMetrics;
+  ai_judgement: AIJudgement;
+  strategy_selector: StrategySelector;
+  main_lines: MainLine[];
+  candidates: Candidate[];
+  candidate_summary: {
+    total: number;
+    execution_ready: number;
+    same_day_observation: number;
+    historical_observation: number;
+    rule: string;
   };
-}
-
-const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
-
-function neutralYi(value: number): string {
-  return `${(value / 1e8).toFixed(2)}亿`;
-}
-
-function readableError(caught: unknown, fallback: string): string {
-  const message = caught instanceof Error ? caught.message : '';
-  if (['Load failed', 'Failed to fetch', 'NetworkError when attempting to fetch resource.'].includes(message)) {
-    return '后端连接暂时中断，请稍后重试；已显示最近核验缓存。';
-  }
-  return message || fallback;
-}
-
-function generatePlainSummary(data: MarketOverview): string[] {
-  const sentences: string[] = [];
-  const shChange = data.market_index.sh_change_pct;
-
-  if (shChange == null) {
-    sentences.push('当前有效快照没有返回上证指数涨跌幅，系统保留为空，不根据指数点位推算。');
-  } else if (shChange > 0.5) {
-    sentences.push(
-      `上证指数今天上涨 ${shChange.toFixed(2)}%，大盘整体偏强。`
-    );
-  } else if (shChange < -0.5) {
-    sentences.push(
-      `上证指数今天下跌 ${shChange.toFixed(2).replace('-', '−')}%，大盘整体偏弱。`
-    );
-  } else {
-    sentences.push(
-      `上证指数今天波动不大（${shChange >= 0 ? '+' : ''}${shChange.toFixed(2)}%），市场整体走势平稳，没有明显的方向性变化。`
-    );
-  }
-
-  const northDeal = data.north_bound.latest_deal_amount;
-  if (northDeal != null) {
-    sentences.push(`北向资金当天成交额为 ${formatYi(northDeal)}。交易所当前未公开北向汇总净买入，因此系统不对外资买卖方向作推断。`);
-  }
-
-  const hotNames = data.hot_sectors.map((s) => s.name).slice(0, 2);
-  if (hotNames.length > 0) {
-    sentences.push(
-      `主力资金排名靠前的板块是「${hotNames.join('」和「')}」，可结合资金净流入和涨跌幅继续观察。`
-    );
-  }
-
-  return sentences;
-}
-
-function finiteNumber(value: unknown): number | null {
-  const parsed = typeof value === 'number' ? value : Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function normalizeOverview(input: any): MarketOverview {
-  const marketIndex = input?.market_index || {};
-  const northBound = input?.north_bound || {};
-  const fundFlow = input?.fund_flow || {};
-  const limitBoard = input?.limit_board || {};
-  return {
-    ...input,
-    market_index: {
-      sh_index: finiteNumber(marketIndex.sh_index),
-      sh_change: finiteNumber(marketIndex.sh_change),
-      sh_change_pct: finiteNumber(marketIndex.sh_change_pct),
-      sh_volume: finiteNumber(marketIndex.sh_volume),
-      sh_amount: finiteNumber(marketIndex.sh_amount),
-    },
-    north_bound: {
-      latest_deal_amount: finiteNumber(northBound.latest_deal_amount),
-      latest_inflow: finiteNumber(northBound.latest_inflow),
-      net_inflow_available: Boolean(northBound.net_inflow_available),
-    },
-    fund_flow: {
-      top_inflow: Array.isArray(fundFlow.top_inflow) ? fundFlow.top_inflow : [],
-      top_outflow: Array.isArray(fundFlow.top_outflow) ? fundFlow.top_outflow : [],
-    },
-    limit_board: {
-      limit_up: finiteNumber(limitBoard.limit_up),
-      limit_down: finiteNumber(limitBoard.limit_down),
-    },
-    hot_sectors: Array.isArray(input?.hot_sectors) ? input.hot_sectors : [],
+  execution_queue: {
+    phases: ExecutionPhase[];
+    schedule: string;
+    execution_mode: string;
   };
+  risk: {
+    market: string[];
+    strategy: string[];
+    stock: string[];
+    reminder_only: boolean;
+    disclaimer: string;
+  };
+  audit: {
+    component_dates: Record<string, string | null>;
+    stale_components: string[];
+    missing_fields: string[];
+    score_version: string;
+    candidate_score_version: string;
+    data_sources: string[];
+    same_day_rule: string;
+    no_future_data: boolean;
+    missing_policy: string;
+    refresh_warning?: string;
+  };
+  quick_links: Array<{ label: string; href: string }>;
 }
 
-export default function MarketOverviewPage() {
-  const [data, setData] = useState<MarketOverview | null>(null);
+const LOCAL_CACHE_KEY = 'market_decision_workbench_v1';
+
+function finite(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function value(valueToFormat: number | null | undefined, digits = 1): string {
+  return finite(valueToFormat) ? valueToFormat.toFixed(digits) : '--';
+}
+
+function integer(valueToFormat: number | null | undefined): string {
+  return finite(valueToFormat) ? Math.round(valueToFormat).toLocaleString('zh-CN') : '--';
+}
+
+function signed(valueToFormat: number | null | undefined): string {
+  if (!finite(valueToFormat)) return '--';
+  return `${valueToFormat > 0 ? '+' : ''}${valueToFormat.toFixed(2)}%`;
+}
+
+function amount(valueToFormat: number | null | undefined): string {
+  if (!finite(valueToFormat)) return '--';
+  return `${(valueToFormat / 1e8).toFixed(valueToFormat >= 1e12 ? 0 : 1)}亿`;
+}
+
+function localTime(raw: string | null | undefined): string {
+  if (!raw) return '--';
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw.slice(0, 16).replace('T', ' ');
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(parsed);
+}
+
+function stateTone(code: string): string {
+  if (code === 'S1' || code === 'S2') return 'text-up border-up/40 bg-up/10';
+  if (code === 'S3') return 'text-warn border-warn/40 bg-warn/10';
+  if (code === 'S4' || code === 'S5') return 'text-down border-down/40 bg-down/10';
+  return 'text-text-secondary border-border bg-[#21262D]';
+}
+
+function strategyPresentation(status: StrategyStatus) {
+  if (status === 'allowed') {
+    return { label: '允许', icon: CheckCircle2, className: 'text-up border-up/40 bg-up/10' };
+  }
+  if (status === 'limited') {
+    return { label: '限制', icon: CircleAlert, className: 'text-warn border-warn/40 bg-warn/10' };
+  }
+  return { label: '禁止', icon: XCircle, className: 'text-down border-down/40 bg-down/10' };
+}
+
+function phaseTone(status: string): string {
+  if (status === '有候选' || status === '买入/持有') return 'border-up/40 text-up';
+  if (status === '失败') return 'border-down/40 text-down';
+  if (status === '运行中') return 'border-accent/40 text-accent';
+  if (status === '无信号') return 'border-border text-text-secondary';
+  return 'border-warn/40 text-warn';
+}
+
+function MetricCell({ label, primary, secondary, tone = 'text-text' }: {
+  label: string;
+  primary: string;
+  secondary?: string;
+  tone?: string;
+}) {
+  return (
+    <div className="min-h-[78px] border-b border-r border-border px-3 py-3 last:border-r-0 sm:px-4">
+      <div className="text-[10px] text-text-secondary">{label}</div>
+      <div className={`mt-1 truncate text-base font-semibold ${tone}`}>{primary}</div>
+      {secondary && <div className="mt-1 truncate text-[10px] text-text-secondary">{secondary}</div>}
+    </div>
+  );
+}
+
+function LoadingWorkbench({ progress }: { progress: number }) {
+  const status = progress < 35
+    ? '读取最近完整交易日'
+    : progress < 68
+      ? '对齐行情、题材与策略快照'
+      : '计算市场状态与执行许可';
+  return (
+    <div className="mx-auto flex min-h-[65vh] max-w-sm items-center px-5">
+      <div className="w-full text-center" role="status">
+        <Loader2 size={26} className="mx-auto animate-spin text-accent" />
+        <div className="mt-4 text-sm text-text">{status}</div>
+        <div className="mt-2 text-xs text-text-secondary">缺失字段保持为空，不以默认分代替</div>
+        <div className="mt-5 h-1.5 overflow-hidden bg-[#21262D]">
+          <div className="h-full bg-accent transition-[width] duration-300" style={{ width: `${progress}%` }} />
+        </div>
+        <div className="mt-2 font-mono text-[10px] text-text-secondary">{progress}%</div>
+      </div>
+    </div>
+  );
+}
+
+function CandidateActions({ candidate }: { candidate: Candidate }) {
+  return (
+    <AddToPersonalPoolButton
+      code={candidate.code}
+      name={candidate.name}
+      industry={candidate.sector}
+      thesis={`${candidate.strategy}：综合分${value(candidate.score)}；${candidate.why_selected[0] || '结构候选'}`}
+      source="ai_decision_workbench"
+      compact
+    />
+  );
+}
+
+export default function MarketDecisionWorkbenchPage() {
+  const [data, setData] = useState<WorkbenchData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [cacheStats, setCacheStats] = useState<any>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [isEmpty, setIsEmpty] = useState(false);
-  const [loadProgress, setLoadProgress] = useState(8);
-  const [syncJob, setSyncJob] = useState<MarketSyncJob | null>(null);
-  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [progress, setProgress] = useState(8);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
 
-  const fetchOverview = useCallback(async () => {
-    setLoadProgress(8);
+  const load = useCallback(async (force = false) => {
+    if (force) setRefreshing(true);
+    else setLoading(true);
+    setError('');
+    setNotice('');
+    setProgress(8);
     try {
-      const res = await apiFetch<OverviewResponse>('/market/overview', { cache: 'no-store' });
-      if (res.code === 0 && res.data) {
-        const d = normalizeOverview(res.data);
-        const hasMarketData = d.market_index.sh_index != null && d.market_index.sh_index > 0;
-        setData(d);
-        setIsEmpty(!hasMarketData);
-        setError(null);
-      } else {
-        setData(null);
-        setIsEmpty(true);
+      const response = await apiFetch<{ code: number; data: WorkbenchData }>(
+        `/market/workbench${force ? '?refresh=true' : ''}`,
+        { cache: 'no-store' },
+      );
+      if (response.code !== 0 || !response.data) throw new Error('工作台返回无效数据');
+      setData(response.data);
+      setProgress(100);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(response.data));
       }
-      setLoadProgress(100);
-    } catch (err) {
-      setError('数据加载失败，请检查网络连接后重试');
-      setData(null);
+      if (force) setNotice(`已重新核验至 ${response.data.meta.decision_date || '--'}`);
+    } catch (caught) {
+      let cached: WorkbenchData | null = null;
+      if (typeof window !== 'undefined') {
+        try {
+          cached = JSON.parse(window.localStorage.getItem(LOCAL_CACHE_KEY) || 'null') as WorkbenchData | null;
+        } catch {
+          cached = null;
+        }
+      }
+      if (cached?.available) {
+        setData(cached);
+        setNotice('后端连接暂时中断，当前显示本浏览器最近一次成功快照。');
+      } else {
+        setError(friendlyApiError(caught, '决策工作台加载失败'));
+      }
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchOverview();
-    fetchCacheStats();
-    const interval = setInterval(fetchOverview, 60000);
-    return () => clearInterval(interval);
-  }, [fetchOverview]);
+    void load(false);
+    const interval = window.setInterval(() => void load(false), 60_000);
+    return () => window.clearInterval(interval);
+  }, [load]);
 
   useEffect(() => {
-    if (!loading) return undefined;
+    if (!loading && !refreshing) return undefined;
     const timer = window.setInterval(() => {
-      setLoadProgress((value) => Math.min(88, value + 6));
-    }, 450);
+      setProgress((current) => Math.min(92, current + Math.max(1, Math.round((92 - current) / 7))));
+    }, 350);
     return () => window.clearInterval(timer);
-  }, [loading]);
+  }, [loading, refreshing]);
 
-  const fetchCacheStats = async () => {
-    try {
-      const res = await apiFetch<any>('/data/cache-stats', { cache: 'no-store' });
-      setCacheStats(res.data);
-    } catch {}
-  };
+  if (loading && !data) return <LoadingWorkbench progress={progress} />;
 
-  const handleSync = async () => {
-    setSyncing(true);
-    setSyncNotice(null);
-    try {
-      const response = await apiFetch<{ data: MarketSyncJob }>('/data/sync?force=true', { method: 'POST' });
-      let job = response.data;
-      setSyncJob(job);
-      for (let attempt = 0; attempt < 300 && ['queued', 'running'].includes(job.status); attempt += 1) {
-        await wait(1200);
-        const statusResponse = await apiFetch<{ data: MarketSyncJob }>(`/data/sync/status/${job.job_id}`, { cache: 'no-store' });
-        job = statusResponse.data;
-        setSyncJob(job);
-      }
-      if (job.status === 'failed') throw new Error(job.error || job.message || '市场数据同步失败');
-      if (job.status !== 'completed') throw new Error('同步任务仍在后台执行，请稍后刷新查看');
-      await fetchOverview();
-      await fetchCacheStats();
-      const overview = job.result?.overview;
-      const dataDate = overview?.data_date || job.result?.data_date || '--';
-      setSyncNotice(
-        overview?.refresh_status === 'updated'
-          ? `同步完成：市场速览已更新至 ${dataDate}${overview.snapshot_status === 'complete' ? '，核心字段为同日快照。' : '，部分来源缺失已明确标记。'}`
-          : `基础数据同步完成，但未获得可替换的同日完整速览；当前继续使用 ${dataDate} 的最近核验缓存。`,
-      );
-    } catch (caught) {
-      setSyncNotice(readableError(caught, '市场数据同步失败'));
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  if (loading) {
+  if (error && !data) {
     return (
-      <div className="flex items-center justify-center h-96">
-        <div className="text-text-secondary text-center">
-          <Loader2 size={32} className="animate-spin mx-auto mb-3 text-accent" />
-          <div className="text-base">正在读取市场行情...</div>
-          <div className="text-xs mt-1 text-text-secondary/70">盘中读取实时源，休市读取最近有效缓存</div>
-          <div className="w-56 max-w-full h-1.5 mx-auto mt-4 bg-[#21262D] rounded-full overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={loadProgress}>
-            <div className="h-full bg-accent transition-[width] duration-300" style={{ width: `${loadProgress}%` }} />
-          </div>
-          <div className="text-[11px] mt-1.5 font-mono text-text-secondary">{loadProgress}%</div>
-        </div>
+      <div className="mx-auto max-w-lg px-4 py-16 text-center">
+        <AlertCircle size={34} className="mx-auto text-down" />
+        <h1 className="mt-4 text-base font-semibold text-text">决策工作台加载失败</h1>
+        <p className="mt-2 text-sm text-text-secondary">{error}</p>
+        <button
+          type="button"
+          onClick={() => void load(false)}
+          className="mt-5 inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text"
+        >
+          <RefreshCw size={14} />重新加载
+        </button>
       </div>
     );
   }
 
-  if (error) {
+  if (!data?.available) {
     return (
-      <div className="max-w-4xl mx-auto px-4 py-12">
-        <div className="bg-card border border-border rounded-xl p-8 text-center">
-          <AlertCircle size={48} className="mx-auto mb-4 text-warn" />
-          <h2 className="text-lg font-bold text-text mb-2">数据加载失败</h2>
-          <p className="text-text-secondary mb-4">{error}</p>
-          <button
-            onClick={() => { setLoading(true); setError(null); fetchOverview(); }}
-            className="px-4 py-2 bg-accent text-white rounded-lg hover:brightness-110 transition-colors text-sm"
-          >
-            重新加载
-          </button>
-        </div>
+      <div className="mx-auto max-w-lg px-4 py-16 text-center">
+        <Database size={34} className="mx-auto text-text-secondary" />
+        <h1 className="mt-4 text-base font-semibold text-text">尚无可计算的完整交易日</h1>
+        <p className="mt-2 text-sm text-text-secondary">完成全市场快照与题材缓存后，工作台会自动生成决策状态。</p>
       </div>
     );
   }
 
-  if (isEmpty || !data) {
-    return (
-      <div className="max-w-4xl mx-auto px-4 py-12">
-        <div className="bg-card border border-border rounded-xl p-8 text-center">
-          <Clock size={48} className="mx-auto mb-4 text-text-secondary" />
-          <h2 className="text-lg font-bold text-text mb-2">尚无可用市场快照</h2>
-          <p className="text-text-secondary mb-1">
-            A股交易时间为每周一至周五的上午 9:30-11:30、下午 13:00-15:00。
-          </p>
-          <p className="text-text-secondary text-sm">
-            系统会在午间和收盘后自动缓存；首次缓存建立前暂不展示推测数据。
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  const { market_index, north_bound, fund_flow, limit_board, hot_sectors } = data;
-  const plainSentences = generatePlainSummary(data);
+  const { meta, market_state: marketState, headline_metrics: metrics } = data;
+  const upDownText = finite(metrics.up_down_ratio) ? `${metrics.up_down_ratio.toFixed(2)} : 1` : '--';
+  const staleCount = data.audit.stale_components.length;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">
-      <div className="mb-6 flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-text flex items-center gap-2">
-            <Activity size={22} className="text-accent" />
-            市场速览
-        </h1>
-        <p className="text-text-secondary text-sm mt-1">盘中实时更新，休市自动延用最近交易日已核验快照</p>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-xs text-text-secondary">
-          <span className={data.is_realtime ? 'text-up' : 'text-warn'}>{data.is_realtime ? '盘中实时行情' : '最近交易日缓存（非实时）'}</span>
-          <span>数据日期：<b className="font-mono font-normal text-text">{data.data_date || '--'}</b></span>
-          <span>来源：{data.source || '--'}</span>
+    <main className="mx-auto w-full max-w-[1500px] px-3 py-4 sm:px-5 sm:py-6">
+      <header className="mb-4 flex flex-col gap-3 border-b border-border pb-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <BrainCircuit size={21} className="shrink-0 text-accent" />
+            <h1 className="text-xl font-semibold text-text sm:text-2xl">A股 AI 决策工作台</h1>
+          </div>
+          <p className="mt-1.5 text-xs text-text-secondary">市场状态 → 资金行为 → 板块主线 → 个股结构 → 策略执行</p>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-secondary">
+            <span className={meta.is_realtime ? 'text-up' : 'text-warn'}>{meta.is_realtime ? '盘中实时决策' : meta.decision_scope}</span>
+            <span>决策日 <b className="font-mono font-normal text-text">{meta.decision_date || '--'}</b></span>
+            <span>更新 {localTime(meta.updated_at)}</span>
+            <span>覆盖率 {value(meta.coverage_pct, 0)}%</span>
+            {staleCount > 0 && <span className="text-warn">{staleCount} 个跨日组件已降级</span>}
+          </div>
         </div>
-        </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 self-start lg:self-auto">
           <button
-            onClick={handleSync}
-            disabled={syncing}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent text-white rounded-md hover:opacity-90 disabled:opacity-50"
+            type="button"
+            onClick={() => void load(true)}
+            disabled={refreshing}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-accent/50 px-3 text-xs text-accent hover:bg-accent/10 disabled:opacity-50"
           >
-            <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? `同步中 ${syncJob?.progress ?? 0}%` : '同步最新数据'}
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            {refreshing ? `${progress}%` : '重新核验'}
           </button>
-          {cacheStats && (
-            <span className="max-w-full text-xs text-text-secondary text-right">
-              缓存覆盖: 板块快照 概念 {cacheStats.concept_flow?.coverage?.today_snapshot_boards || 0}/{cacheStats.concept_flow?.coverage?.directory_boards || 0}、行业 {cacheStats.industry_flow?.coverage?.today_snapshot_boards || 0}/{cacheStats.industry_flow?.coverage?.directory_boards || 0} | 股票 {cacheStats.stock_bars?.stocks || 0} 只 / 日线 {cacheStats.stock_bars?.records || 0} 条
-            </span>
-          )}
         </div>
-      </div>
+      </header>
 
-      {(syncing || syncNotice) && (
-        <div className={`mb-5 border px-3 py-2.5 text-xs ${syncing ? 'border-accent/50 bg-[#1F6FEB14] text-text' : syncNotice?.startsWith('同步完成') ? 'border-up/50 bg-[#26A69A12] text-up' : 'border-warn/50 bg-[#D2992212] text-warn'}`}>
-          <div className="flex items-center justify-between gap-3">
-            <span>{syncing ? syncJob?.message || '正在同步市场数据' : syncNotice}</span>
-            {syncing && <span className="shrink-0 font-mono text-accent">{syncJob?.progress ?? 0}%</span>}
-          </div>
-          {syncing && <div className="mt-2 h-1 overflow-hidden bg-[#21262D]"><div className="h-full bg-accent transition-[width]" style={{ width: `${syncJob?.progress ?? 3}%` }} /></div>}
+      {notice && (
+        <div className={`mb-4 border-l-2 px-3 py-2 text-xs ${notice.startsWith('已重新') ? 'border-up bg-up/5 text-up' : 'border-warn bg-warn/5 text-warn'}`}>
+          {notice}
         </div>
       )}
 
-      {(data.data_warnings || []).length > 0 && (
-        <div className="mb-5 border-l-2 border-warn bg-[#D299220D] px-3 py-2 text-[11px] leading-5 text-text-secondary">
-          {data.data_warnings?.slice(0, 3).map((warning) => <div key={warning}>{warning}</div>)}
+      {data.audit.refresh_warning && (
+        <div className="mb-4 border-l-2 border-warn bg-warn/5 px-3 py-2 text-xs text-warn">
+          {data.audit.refresh_warning}
         </div>
       )}
 
-      {/* ── 核心指标卡片 ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
-        {/* 大盘指数卡片 */}
-        <div className="bg-card border border-border rounded-xl p-5 hover:border-accent/40 transition-colors">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-9 h-9 rounded-lg bg-[#1F6FEB22] flex items-center justify-center">
-              <BarChart3 size={18} className="text-accent" />
-            </div>
-            <span className="text-sm text-text-secondary">{data.is_realtime ? '上证指数盘中走势' : '上证指数最近交易日'}</span>
-          </div>
-          <div className="text-2xl font-mono font-bold text-text mb-1">
-            {(market_index.sh_index ?? 0).toFixed(2)}
-          </div>
-          <div className={`flex items-center gap-1 text-sm font-medium ${getChangeColor(market_index.sh_change_pct ?? 0)}`}>
-            {(market_index.sh_change_pct ?? 0) >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
-            {market_index.sh_change_pct == null ? '--' : `${market_index.sh_change_pct >= 0 ? '+' : ''}${market_index.sh_change_pct.toFixed(2)}%`}
-            {market_index.sh_change != null && (
-              <span className="text-text-secondary text-xs ml-1">
-                {market_index.sh_change >= 0 ? '+' : ''}{market_index.sh_change.toFixed(2)} 点
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-text-secondary mt-2">
-            成交额 {(market_index.sh_amount ?? 0) > 0 ? `${((market_index.sh_amount ?? 0) / 1e8).toFixed(0)} 亿` : '暂无'}
-          </div>
+      <section className="mb-4 overflow-hidden rounded-md border border-border bg-card" aria-label="市场核心指标">
+        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 [&>*:nth-child(2n)]:border-r-0 sm:[&>*:nth-child(2n)]:border-r xl:[&>*:nth-child(8n)]:border-r-0">
+          <MetricCell
+            label="市场状态"
+            primary={`${marketState.state_code} ${marketState.state_label}`}
+            secondary={`${marketState.execution_level} · ${value(marketState.score)}分`}
+            tone={marketState.state_code === 'S1' || marketState.state_code === 'S2' ? 'text-up' : marketState.state_code === 'S3' ? 'text-warn' : 'text-down'}
+          />
+          <MetricCell label="情绪温度" primary={`${value(metrics.sentiment_temperature, 0)}°`} secondary={`置信 ${value(marketState.confidence_pct, 0)}%`} />
+          <MetricCell label="两市成交额" primary={amount(metrics.market_amount)} secondary="完整市场快照" />
+          <MetricCell label="涨跌比" primary={upDownText} secondary={`${integer(metrics.up_count)} 涨 / ${integer(metrics.down_count)} 跌`} />
+          <MetricCell label="涨停" primary={integer(metrics.limit_up)} secondary="只" tone="text-up" />
+          <MetricCell label="跌停" primary={integer(metrics.limit_down)} secondary="只" tone="text-down" />
+          <MetricCell label="炸板率" primary={`${value(metrics.failed_limit_rate)}%`} secondary="越低越稳定" tone={finite(metrics.failed_limit_rate) && metrics.failed_limit_rate >= 25 ? 'text-down' : 'text-text'} />
+          <MetricCell label="第一主线" primary={metrics.main_line || '--'} secondary={data.main_lines[0] ? `${data.main_lines[0].lifecycle} · ${value(data.main_lines[0].strength_score)}分` : '待识别'} tone="text-accent" />
         </div>
+      </section>
 
-        {/* 北向资金卡片 */}
-        <div className="bg-card border border-border rounded-xl p-5 hover:border-accent/40 transition-colors">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-9 h-9 rounded-lg bg-[#EF535022] flex items-center justify-center">
-              <DollarSign size={18} className="text-up" />
-            </div>
-            <span className="text-sm text-text-secondary">北向资金当天成交额</span>
-          </div>
-          <div className="text-2xl font-mono font-bold text-text">
-            {north_bound.latest_deal_amount == null ? '--' : neutralYi(north_bound.latest_deal_amount)}
-          </div>
-          <div className="flex items-center gap-1 mt-2">
-            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-[#21262D] text-text-secondary">
-              {north_bound.net_inflow_available ? '净买入已公开' : '净买入未公开'}
-            </span>
-          </div>
-        </div>
-
-        {/* 主力资金方向卡片 */}
-        <div className="bg-card border border-border rounded-xl p-5 hover:border-accent/40 transition-colors">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-9 h-9 rounded-lg bg-[#D2992222] flex items-center justify-center">
-              <Zap size={18} className="text-warn" />
-            </div>
-            <span className="text-sm text-text-secondary">主力资金在买什么 / 卖什么</span>
-          </div>
-          <div className="space-y-2">
+      <section className="mb-4 grid overflow-hidden rounded-md border border-border bg-card lg:grid-cols-[360px_minmax(0,1fr)]">
+        <div className="border-b border-border p-4 lg:border-b-0 lg:border-r">
+          <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="text-xs text-text-secondary mb-1 font-medium">主力资金净额较高</div>
-              <div className="space-y-1">
-                {fund_flow.top_inflow.length > 0 ? (
-                  fund_flow.top_inflow.slice(0, 3).map((item) => (
-                    <div key={item.name} className="flex items-center justify-between text-xs">
-                      <span className="text-text truncate flex-1 mr-2">{item.name}</span>
-                      <span className={`font-mono shrink-0 ${getChangeColor(item.inflow)}`}>{formatYi(item.inflow)}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-xs text-text-secondary">暂无数据</div>
-                )}
+              <div className="text-[10px] text-text-secondary">市场状态引擎</div>
+              <div className="mt-1 flex items-baseline gap-2">
+                <span className="font-mono text-4xl font-semibold text-text">{value(marketState.score)}</span>
+                <span className={`rounded border px-2 py-0.5 text-xs ${stateTone(marketState.state_code)}`}>{marketState.execution_level}</span>
               </div>
             </div>
-            <div>
-              <div className="text-xs text-text-secondary mb-1 font-medium">主力资金净额较低</div>
-              <div className="space-y-1">
-                {fund_flow.top_outflow.length > 0 ? (
-                  fund_flow.top_outflow.slice(0, 3).map((item) => (
-                    <div key={item.name} className="flex items-center justify-between text-xs">
-                      <span className="text-text truncate flex-1 mr-2">{item.name}</span>
-                      <span className={`font-mono shrink-0 ${getChangeColor(item.outflow)}`}>{formatYi(item.outflow)}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-xs text-text-secondary">暂无数据</div>
-                )}
-              </div>
-            </div>
+            <Gauge size={22} className="text-accent" />
           </div>
-        </div>
-
-        {/* 涨跌停统计卡片 */}
-        <div className="bg-card border border-border rounded-xl p-5 hover:border-accent/40 transition-colors">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-9 h-9 rounded-lg bg-[#1F6FEB22] flex items-center justify-center">
-              <Activity size={18} className="text-accent" />
-            </div>
-            <span className="text-sm text-text-secondary">{data.is_realtime ? '盘中涨停 / 跌停' : '数据日涨停 / 跌停'}</span>
-          </div>
-          <div className="flex items-center gap-6">
-            <div>
-              <div className="text-xs text-up mb-1">涨停</div>
-              <div className="text-2xl font-mono font-bold text-up">
-                {limit_board.limit_up == null ? '--' : limit_board.limit_up.toLocaleString()}
-              </div>
-              <div className="text-xs text-text-secondary mt-0.5">只</div>
-            </div>
-            <div className="w-px h-12 bg-border" />
-            <div>
-              <div className="text-xs text-down mb-1">跌停</div>
-              <div className="text-2xl font-mono font-bold text-down">
-                {limit_board.limit_down == null ? '--' : limit_board.limit_down.toLocaleString()}
-              </div>
-              <div className="text-xs text-text-secondary mt-0.5">只</div>
-            </div>
-          </div>
-        </div>
-
-        {/* 热门板块卡片 */}
-        <div className="bg-card border border-border rounded-xl p-5 sm:col-span-2 lg:col-span-1 hover:border-accent/40 transition-colors">
-          <div className="flex items-center gap-2 mb-3">
-            <div className="w-9 h-9 rounded-lg bg-[#EF535022] flex items-center justify-center">
-              <TrendingUp size={18} className="text-up" />
-            </div>
-            <span className="text-sm text-text-secondary">{data.is_realtime ? '盘中热门板块' : '数据日热门板块'}</span>
-          </div>
-          <div className="space-y-3">
-            {hot_sectors.length > 0 ? (
-              hot_sectors.slice(0, 3).map((sector, idx) => (
-                <div key={sector.code || idx} className="flex items-center justify-between">
-                  <span className="text-sm text-text">{sector.name}</span>
-                  <span className={`text-xs font-mono ${getChangeColor(sector.main_net_inflow)}`}>
-                    {formatYi(sector.main_net_inflow)}
-                  </span>
+          <div className="mt-4 space-y-2.5">
+            {marketState.dimensions.map((dimension) => (
+              <div key={dimension.id}>
+                <div className="mb-1 flex items-center justify-between text-[10px]">
+                  <span className="text-text-secondary">{dimension.label} <span className="font-mono">{dimension.weight}%</span></span>
+                  <span className={dimension.observed ? 'font-mono text-text' : 'text-warn'}>{dimension.observed ? value(dimension.score) : '待采集'}</span>
                 </div>
-              ))
-            ) : (
-              <div className="text-sm text-text-secondary">暂无热点板块数据</div>
-            )}
+                <div className="h-1 overflow-hidden bg-[#21262D]">
+                  <div className={`h-full ${dimension.observed ? 'bg-accent' : 'bg-warn/40'}`} style={{ width: `${dimension.observed ? Math.max(2, dimension.score || 0) : 0}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 border-t border-border pt-3 text-[10px] leading-5 text-text-secondary">
+            评分覆盖 {value(marketState.coverage_pct, 0)}% · {marketState.version}
           </div>
         </div>
+
+        <div className="p-4 sm:p-5">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><BrainCircuit size={16} className="text-accent" />AI 今日市场判断</h2>
+            <span className={`rounded border px-2 py-1 text-[10px] ${stateTone(marketState.state_code)}`}>结论：{data.ai_judgement.conclusion}</span>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-text">{data.ai_judgement.market_summary}</p>
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            <div>
+              <div className="text-[10px] font-medium text-text-secondary">关键依据</div>
+              <ul className="mt-2 space-y-1.5 text-xs leading-5 text-text">
+                {data.ai_judgement.key_evidence.slice(0, 3).map((item) => <li key={item}>· {item}</li>)}
+              </ul>
+            </div>
+            <div>
+              <div className="text-[10px] font-medium text-text-secondary">今日主线与策略</div>
+              <ul className="mt-2 space-y-1.5 text-xs leading-5 text-text">
+                <li>· 主线：{data.ai_judgement.dominant_sectors.join('、') || '待识别'}</li>
+                <li>· 优先：{data.ai_judgement.preferred_strategies.join('、') || '暂无允许策略'}</li>
+                <li>· 总仓上限：{data.strategy_selector.max_total_position_pct}%</li>
+              </ul>
+            </div>
+            <div>
+              <div className="text-[10px] font-medium text-text-secondary">风险与失效</div>
+              <ul className="mt-2 space-y-1.5 text-xs leading-5 text-warn">
+                {data.ai_judgement.avoid_conditions.slice(0, 3).map((item) => <li key={item}>· {item}</li>)}
+              </ul>
+            </div>
+          </div>
+          <div className="mt-4 border-t border-border pt-3 text-[10px] text-text-secondary">
+            解释置信度 {value(data.ai_judgement.confidence_pct, 0)}% · {data.ai_judgement.note}
+          </div>
+        </div>
+      </section>
+
+      <div className="mb-4 grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Target size={15} className="text-accent" />今日策略许可</h2>
+            <span className="text-[10px] text-text-secondary">总仓 ≤ {data.strategy_selector.max_total_position_pct}%</span>
+          </div>
+          <div className="divide-y divide-border">
+            {data.strategy_selector.strategies.map((strategy) => {
+              const presentation = strategyPresentation(strategy.status);
+              const Icon = presentation.icon;
+              return (
+                <Link key={strategy.id} href={strategy.href} className="block px-4 py-3 hover:bg-[#21262D]/60">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium text-text">{strategy.name}</div>
+                      <div className="mt-1 line-clamp-2 text-[10px] leading-4 text-text-secondary">{strategy.reason}</div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${presentation.className}`}><Icon size={11} />{presentation.label}</span>
+                      <ChevronRight size={13} className="text-text-secondary" />
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+          {data.strategy_selector.loss_alert?.warning && (
+            <div className="border-t border-warn/30 bg-warn/5 px-4 py-3 text-[10px] leading-5 text-warn">
+              {data.strategy_selector.loss_alert.reason}
+            </div>
+          )}
+        </section>
+
+        <section className="min-w-0 overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><BarChart3 size={15} className="text-accent" />候选股票池</h2>
+            <div className="flex flex-wrap gap-x-3 text-[10px] text-text-secondary">
+              <span>执行 {data.candidate_summary.execution_ready}</span>
+              <span>同日观察 {data.candidate_summary.same_day_observation}</span>
+              <span>历史观察 {data.candidate_summary.historical_observation}</span>
+            </div>
+          </div>
+
+          {data.candidates.length === 0 ? (
+            <div className="px-4 py-12 text-center text-xs text-text-secondary">当前没有符合数据时效与结构规则的候选</div>
+          ) : (
+            <>
+              <div className="hidden overflow-x-auto md:block">
+                <table className="w-full min-w-[980px] text-xs">
+                  <thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary">
+                    <tr>
+                      <th className="px-4 py-2.5 text-left font-medium">股票 / 来源</th>
+                      <th className="px-3 text-left font-medium">状态</th>
+                      <th className="px-3 text-right font-medium">综合</th>
+                      <th className="px-3 text-right font-medium">市场</th>
+                      <th className="px-3 text-right font-medium">板块</th>
+                      <th className="px-3 text-right font-medium">趋势</th>
+                      <th className="px-3 text-right font-medium">量价</th>
+                      <th className="px-3 text-right font-medium">资金</th>
+                      <th className="px-3 text-left font-medium">决策逻辑</th>
+                      <th className="px-4 text-right font-medium">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/70">
+                    {data.candidates.map((candidate) => (
+                      <tr key={candidate.code} className="align-top hover:bg-[#21262D]/40">
+                        <td className="px-4 py-3">
+                          <StockKlineButton code={candidate.code} name={candidate.name} className="font-medium text-text">
+                            {candidate.name}<span className="ml-2 font-mono text-[10px] text-text-secondary">{candidate.code}</span>
+                          </StockKlineButton>
+                          <div className="mt-1 text-[10px] text-text-secondary">{candidate.sector} · {candidate.strategy}</div>
+                          <div className={`mt-1 text-[10px] ${candidate.stale ? 'text-warn' : 'text-text-secondary'}`}>数据日 {candidate.data_date || '--'}</div>
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={`inline-block rounded border px-1.5 py-0.5 text-[10px] ${candidate.execution_eligible ? 'border-up/40 text-up' : candidate.stale ? 'border-warn/40 text-warn' : 'border-accent/40 text-accent'}`}>{candidate.status}</span>
+                          <div className="mt-1.5 text-[10px] text-text-secondary">{candidate.pool}</div>
+                        </td>
+                        <td className="px-3 py-3 text-right font-mono text-base font-semibold text-text">{value(candidate.score)}</td>
+                        <td className="px-3 py-3 text-right font-mono text-text-secondary">{value(candidate.score_breakdown.market_fit)}</td>
+                        <td className="px-3 py-3 text-right font-mono text-text-secondary">{value(candidate.score_breakdown.sector_strength)}</td>
+                        <td className="px-3 py-3 text-right font-mono text-text-secondary">{value(candidate.score_breakdown.trend)}</td>
+                        <td className="px-3 py-3 text-right font-mono text-text-secondary">{value(candidate.score_breakdown.volume_price)}</td>
+                        <td className="px-3 py-3 text-right font-mono text-text-secondary">{value(candidate.score_breakdown.capital)}</td>
+                        <td className="max-w-[320px] px-3 py-3">
+                          <details>
+                            <summary className="cursor-pointer text-[11px] text-accent">依据、扣分与放弃条件</summary>
+                            <div className="mt-2 grid gap-2 text-[10px] leading-4">
+                              <div><span className="text-up">入选：</span><span className="text-text-secondary">{candidate.why_selected.join('；')}</span></div>
+                              <div><span className="text-warn">扣分：</span><span className="text-text-secondary">{candidate.why_not_full.join('；')}</span></div>
+                              <div><span className="text-down">放弃：</span><span className="text-text-secondary">{candidate.abandon_conditions.join('；')}</span></div>
+                            </div>
+                          </details>
+                        </td>
+                        <td className="px-4 py-3 text-right"><CandidateActions candidate={candidate} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="divide-y divide-border md:hidden">
+                {data.candidates.map((candidate) => (
+                  <article key={candidate.code} className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <StockKlineButton code={candidate.code} name={candidate.name} className="font-medium text-text">
+                          {candidate.name}<span className="ml-2 font-mono text-[10px] text-text-secondary">{candidate.code}</span>
+                        </StockKlineButton>
+                        <div className="mt-1 text-[10px] text-text-secondary">{candidate.sector} · {candidate.strategy}</div>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="font-mono text-xl font-semibold text-text">{value(candidate.score)}</div>
+                        <div className={`text-[10px] ${candidate.stale ? 'text-warn' : candidate.execution_eligible ? 'text-up' : 'text-accent'}`}>{candidate.status}</div>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-5 border-y border-border py-2 text-center text-[10px]">
+                      <div><div className="text-text-secondary">市场</div><div className="mt-1 font-mono text-text">{value(candidate.score_breakdown.market_fit, 0)}</div></div>
+                      <div><div className="text-text-secondary">板块</div><div className="mt-1 font-mono text-text">{value(candidate.score_breakdown.sector_strength, 0)}</div></div>
+                      <div><div className="text-text-secondary">趋势</div><div className="mt-1 font-mono text-text">{value(candidate.score_breakdown.trend, 0)}</div></div>
+                      <div><div className="text-text-secondary">量价</div><div className="mt-1 font-mono text-text">{value(candidate.score_breakdown.volume_price, 0)}</div></div>
+                      <div><div className="text-text-secondary">资金</div><div className="mt-1 font-mono text-text">{value(candidate.score_breakdown.capital, 0)}</div></div>
+                    </div>
+                    <div className="mt-3 space-y-1.5 text-[10px] leading-4">
+                      <div><span className="text-up">入选：</span><span className="text-text-secondary">{candidate.why_selected.slice(0, 2).join('；')}</span></div>
+                      <div><span className="text-warn">扣分：</span><span className="text-text-secondary">{candidate.why_not_full.slice(0, 2).join('；')}</span></div>
+                      <div><span className="text-down">放弃：</span><span className="text-text-secondary">{candidate.abandon_conditions.slice(0, 2).join('；')}</span></div>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-3">
+                      <span className="text-[10px] text-text-secondary">{candidate.pool} · {candidate.data_date || '--'}</span>
+                      <CandidateActions candidate={candidate} />
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </>
+          )}
+          <div className="border-t border-border px-4 py-2.5 text-[10px] leading-5 text-text-secondary">{data.candidate_summary.rule}</div>
+        </section>
       </div>
 
-      {/* ── 小白解读 ── */}
-      <div className="bg-card border border-border rounded-xl p-6">
-        <h2 className="text-lg font-bold text-text flex items-center gap-2 mb-4">
-          <span className="text-xl">💡</span>
-          小白解读
-        </h2>
-        <div className="space-y-3 pl-1">
-          {plainSentences.map((sentence, idx) => (
-            <div key={idx} className="flex items-start gap-3">
-              <span className="text-up font-bold text-sm mt-0.5 shrink-0">
-                {idx + 1}.
-              </span>
-              <p className="text-text-secondary text-sm leading-relaxed">
-                {sentence}
-              </p>
+      <section className="mb-4 overflow-hidden rounded-md border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Layers3 size={15} className="text-accent" />主线板块与龙头结构</h2>
+          <Link href="/pro/topic-strength" className="inline-flex items-center gap-1 text-[10px] text-accent hover:text-text">完整题材雷达<ArrowRight size={12} /></Link>
+        </div>
+        {data.main_lines.length === 0 ? (
+          <div className="px-4 py-10 text-center text-xs text-text-secondary">主线板块数据待采集</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px] text-xs">
+              <thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary">
+                <tr>
+                  <th className="px-4 py-2.5 text-left font-medium">排名 / 板块</th>
+                  <th className="px-3 text-left font-medium">级别</th>
+                  <th className="px-3 text-left font-medium">生命周期</th>
+                  <th className="px-3 text-right font-medium">强度</th>
+                  <th className="px-3 text-right font-medium">宽度</th>
+                  <th className="px-3 text-right font-medium">资金</th>
+                  <th className="px-3 text-left font-medium">龙头</th>
+                  <th className="px-4 text-left font-medium">证据 / 风险</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/70">
+                {data.main_lines.slice(0, 8).map((line) => (
+                  <tr key={`${line.rank}-${line.name}`} className="hover:bg-[#21262D]/40">
+                    <td className="px-4 py-3"><span className="mr-2 font-mono text-text-secondary">{line.rank}</span><span className="font-medium text-text">{line.name}</span></td>
+                    <td className="px-3 py-3 text-accent">{line.classification}</td>
+                    <td className={`px-3 py-3 ${line.lifecycle === '退潮' || line.lifecycle === '分化预警' ? 'text-warn' : 'text-text'}`}>{line.lifecycle}</td>
+                    <td className="px-3 py-3 text-right font-mono text-text">{value(line.strength_score)}</td>
+                    <td className="px-3 py-3 text-right font-mono text-text-secondary">{value(line.breadth)}%</td>
+                    <td className={`px-3 py-3 text-right font-mono ${finite(line.main_net_inflow) && line.main_net_inflow >= 0 ? 'text-up' : 'text-down'}`}>{amount(line.main_net_inflow)}</td>
+                    <td className="px-3 py-3">
+                      {line.leader.code ? (
+                        <StockKlineButton code={line.leader.code} name={line.leader.name} className="text-text">
+                          {line.leader.name}<span className="ml-1 text-[10px] text-text-secondary">{line.leader.boards == null ? '' : `${line.leader.boards}板`}</span>
+                        </StockKlineButton>
+                      ) : '--'}
+                    </td>
+                    <td className="max-w-[360px] px-4 py-3 text-[10px] leading-4 text-text-secondary">
+                      <div>{line.evidence}</div>
+                      {line.risk_flags.length > 0 && <div className="mt-1 text-warn">{line.risk_flags.join('；')}</div>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="mb-4 overflow-hidden rounded-md border border-border bg-card">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Clock3 size={15} className="text-accent" />今日执行队列</h2>
+          <span className="text-[10px] text-text-secondary">{data.execution_queue.execution_mode}</span>
+        </div>
+        <div className="grid sm:grid-cols-2 xl:grid-cols-4">
+          {data.execution_queue.phases.map((phase, index) => (
+            <div key={phase.id} className="relative border-b border-border p-4 last:border-b-0 sm:border-r sm:[&:nth-child(2n)]:border-r-0 xl:border-b-0 xl:[&:nth-child(2n)]:border-r xl:last:border-r-0">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-mono text-[10px] text-accent">0{index + 1} · {phase.scheduled_at}</span>
+                <span className={`rounded border px-1.5 py-0.5 text-[10px] ${phaseTone(phase.display_status)}`}>{phase.display_status}</span>
+              </div>
+              <div className="mt-2 text-sm font-medium text-text">{phase.label}</div>
+              <div className="mt-1 text-[10px] leading-4 text-text-secondary">{phase.message}</div>
+              <div className="mt-3 flex items-center justify-between text-[10px] text-text-secondary">
+                <span>数据日 {phase.data_date || '--'}</span>
+                <span>{phase.candidate_count} 个候选</span>
+              </div>
             </div>
           ))}
         </div>
+      </section>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3"><ShieldAlert size={15} className="text-warn" /><h2 className="text-sm font-semibold text-text">风险红线</h2></div>
+          <div className="grid gap-4 p-4 sm:grid-cols-3">
+            <div><div className="text-[10px] text-text-secondary">市场级</div><ul className="mt-2 space-y-1.5 text-[10px] leading-4 text-warn">{data.risk.market.map((item) => <li key={item}>· {item}</li>)}</ul></div>
+            <div><div className="text-[10px] text-text-secondary">策略级</div><ul className="mt-2 space-y-1.5 text-[10px] leading-4 text-warn">{(data.risk.strategy.length ? data.risk.strategy : ['未触发策略级额外提醒']).map((item) => <li key={item}>· {item}</li>)}</ul></div>
+            <div><div className="text-[10px] text-text-secondary">个股级</div><ul className="mt-2 space-y-1.5 text-[10px] leading-4 text-warn">{(data.risk.stock.length ? data.risk.stock : ['未触发已观测个股风险']).map((item) => <li key={item}>· {item}</li>)}</ul></div>
+          </div>
+          <div className="border-t border-border px-4 py-2.5 text-[10px] text-text-secondary">{data.risk.disclaimer}</div>
+        </section>
+
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3"><div className="flex items-center gap-2"><Database size={15} className="text-accent" /><h2 className="text-sm font-semibold text-text">数据审计</h2></div><span className="font-mono text-[10px] text-text-secondary">{data.audit.score_version}</span></div>
+          <div className="p-4">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[10px] sm:grid-cols-3">
+              {Object.entries(data.audit.component_dates).map(([key, dateValue]) => (
+                <div key={key} className="flex items-center justify-between gap-2 border-b border-border/70 pb-1.5">
+                  <span className="truncate text-text-secondary">{key}</span>
+                  <span className={`shrink-0 font-mono ${dateValue && dateValue !== meta.decision_date && key !== 'auction' ? 'text-warn' : 'text-text'}`}>{dateValue || '--'}</span>
+                </div>
+              ))}
+            </div>
+            {(data.audit.missing_fields.length > 0 || data.audit.stale_components.length > 0) && (
+              <div className="mt-3 border-l-2 border-warn bg-warn/5 px-3 py-2 text-[10px] leading-5 text-warn">
+                {data.audit.stale_components.length > 0 && <div>跨日降级：{data.audit.stale_components.join('、')}</div>}
+                {data.audit.missing_fields.length > 0 && <div>待采集：{data.audit.missing_fields.slice(0, 6).join('、')}</div>}
+              </div>
+            )}
+            <div className="mt-3 text-[10px] leading-5 text-text-secondary">{data.audit.same_day_rule}</div>
+          </div>
+        </section>
       </div>
-    </div>
+
+      <nav className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4" aria-label="工作台快捷入口">
+        <Activity size={14} className="mr-1 text-text-secondary" />
+        {data.quick_links.map((item) => (
+          <Link key={item.href} href={item.href} className="inline-flex h-8 items-center gap-1 rounded-md border border-border px-2.5 text-[10px] text-text-secondary hover:border-accent hover:text-text">
+            {item.label}<ChevronRight size={11} />
+          </Link>
+        ))}
+      </nav>
+    </main>
   );
 }

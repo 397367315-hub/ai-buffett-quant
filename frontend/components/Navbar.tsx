@@ -2,12 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Home, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
 const proSubItems = [
-  { href: '/market', label: '今日速览', icon: Home },
+  { href: '/market', label: 'AI决策工作台', icon: BrainCircuit },
   { href: '/pro', label: '资金排名', icon: TrendingUp },
   { href: '/pro/sentiment', label: '市场情绪', icon: TrendingUp },
   { href: '/pro/topic-strength', label: '题材强弱', icon: Flame },
@@ -108,11 +108,11 @@ export default function Navbar() {
       {menuOpen && (
         <div className="absolute top-14 left-0 right-0 bg-card border-b border-border p-4 md:hidden z-50 max-h-[calc(100vh-56px)] overflow-y-auto">
           <Link href="/market" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
-            <Home size={16} /> 今日速览
+            <BrainCircuit size={16} /> AI决策工作台
           </Link>
           <div className="border-t border-border my-2 pt-2">
             <div className="text-xs text-text-secondary px-3 mb-1">专业看板</div>
-            {proSubItems.map((item) => {
+            {proSubItems.filter((item) => item.href !== '/market').map((item) => {
               const Icon = item.icon;
               return (
                 <Link key={item.href} href={item.href} className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>

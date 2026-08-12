@@ -40,6 +40,7 @@ from database import async_session
 from services.history_cache import history_cache
 from services.sector_flow_network import build_inferred_transfers
 from services.topic_strength import topic_strength_service
+from services.market_decision_workbench import market_decision_workbench_service
 from services.block_trade_analysis import block_trade_analysis_service
 from quant.market_cache import load_quant_market_snapshot
 
@@ -1769,6 +1770,13 @@ async def refresh_market_overview_after_sync(sync_result: dict) -> dict:
 @router.get("/market/overview")
 async def get_market_overview(refresh: bool = False):
     return await _build_market_overview(bypass_cache=refresh)
+
+
+@router.get("/market/workbench")
+async def get_market_decision_workbench(refresh: bool = Query(False)):
+    """Return one date-aligned decision contract for the market workbench."""
+    data = await market_decision_workbench_service.get(force=refresh)
+    return {"code": 0, "data": data}
 
 
 @router.get("/flow/concept/history")

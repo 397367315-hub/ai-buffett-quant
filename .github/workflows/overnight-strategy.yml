@@ -9,7 +9,7 @@ on:
     - cron: '0 2 * * 1-5'       # 10:00 forced exit
     - cron: '20 6 * * 1-5'      # 14:20 warmup
     - cron: '30 6 * * 1-5'      # 14:30 preliminary scan
-    - cron: '50 6 * * 1-5'      # 14:50 entry scan
+    - cron: '55 6 * * 1-5'      # 14:55 entry scan
   workflow_dispatch:
     inputs:
       stage:
@@ -55,7 +55,7 @@ jobs:
               '31,40,50 1 * * 1-5') stage='exit' ;;
               '0 2 * * 1-5') stage='force_exit' ;;
               '30 6 * * 1-5') stage='preliminary' ;;
-              '50 6 * * 1-5') stage='entry' ;;
+              '55 6 * * 1-5') stage='entry' ;;
               *) echo "Unsupported schedule: $SCHEDULE" >&2; exit 1 ;;
             esac
           fi
