@@ -673,18 +673,29 @@ class FQECompareService:
         if force or not cached.get("stocks") or age is None or age > settings.quant_scan_cache_seconds:
             try:
                 snapshot = await collector.fetch_quant_market_snapshot()
+                if not snapshot.get("stocks"):
+                    raise RuntimeError("全市场行情返回空列表")
                 await save_quant_market_snapshot(snapshot)
                 quant_store.write("market_snapshot", {"version": 1, **snapshot})
             except Exception as exc:
                 snapshot = await load_quant_market_snapshot()
                 if not snapshot.get("stocks"):
-                    raise RuntimeError(f"行情与缓存均不可用（{type(exc).__name__}）") from exc
+                    from services.pit_market_data import pit_market_data_service
+
+                    snapshot = await pit_market_data_service.latest_universe_snapshot()
+                    if snapshot.get("stocks"):
+                        snapshot_warnings.append(
+                            f"完整行情大缓存暂不可用，已使用{snapshot.get('data_date') or '最近交易日'}"
+                            "点时股票池、收盘价与审计估值重建研究上下文"
+                        )
+                    else:
+                        raise RuntimeError(f"行情与缓存均不可用（{type(exc).__name__}）") from exc
                 stale = True
         else:
             snapshot = cached
         if stale:
             snapshot = {**snapshot, "is_realtime": False, "source": "cache"}
-        if snapshot.get("complete"):
+        if snapshot.get("complete") and not snapshot.get("reconstructed"):
             try:
                 from services.pit_market_data import pit_market_data_service
                 from services.quant_research_workspace import quant_research_workspace

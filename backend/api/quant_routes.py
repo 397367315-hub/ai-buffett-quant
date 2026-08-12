@@ -44,6 +44,7 @@ from services.quote_cache import quote_snapshot_service
 from services.overnight_strategy import overnight_strategy_service
 from services.fqe_engine import fqe_compare_service
 from services.fqe_reference_data import fqe_reference_data
+from services.pit_market_data import pit_market_data_service
 from services.quant_research_workspace import quant_research_workspace
 from services.zhaban_strategy import zhaban_strategy_service
 
@@ -154,6 +155,8 @@ async def get_sectors(limit: int = Query(300, ge=20, le=1000)):
     if not snapshot.get("stocks"):
         try:
             snapshot = await collector.fetch_quant_market_snapshot()
+            if not snapshot.get("stocks"):
+                raise RuntimeError("全市场行情返回空列表")
             await save_quant_market_snapshot(snapshot)
             quant_store.write("market_snapshot", {"version": 1, **snapshot})
         except Exception:
@@ -161,7 +164,9 @@ async def get_sectors(limit: int = Query(300, ge=20, le=1000)):
             if snapshot.get("stocks"):
                 quant_store.write("market_snapshot", {"version": 1, **snapshot})
             else:
-                snapshot = {"stocks": []}
+                snapshot = await pit_market_data_service.latest_universe_snapshot()
+                if not snapshot.get("stocks"):
+                    snapshot = {"stocks": []}
     names = sorted({
         str(item.get("sector") or "").strip()
         for item in snapshot.get("stocks") or []

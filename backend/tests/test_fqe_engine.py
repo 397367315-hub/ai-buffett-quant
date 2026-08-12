@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -8,9 +8,11 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import Base
+from models import StockUniverseSnapshot, StockValuationHistory
 from quant.storage import QuantJsonStore
 from quant.schemas import FQERequest
 from services.fqe_engine import FQECompareService, FundamentalQuantEngine, fqe_compare_service
+from services.pit_market_data import PITMarketDataService
 from services.stock_features import StockFeatureService, _a_share_code, _ttm_value
 
 
@@ -72,6 +74,74 @@ class FQEEngineTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await service.get_latest(), result)
 
             await engine.dispose()
+
+    async def test_latest_pit_universe_rebuilds_research_snapshot_with_valuation(self):
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with session_factory() as session:
+            session.add(StockUniverseSnapshot(
+                stock_code="600519", stock_name="贵州茅台", exchange="SH",
+                trade_date=date(2026, 8, 11), industry="白酒",
+                market_cap=1_800_000_000_000, close_price=1500.0,
+                is_suspended=False, source="eastmoney",
+                observed_at=datetime(2026, 8, 11, 15, 0),
+            ))
+            session.add(StockValuationHistory(
+                stock_code="600519", stock_name="贵州茅台",
+                history=[["2026-08-11", 20.0]], requested_start=date(2023, 8, 1),
+                history_start=date(2026, 8, 11), history_end=date(2026, 8, 11),
+                sample_count=1, positive_sample_count=1, latest_pe_ttm=20.0,
+                pe_percentile_3y=100.0, sync_status="available", source="test",
+            ))
+            await session.commit()
+
+        with patch("services.pit_market_data.async_session", session_factory):
+            snapshot = await PITMarketDataService().latest_universe_snapshot()
+
+        self.assertEqual(snapshot["data_date"], "2026-08-11")
+        self.assertEqual(snapshot["source"], "pit_universe_cache")
+        self.assertTrue(snapshot["complete"])
+        self.assertEqual(snapshot["stocks"][0]["pe"], 20.0)
+        self.assertEqual(snapshot["stocks"][0]["sector"], "白酒")
+        await engine.dispose()
+
+    async def test_fqe_compare_uses_pit_universe_when_live_and_snapshot_cache_are_empty(self):
+        service = FQECompareService()
+        pit_snapshot = {
+            "stocks": [_stock(index, ["电子", "医药", "机械", "家电"][index % 4]) for index in range(12)],
+            "data_date": "2026-08-11", "source": "pit_universe_cache",
+            "complete": True, "is_realtime": False, "reconstructed": True,
+        }
+        feature_result = {
+            "stocks": pit_snapshot["stocks"],
+            "coverage": {"financial": 12, "total": 12}, "warnings": [],
+        }
+        reference_result = {
+            "stocks": [
+                {**item, "list_days": 1000, "pe_percentile_3y": 20}
+                for item in pit_snapshot["stocks"]
+            ],
+            "coverage": {}, "data_contract": {}, "warnings": [],
+        }
+        with (
+            patch("services.fqe_engine.quant_store.read", return_value={}),
+            patch("services.fqe_engine.collector.fetch_quant_market_snapshot", new=AsyncMock(return_value={"stocks": []})),
+            patch("services.fqe_engine.load_quant_market_snapshot", new=AsyncMock(return_value={})),
+            patch("services.pit_market_data.pit_market_data_service.latest_universe_snapshot", new=AsyncMock(return_value=pit_snapshot)),
+            patch("services.pit_market_data.pit_market_data_service.capture_universe", new=AsyncMock(return_value={"status": "success"})) as capture_universe,
+            patch("services.fqe_engine.stock_feature_service.enrich", new=AsyncMock(return_value=feature_result)),
+            patch("services.fqe_engine.fqe_reference_data.enrich", new=AsyncMock(return_value=reference_result)),
+            patch.object(FundamentalQuantEngine, "_load_covariance", new=AsyncMock(return_value=([], {"available": False}))),
+        ):
+            result = await service.compare(top_n=10, candidate_pool=60, mode="pragmatic", force=False)
+
+        self.assertTrue(result["cache_used"])
+        self.assertEqual(result["data_date"], "2026-08-11")
+        self.assertGreater(result["retail_portfolio"]["count"], 0)
+        self.assertTrue(any("点时股票池" in warning for warning in result["warnings"]))
+        capture_universe.assert_not_awaited()
 
     def test_a_share_code_is_normalized_for_financial_joins(self):
         self.assertEqual(_a_share_code("600519"), "600519")

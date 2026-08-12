@@ -15,6 +15,7 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -366,6 +367,10 @@ class StockFeatureService:
         except Exception as exc:
             print(f"Financial PIT snapshot persistence failed: {type(exc).__name__}")
 
+        return self._build_financial_output(history)
+
+    @staticmethod
+    def _build_financial_output(history: dict[str, dict[date, dict]]) -> dict[str, dict]:
         output: dict[str, dict] = {}
         for code, rows_by_period in history.items():
             if not rows_by_period:
@@ -401,6 +406,44 @@ class StockFeatureService:
                 "ttm_formula": "current_period + prior_year_full_year - prior_year_same_period",
             }
         return output
+
+    async def _financial_snapshot_from_pit(self, codes: set[str], as_of: date) -> dict[str, dict]:
+        """Load disclosure-dated financials when the upstream report is unavailable."""
+        statement = select(FinancialPITSnapshot).where(
+            FinancialPITSnapshot.disclosed_at <= as_of,
+        )
+        if codes:
+            statement = statement.where(FinancialPITSnapshot.stock_code.in_(codes))
+        statement = statement.order_by(
+            FinancialPITSnapshot.stock_code,
+            FinancialPITSnapshot.report_date,
+            FinancialPITSnapshot.disclosed_at,
+        )
+        async with async_session() as session:
+            rows = (await session.execute(statement)).scalars().all()
+
+        history: dict[str, dict[date, dict]] = defaultdict(dict)
+        for row in rows:
+            record = {
+                "stock_name": row.stock_name or "",
+                "roe": row.roe,
+                "gross_margin": row.gross_margin,
+                "revenue_growth": row.revenue_growth,
+                "deducted_profit_growth": row.deducted_profit_growth,
+                "ocf_to_profit": row.ocf_to_profit,
+                "debt_ratio": row.debt_ratio,
+                "receivable_to_revenue": row.receivable_to_revenue,
+                "revenue": row.revenue,
+                "deducted_profit": row.deducted_profit,
+                "net_profit": row.net_profit,
+                "operating_cf": row.operating_cf,
+                "report_date": row.report_date,
+                "disclosed_at": row.disclosed_at,
+            }
+            previous = history[row.stock_code].get(row.report_date)
+            if previous is None or row.disclosed_at >= previous["disclosed_at"]:
+                history[row.stock_code][row.report_date] = record
+        return self._build_financial_output(history)
 
     async def capture_financial_pit(self, as_of: date | None = None) -> dict[str, Any]:
         """Refresh disclosure-dated financial rows for forward PIT research."""
@@ -530,6 +573,10 @@ class StockFeatureService:
                 try:
                     if dataset == "financial":
                         values = await self._financial_snapshot(codes, as_of)
+                        if not values:
+                            values = await self._financial_snapshot_from_pit(codes, as_of)
+                            if values:
+                                warnings.append("当前公告源无新记录，已使用公告日财务PIT缓存")
                     elif dataset == "shareholders":
                         values = await self._shareholder_snapshot(codes, as_of)
                     else:
@@ -539,6 +586,19 @@ class StockFeatureService:
                     refreshed = True
                 except Exception as exc:
                     label = {"financial": "财务报告", "shareholders": "股东户数", "lockups": "限售解禁"}[dataset]
+                    if dataset == "financial":
+                        try:
+                            values = await self._financial_snapshot_from_pit(codes, as_of)
+                        except Exception:
+                            values = {}
+                        if values:
+                            payload[dataset] = values
+                            payload["dataset_status"][dataset] = "available"
+                            refreshed = True
+                            warnings.append(
+                                f"{label}数据源暂不可用，已使用公告日PIT缓存（{type(exc).__name__}）"
+                            )
+                            continue
                     if payload.get(dataset):
                         warnings.append(
                             f"{label}数据源暂不可用，使用同一研究日缓存"

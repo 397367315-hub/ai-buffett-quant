@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from database import async_session
-from models import StockAuctionSnapshot, StockUniverseSnapshot
+from models import StockAuctionSnapshot, StockUniverseSnapshot, StockValuationHistory
 from quant.market_cache import load_quant_market_snapshot
 from services.data_collector import collector, shanghai_now
 
@@ -119,6 +119,55 @@ class PITMarketDataService:
                 "market_cap_covered": sum(item.get("market_cap") is not None for item in rows),
                 "source": str(payload.get("source") or "eastmoney"),
             }
+
+    async def latest_universe_snapshot(self) -> dict[str, Any]:
+        """Rebuild a usable research snapshot from the latest persisted universe."""
+        async with async_session() as session:
+            latest = (await session.execute(
+                select(func.max(StockUniverseSnapshot.trade_date))
+            )).scalar_one()
+            if latest is None:
+                return {}
+            rows = (await session.execute(
+                select(StockUniverseSnapshot, StockValuationHistory.latest_pe_ttm)
+                .outerjoin(
+                    StockValuationHistory,
+                    StockValuationHistory.stock_code == StockUniverseSnapshot.stock_code,
+                )
+                .where(StockUniverseSnapshot.trade_date == latest)
+                .order_by(StockUniverseSnapshot.stock_code)
+            )).all()
+
+        stocks = []
+        latest_observed_at: datetime | None = None
+        for row, latest_pe_ttm in rows:
+            if row.observed_at and (
+                latest_observed_at is None or row.observed_at > latest_observed_at
+            ):
+                latest_observed_at = row.observed_at
+            stocks.append({
+                "code": row.stock_code,
+                "name": row.stock_name or "",
+                "price": row.close_price,
+                "market_cap": row.market_cap,
+                "sector": row.industry or "",
+                "pe": latest_pe_ttm if latest_pe_ttm is not None else "",
+                "is_suspended": bool(row.is_suspended),
+            })
+        if not stocks:
+            return {}
+        return {
+            "stocks": stocks,
+            "total": len(stocks),
+            "source": "pit_universe_cache",
+            "cache_source": rows[0][0].source if rows else "eastmoney",
+            "data_date": latest.isoformat(),
+            "source_updated_at": latest_observed_at.isoformat() if latest_observed_at else None,
+            "fetched_at": latest_observed_at.isoformat() if latest_observed_at else None,
+            "is_realtime": False,
+            "complete": True,
+            "reconstructed": True,
+        }
 
     async def _universe_for_auction(self) -> tuple[list[dict[str, Any]], date | None]:
         async with async_session() as session:
