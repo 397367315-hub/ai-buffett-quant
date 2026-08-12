@@ -67,6 +67,7 @@ class FQEReferenceDataService:
 
     _VALUATION_CONCURRENCY = 6
     _VALUATION_BATCH_SIZE = 18
+    _ENRICH_HISTORY_BATCH_SIZE = 100
     _STATUS_BATCH_SIZE = 10
     _STATUS_CONCURRENCY = 4
 
@@ -827,9 +828,10 @@ class FQEReferenceDataService:
                 valuation_rows = (await session.execute(
                     select(
                         StockValuationHistory.stock_code,
-                        StockValuationHistory.history,
                         StockValuationHistory.sample_count,
                         StockValuationHistory.positive_sample_count,
+                        StockValuationHistory.latest_pe_ttm,
+                        StockValuationHistory.pe_percentile_3y,
                         StockValuationHistory.history_end,
                         StockValuationHistory.sync_status,
                     ).where(StockValuationHistory.stock_code.in_(codes))
@@ -837,16 +839,18 @@ class FQEReferenceDataService:
             masters = {str(code): (listed, delisted, status) for code, listed, delisted, status in master_rows}
             valuations = {
                 str(code): {
-                    "history": history if isinstance(history, list) else [],
                     "sample_count": int(samples or 0),
                     "positive_sample_count": int(positive or 0),
+                    "latest_pe_ttm": _number(latest_pe),
+                    "pe_percentile_3y": _number(percentile),
                     "history_end": history_end,
                     "status": status,
                 }
-                for code, history, samples, positive, history_end, status in valuation_rows
+                for code, samples, positive, latest_pe, percentile, history_end, status in valuation_rows
             }
 
         enriched = []
+        recalculate: dict[str, dict[str, Any]] = {}
         for stock in stocks:
             item = dict(stock)
             code = str(item.get("code") or "")
@@ -857,9 +861,41 @@ class FQEReferenceDataService:
                 item["security_status"] = master[2]
             valuation = valuations.get(code)
             if valuation:
-                cutoff = as_of - timedelta(days=365 * 3 + 10)
+                current_pe = _number(item.get("pe_ttm") if "pe_ttm" in item else item.get("pe"))
+                latest_pe = valuation["latest_pe_ttm"]
+                history_end = valuation["history_end"]
+                summary_matches = bool(
+                    current_pe is not None
+                    and latest_pe is not None
+                    and math.isclose(current_pe, latest_pe, rel_tol=1e-9, abs_tol=1e-9)
+                    and history_end is not None
+                    and history_end <= as_of
+                )
+                item["pe_history_count"] = valuation["sample_count"]
+                item["pe_positive_history_count"] = valuation["positive_sample_count"]
+                item["pe_history_end"] = history_end.isoformat() if history_end else None
+                item["pe_history_status"] = valuation["status"]
+                if summary_matches:
+                    item["pe_percentile_3y"] = valuation["pe_percentile_3y"]
+                elif current_pe is not None and current_pe > 0:
+                    recalculate[code] = item
+            enriched.append(item)
+
+        cutoff = as_of - timedelta(days=365 * 3 + 10)
+        for batch in _chunks(list(recalculate), self._ENRICH_HISTORY_BATCH_SIZE):
+            async with async_session() as session:
+                history_rows = (await session.execute(
+                    select(
+                        StockValuationHistory.stock_code,
+                        StockValuationHistory.history,
+                    ).where(StockValuationHistory.stock_code.in_(batch))
+                )).all()
+            for code, history in history_rows:
+                item = recalculate.get(str(code))
+                if item is None:
+                    continue
                 dated_history = []
-                for raw in valuation["history"]:
+                for raw in history if isinstance(history, list) else []:
                     if not isinstance(raw, (list, tuple)) or len(raw) < 2:
                         continue
                     history_date = _date(raw[0])
@@ -874,8 +910,7 @@ class FQEReferenceDataService:
                 item["pe_positive_history_count"] = len(positive_history)
                 latest_history_date = max((day for day, _ in dated_history), default=None)
                 item["pe_history_end"] = latest_history_date.isoformat() if latest_history_date else None
-                item["pe_history_status"] = valuation["status"]
-            enriched.append(item)
+            await asyncio.sleep(0)
 
         global_coverage = await self.coverage()
         listing_covered = sum(1 for item in enriched if item.get("list_days") is not None)

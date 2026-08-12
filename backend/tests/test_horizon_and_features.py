@@ -177,6 +177,22 @@ class RiskAndFeatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["dataset_status"]["financial"], "available")
         self.assertTrue(any("PIT缓存" in item for item in warnings))
 
+    async def test_financial_pit_read_failure_refreshes_upstream_source(self):
+        service = StockFeatureService()
+        service._read_cache = AsyncMock(return_value={})
+        service._financial_snapshot_from_pit = AsyncMock(side_effect=RuntimeError("database offline"))
+        service._financial_snapshot = AsyncMock(return_value={
+            "600519": {"roe": 18.5, "financial_disclosed_at": "2026-04-17"},
+        })
+        service._write_cache = AsyncMock()
+
+        payload, warnings = await service._datasets(
+            {"600519"}, {"gross_margin"}, date(2026, 8, 12),
+        )
+
+        self.assertEqual(payload["financial"]["600519"]["roe"], 18.5)
+        self.assertTrue(any("已刷新上游公告源" in item for item in warnings))
+
     def test_lockup_within_seven_days_is_a_non_compensating_block(self):
         result = assess_stock_risk({
             "name": "测试股份", "net_profit": 10, "lockup_days": 7,

@@ -409,7 +409,23 @@ class StockFeatureService:
 
     async def _financial_snapshot_from_pit(self, codes: set[str], as_of: date) -> dict[str, dict]:
         """Load disclosure-dated financials when the upstream report is unavailable."""
-        statement = select(FinancialPITSnapshot).where(
+        statement = select(
+            FinancialPITSnapshot.stock_code,
+            FinancialPITSnapshot.stock_name,
+            FinancialPITSnapshot.report_date,
+            FinancialPITSnapshot.disclosed_at,
+            FinancialPITSnapshot.roe,
+            FinancialPITSnapshot.gross_margin,
+            FinancialPITSnapshot.revenue_growth,
+            FinancialPITSnapshot.deducted_profit_growth,
+            FinancialPITSnapshot.ocf_to_profit,
+            FinancialPITSnapshot.debt_ratio,
+            FinancialPITSnapshot.receivable_to_revenue,
+            FinancialPITSnapshot.revenue,
+            FinancialPITSnapshot.deducted_profit,
+            FinancialPITSnapshot.net_profit,
+            FinancialPITSnapshot.operating_cf,
+        ).where(
             FinancialPITSnapshot.disclosed_at <= as_of,
         )
         if codes:
@@ -419,31 +435,39 @@ class StockFeatureService:
             FinancialPITSnapshot.report_date,
             FinancialPITSnapshot.disclosed_at,
         )
+        output: dict[str, dict] = {}
+        current_code: str | None = None
+        periods: dict[date, dict] = {}
         async with async_session() as session:
-            rows = (await session.execute(statement)).scalars().all()
-
-        history: dict[str, dict[date, dict]] = defaultdict(dict)
-        for row in rows:
-            record = {
-                "stock_name": row.stock_name or "",
-                "roe": row.roe,
-                "gross_margin": row.gross_margin,
-                "revenue_growth": row.revenue_growth,
-                "deducted_profit_growth": row.deducted_profit_growth,
-                "ocf_to_profit": row.ocf_to_profit,
-                "debt_ratio": row.debt_ratio,
-                "receivable_to_revenue": row.receivable_to_revenue,
-                "revenue": row.revenue,
-                "deducted_profit": row.deducted_profit,
-                "net_profit": row.net_profit,
-                "operating_cf": row.operating_cf,
-                "report_date": row.report_date,
-                "disclosed_at": row.disclosed_at,
-            }
-            previous = history[row.stock_code].get(row.report_date)
-            if previous is None or row.disclosed_at >= previous["disclosed_at"]:
-                history[row.stock_code][row.report_date] = record
-        return self._build_financial_output(history)
+            result = await session.stream(statement)
+            async for row in result:
+                code = str(row.stock_code)
+                if current_code is not None and code != current_code:
+                    output.update(self._build_financial_output({current_code: periods}))
+                    periods = {}
+                current_code = code
+                record = {
+                    "stock_name": row.stock_name or "",
+                    "roe": row.roe,
+                    "gross_margin": row.gross_margin,
+                    "revenue_growth": row.revenue_growth,
+                    "deducted_profit_growth": row.deducted_profit_growth,
+                    "ocf_to_profit": row.ocf_to_profit,
+                    "debt_ratio": row.debt_ratio,
+                    "receivable_to_revenue": row.receivable_to_revenue,
+                    "revenue": row.revenue,
+                    "deducted_profit": row.deducted_profit,
+                    "net_profit": row.net_profit,
+                    "operating_cf": row.operating_cf,
+                    "report_date": row.report_date,
+                    "disclosed_at": row.disclosed_at,
+                }
+                previous = periods.get(row.report_date)
+                if previous is None or row.disclosed_at >= previous["disclosed_at"]:
+                    periods[row.report_date] = record
+        if current_code is not None:
+            output.update(self._build_financial_output({current_code: periods}))
+        return output
 
     async def capture_financial_pit(self, as_of: date | None = None) -> dict[str, Any]:
         """Refresh disclosure-dated financial rows for forward PIT research."""
@@ -572,11 +596,20 @@ class StockFeatureService:
                     continue
                 try:
                     if dataset == "financial":
-                        values = await self._financial_snapshot(codes, as_of)
-                        if not values:
+                        pit_error: Exception | None = None
+                        try:
                             values = await self._financial_snapshot_from_pit(codes, as_of)
-                            if values:
-                                warnings.append("当前公告源无新记录，已使用公告日财务PIT缓存")
+                        except Exception as exc:
+                            pit_error = exc
+                            values = {}
+                        if not values:
+                            values = await self._financial_snapshot(codes, as_of)
+                            if pit_error is not None:
+                                warnings.append(
+                                    f"公告日财务PIT缓存读取失败，已刷新上游公告源（{type(pit_error).__name__}）"
+                                )
+                        else:
+                            warnings.append("已使用按真实公告日保存的财务PIT缓存")
                     elif dataset == "shareholders":
                         values = await self._shareholder_snapshot(codes, as_of)
                     else:

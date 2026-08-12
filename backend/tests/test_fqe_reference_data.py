@@ -105,6 +105,48 @@ class FQEReferenceDataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["stocks"][0]["pe_percentile_3y"], 100.0)
         self.assertEqual(result["stocks"][0]["pe_history_end"], "2026-08-06")
 
+    async def test_enrichment_uses_summary_without_loading_history_when_pe_matches(self):
+        async with self.session_factory() as session:
+            session.add_all([
+                SecurityMaster(
+                    stock_code="600519", stock_name="贵州茅台", exchange="SH",
+                    list_date=date(2001, 8, 27), status="listed",
+                    is_currently_listed=True, date_quality="test", source="test",
+                ),
+                StockValuationHistory(
+                    stock_code="600519", stock_name="贵州茅台",
+                    history=[["2026-08-05", 10.0], ["2026-08-06", 20.0]],
+                    requested_start=date(2023, 8, 1), history_start=date(2026, 8, 5),
+                    history_end=date(2026, 8, 6), sample_count=2,
+                    positive_sample_count=2, latest_pe_ttm=20.0,
+                    pe_percentile_3y=100.0, sync_status="available", source="test",
+                ),
+            ])
+            await session.commit()
+
+        statements: list[str] = []
+        from sqlalchemy import event
+
+        def record_statement(_connection, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(statement.lower())
+
+        event.listen(self.engine.sync_engine, "before_cursor_execute", record_statement)
+        try:
+            result = await self.service.enrich(
+                [{"code": "600519", "name": "贵州茅台", "pe_ttm": 20.0}],
+                date(2026, 8, 9),
+            )
+        finally:
+            event.remove(self.engine.sync_engine, "before_cursor_execute", record_statement)
+
+        self.assertEqual(result["stocks"][0]["pe_percentile_3y"], 100.0)
+        valuation_selects = [
+            statement for statement in statements
+            if "from stock_valuation_histories" in statement
+        ]
+        self.assertTrue(valuation_selects)
+        self.assertTrue(all("stock_valuation_histories.history," not in statement for statement in valuation_selects))
+
     async def test_security_master_uses_ftshare_when_eastmoney_is_partial(self):
         with (
             patch(
