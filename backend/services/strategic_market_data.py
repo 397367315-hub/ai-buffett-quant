@@ -6,7 +6,7 @@ import asyncio
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, desc, func, select
+from sqlalchemy import and_, case, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -77,6 +77,95 @@ class StrategicMarketDataService:
         }
 
     @staticmethod
+    async def _aggregate_many(trade_dates: list[date]) -> dict[date, dict[str, Any]]:
+        """Build daily breadth and explicitly labelled limit-board approximations.
+
+        The limit fields use adjusted daily OHLC bars and board-code thresholds.
+        They are suitable for factor research, but not a replacement for a
+        historical 09:25/level-2 event feed.
+        """
+        if not trade_dates:
+            return {}
+        code = StockDailyBar.stock_code
+        limit_pct = case(
+            (code.like("300%"), 20.0),
+            (code.like("301%"), 20.0),
+            (code.like("302%"), 20.0),
+            (code.like("688%"), 20.0),
+            (code.like("689%"), 20.0),
+            (code.like("4%"), 30.0),
+            (code.like("8%"), 30.0),
+            (code.like("92%"), 30.0),
+            else_=10.0,
+        )
+        denominator = func.nullif(1 + StockDailyBar.change_pct / 100.0, 0)
+        previous_close = StockDailyBar.close_price / denominator
+        high_change = (StockDailyBar.high_price / func.nullif(previous_close, 0) - 1) * 100.0
+        valid = and_(
+            StockDailyBar.change_pct.is_not(None),
+            StockDailyBar.close_price.is_not(None),
+            StockDailyBar.close_price > 0,
+        )
+        sealed_up = and_(valid, StockDailyBar.change_pct >= limit_pct - 0.30)
+        sealed_down = and_(valid, StockDailyBar.change_pct <= -limit_pct + 0.30)
+        touched_up = and_(valid, StockDailyBar.high_price.is_not(None), high_change >= limit_pct - 0.30)
+        failed_up = and_(touched_up, StockDailyBar.change_pct < limit_pct - 0.30)
+        async with async_session() as session:
+            rows = (await session.execute(
+                select(
+                    StockDailyBar.trade_date,
+                    func.count(StockDailyBar.id),
+                    func.sum(case((StockDailyBar.change_pct > 0, 1), else_=0)),
+                    func.sum(case((StockDailyBar.change_pct < 0, 1), else_=0)),
+                    func.sum(case((StockDailyBar.change_pct == 0, 1), else_=0)),
+                    func.sum(StockDailyBar.amount),
+                    func.count(StockDailyBar.amount),
+                    func.avg(StockDailyBar.turnover),
+                    func.count(StockDailyBar.turnover),
+                    func.sum(case((sealed_up, 1), else_=0)),
+                    func.sum(case((sealed_down, 1), else_=0)),
+                    func.sum(case((failed_up, 1), else_=0)),
+                )
+                .where(StockDailyBar.trade_date.in_(trade_dates))
+                .group_by(StockDailyBar.trade_date)
+            )).all()
+            limit_rows = (await session.execute(
+                select(StockDailyBar.trade_date, StockDailyBar.stock_code)
+                .where(StockDailyBar.trade_date.in_(trade_dates), sealed_up)
+                .order_by(StockDailyBar.trade_date, StockDailyBar.stock_code)
+            )).all()
+
+        session_index = {day: index for index, day in enumerate(sorted(trade_dates))}
+        streaks: dict[str, tuple[int, int]] = {}
+        max_streak_by_date: dict[date, int] = {}
+        for trade_day, stock_code in limit_rows:
+            index = session_index.get(trade_day)
+            if index is None:
+                continue
+            previous_index, previous_streak = streaks.get(str(stock_code), (-2, 0))
+            streak = previous_streak + 1 if previous_index == index - 1 else 1
+            streaks[str(stock_code)] = (index, streak)
+            max_streak_by_date[trade_day] = max(max_streak_by_date.get(trade_day, 0), streak)
+
+        return {
+            row[0]: {
+                "stock_count": int(row[1] or 0),
+                "up_count": int(row[2] or 0),
+                "down_count": int(row[3] or 0),
+                "flat_count": int(row[4] or 0),
+                "market_amount": int(row[5]) if row[5] is not None else None,
+                "amount_count": int(row[6] or 0),
+                "average_turnover": round(float(row[7]), 6) if row[7] is not None else None,
+                "turnover_count": int(row[8] or 0),
+                "limit_up_count": int(row[9] or 0),
+                "limit_down_count": int(row[10] or 0),
+                "failed_limit_count": int(row[11] or 0),
+                "max_streak_height": max_streak_by_date.get(row[0], 0),
+            }
+            for row in rows
+        }
+
+    @staticmethod
     async def _upsert(rows: list[dict[str, Any]]) -> int:
         if not rows:
             return 0
@@ -95,7 +184,7 @@ class StrategicMarketDataService:
         return len(rows)
 
     async def sync_recent(self, days: int = 30) -> dict[str, Any]:
-        bounded = min(max(int(days), 1), 60)
+        bounded = min(max(int(days), 1), 260)
         async with async_session() as session:
             trade_dates = list((await session.execute(
                 select(StockDailyBar.trade_date)
@@ -112,19 +201,26 @@ class StrategicMarketDataService:
         if not trade_dates:
             return {"status": "unavailable", "written": 0, "reason": "stock_daily_bars_empty"}
 
+        aggregates = await self._aggregate_many(trade_dates)
+
         semaphore = asyncio.Semaphore(self._CONCURRENCY)
         recent_pool_cutoff = shanghai_now().date() - timedelta(days=35)
 
         async def fetch_one(trade_date: date) -> dict[str, Any]:
-            aggregate = await self._aggregate(trade_date)
+            aggregate = aggregates.get(trade_date) or await self._aggregate(trade_date)
             prior = existing.get(trade_date)
             limit_up_count = prior.limit_up_count if prior else None
             limit_down_count = prior.limit_down_count if prior else None
             failed_count = prior.failed_limit_count if prior else None
             max_streak = prior.max_streak_height if prior else None
+            exact_limit_data = bool(
+                prior
+                and prior.source != "daily_bar_derived"
+                and None not in (limit_up_count, limit_down_count, failed_count, max_streak)
+            )
             should_fetch_pools = (
                 trade_date >= recent_pool_cutoff
-                and None in (limit_up_count, limit_down_count, failed_count, max_streak)
+                and not exact_limit_data
             )
             if should_fetch_pools:
                 async with semaphore:
@@ -143,17 +239,28 @@ class StrategicMarketDataService:
                     limit_down_count = int(down.get("total") or 0)
                 if failed.get("trade_date"):
                     failed_count = int(failed.get("total") or 0)
+                exact_limit_data = bool(
+                    up.get("trade_date") and down.get("trade_date") and failed.get("trade_date")
+                )
+            if not exact_limit_data:
+                limit_up_count = aggregate.get("limit_up_count")
+                limit_down_count = aggregate.get("limit_down_count")
+                failed_count = aggregate.get("failed_limit_count")
+                max_streak = aggregate.get("max_streak_height")
             denominator = (limit_up_count or 0) + (failed_count or 0)
             failed_rate = round((failed_count or 0) / denominator * 100, 4) if denominator else None
             return {
                 "trade_date": trade_date,
-                **aggregate,
+                **{key: aggregate.get(key) for key in (
+                    "stock_count", "up_count", "down_count", "flat_count",
+                    "market_amount", "amount_count", "average_turnover", "turnover_count",
+                )},
                 "limit_up_count": limit_up_count,
                 "limit_down_count": limit_down_count,
                 "failed_limit_count": failed_count,
                 "failed_limit_rate": failed_rate,
                 "max_streak_height": max_streak,
-                "source": "eastmoney+daily_bars",
+                "source": "eastmoney+daily_bars" if exact_limit_data else "daily_bar_derived",
                 "updated_at": datetime.utcnow(),
             }
 
@@ -163,10 +270,19 @@ class StrategicMarketDataService:
             results = await asyncio.gather(*(fetch_one(item) for item in batch), return_exceptions=True)
             rows.extend(item for item in results if isinstance(item, dict))
         written = await self._upsert(rows)
+        try:
+            from services.quant_research_workspace import quant_research_workspace
+
+            quant_research_workspace.invalidate_manifest_cache()
+        except Exception:
+            pass
+        exact_sessions = sum(item.get("source") != "daily_bar_derived" for item in rows)
         return {
             "status": "success" if written == len(trade_dates) else "partial",
             "written": written,
             "requested": len(trade_dates),
+            "exact_sessions": exact_sessions,
+            "derived_sessions": len(rows) - exact_sessions,
             "data_date": max(trade_dates).isoformat(),
         }
 

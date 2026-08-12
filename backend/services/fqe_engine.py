@@ -660,6 +660,7 @@ class FQECompareService:
 
     async def compare(self, *, top_n: int, candidate_pool: int, mode: str, force: bool, job_id: str | None = None) -> dict:
         cached = quant_store.read("market_snapshot")
+        snapshot_warnings: list[str] = []
         fetched_at = None
         try:
             fetched_at = datetime.fromisoformat(str(cached.get("fetched_at") or ""))
@@ -683,6 +684,18 @@ class FQECompareService:
             snapshot = cached
         if stale:
             snapshot = {**snapshot, "is_realtime": False, "source": "cache"}
+        if snapshot.get("complete"):
+            try:
+                from services.pit_market_data import pit_market_data_service
+                from services.quant_research_workspace import quant_research_workspace
+
+                universe_result = await pit_market_data_service.capture_universe(snapshot)
+                if universe_result.get("status") not in {"success", "partial"}:
+                    snapshot_warnings.append("完整行情已读取，但当前点时股票池登记未完成")
+                else:
+                    quant_research_workspace.invalidate_manifest_cache()
+            except Exception as exc:
+                snapshot_warnings.append(f"当前点时股票池登记失败：{type(exc).__name__}")
         contexts = [normalize_snapshot_stock(item) for item in snapshot.get("stocks") or []]
         if not contexts:
             raise RuntimeError("全市场股票池为空")
@@ -712,7 +725,8 @@ class FQECompareService:
         financial_available = sum(1 for item in contexts if ((item.get("_feature_meta") or {}).get("financial") or {}).get("status") == "available")
         ttm_available = sum(1 for item in contexts if item.get("ttm_available"))
         warnings = list(dict.fromkeys(
-            (feature_result.get("warnings") or [])
+            snapshot_warnings
+            + (feature_result.get("warnings") or [])
             + (reference_result.get("warnings") or [])
             + retail.get("warnings", [])
             + institutional.get("warnings", [])
@@ -742,6 +756,11 @@ class FQECompareService:
     @staticmethod
     def get_status(job_id: str) -> dict | None:
         return get_job("fqe", job_id)
+
+    @staticmethod
+    def running_job() -> dict | None:
+        """Expose an in-flight comparison so a page refresh can resume it."""
+        return latest_running_job("fqe")
 
     @staticmethod
     def _local_latest() -> dict | None:

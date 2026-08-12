@@ -395,7 +395,7 @@ class ZhabanStrategyService:
         }
 
     async def _load_scan_bars(
-        self, requested_date: date | None,
+        self, requested_date: date | None, *, job_id: str | None = None,
     ) -> tuple[date | None, dict[str, list[dict[str, Any]]], list[str]]:
         warnings: list[str] = []
         async with async_session() as session:
@@ -412,24 +412,42 @@ class ZhabanStrategyService:
                     return None, {}, ["所选日期之前没有可用日线。"]
                 if effective != requested_date:
                     warnings.append(f"{requested_date.isoformat()}不是缓存交易日，已使用{effective.isoformat()}。")
+            if job_id:
+                update_job("zhaban", job_id, phase="daily_cache", progress=15, message=f"已定位数据日{effective.isoformat()}，正在锁定股票池")
             target_rows = list((await session.execute(
-                select(StockDailyBar).where(StockDailyBar.trade_date == effective).order_by(StockDailyBar.stock_code)
+                select(StockDailyBar.stock_code)
+                .where(StockDailyBar.trade_date == effective)
+                .order_by(StockDailyBar.stock_code)
             )).scalars().all())
-            codes = [row.stock_code for row in target_rows]
+            codes = [str(code) for code in target_rows]
             if not codes:
                 return effective, {}, [*warnings, "所选交易日没有股票日线记录。"]
+            # The event rules need at most the previous 11 trading bars. A
+            # calendar-day range loads several times more rows around long
+            # weekends and made a scan appear frozen at 12% on the hosted DB.
+            history_dates = list((await session.execute(
+                select(StockDailyBar.trade_date)
+                .where(StockDailyBar.trade_date <= effective)
+                .distinct()
+                .order_by(desc(StockDailyBar.trade_date))
+                .limit(15)
+            )).scalars().all())
+            history_dates.sort()
+            if job_id:
+                update_job("zhaban", job_id, phase="daily_cache", progress=20, message=f"正在读取{len(history_dates)}个交易日的必要日线")
             rows = list((await session.execute(
                 select(StockDailyBar)
                 .where(
                     StockDailyBar.stock_code.in_(codes),
-                    StockDailyBar.trade_date >= effective - timedelta(days=90),
-                    StockDailyBar.trade_date <= effective,
+                    StockDailyBar.trade_date.in_(history_dates),
                 )
                 .order_by(StockDailyBar.stock_code, StockDailyBar.trade_date)
             )).scalars().all())
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             grouped[row.stock_code].append(_bar_dict(row))
+        if job_id:
+            update_job("zhaban", job_id, phase="daily_cache", progress=28, message=f"已读取{len(rows):,}条日线，开始识别事件")
         return effective, dict(grouped), warnings
 
     @staticmethod
@@ -670,8 +688,8 @@ class ZhabanStrategyService:
         if target_date and target_date > shanghai_now().date():
             raise ValueError("研究日期不能晚于今天")
         if job_id:
-            update_job("zhaban", job_id, phase="daily_cache", progress=12, message="正在读取事件日及前90日缓存日线")
-        effective, grouped, warnings = await self._load_scan_bars(target_date)
+            update_job("zhaban", job_id, phase="daily_cache", progress=12, message="正在读取事件日及必要历史日线")
+        effective, grouped, warnings = await self._load_scan_bars(target_date, job_id=job_id)
         if effective is None or not grouped:
             result = {
                 "generated_at": shanghai_now().isoformat(), "data_date": None,
@@ -687,6 +705,8 @@ class ZhabanStrategyService:
         (failed_rows, pool_meta), (sector_map, sector_available) = await asyncio.gather(
             self._pool_events(effective), self._sector_map(),
         )
+        if job_id:
+            update_job("zhaban", job_id, phase="event_pool", progress=48, message="事件池已返回，正在生成板块与个股事件")
         events = []
         for code, history in grouped.items():
             event = self._event_from_history(
@@ -704,6 +724,8 @@ class ZhabanStrategyService:
         if job_id:
             update_job("zhaban", job_id, phase="market_filter", progress=58, message="正在核验炸板率、上证MA20与板块联动")
         market = await self._market_audit(effective, events, pool_meta, config)
+        if job_id:
+            update_job("zhaban", job_id, phase="candidate_scoring", progress=78, message=f"已识别{len(events)}个事件，正在应用筛选因子")
         sector_counts: dict[str, int] = defaultdict(int)
         for event in events:
             if event["event_type"] in {"true_zhaban", "resealed"}:
@@ -1676,6 +1698,14 @@ class ZhabanStrategyService:
     @staticmethod
     def backtest_job(job_id: str) -> dict[str, Any] | None:
         return get_job("zhaban_backtest", job_id)
+
+    @staticmethod
+    def running_scan_job() -> dict[str, Any] | None:
+        return latest_running_job("zhaban")
+
+    @staticmethod
+    def running_backtest_job() -> dict[str, Any] | None:
+        return latest_running_job("zhaban_backtest")
 
 
 zhaban_strategy_service = ZhabanStrategyService()

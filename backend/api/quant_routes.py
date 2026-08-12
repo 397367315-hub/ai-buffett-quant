@@ -93,6 +93,8 @@ async def get_zhaban_bootstrap():
             "config": zhaban_strategy_service.config(),
             "research": research,
             "backtest": backtest,
+            "scan_job": zhaban_strategy_service.running_scan_job(),
+            "backtest_job": zhaban_strategy_service.running_backtest_job(),
             "warnings": warnings,
         },
     }
@@ -299,6 +301,23 @@ async def get_latest_fqe():
     return {"code": 0, "data": await fqe_compare_service.get_latest()}
 
 
+@router.get("/fqe/bootstrap")
+async def get_fqe_bootstrap():
+    """Load the cached result and any active jobs for refresh-safe pages."""
+    latest, sync = await asyncio.gather(
+        fqe_compare_service.get_latest(),
+        fqe_reference_data.latest_status(),
+    )
+    return {
+        "code": 0,
+        "data": {
+            "result": latest,
+            "job": fqe_compare_service.running_job(),
+            "sync": sync,
+        },
+    }
+
+
 @router.post("/fqe/data/sync", status_code=status.HTTP_202_ACCEPTED)
 async def start_fqe_data_sync(payload: FQEDataSyncRequest):
     """Backfill the dated security master, PE history and strategic evidence."""
@@ -340,8 +359,11 @@ async def get_signal_history(limit: int = Query(20, ge=1, le=100)):
 
 
 @router.get("/research/workspace")
-async def get_quant_research_workspace():
-    return {"code": 0, "data": await quant_research_workspace.workspace()}
+async def get_quant_research_workspace(refresh: bool = Query(False)):
+    return {
+        "code": 0,
+        "data": await quant_research_workspace.workspace(force_refresh=refresh),
+    }
 
 
 @router.post("/research/run", status_code=status.HTTP_202_ACCEPTED)

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BarChart3,
@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import StockKlineButton from '@/components/StockKlineButton';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, friendlyApiError } from '@/lib/api';
 import type { BackgroundJob, ZhabanBacktest, ZhabanFactor, ZhabanResearch } from '../types';
 
 type Config = Record<string, any>;
@@ -57,11 +57,10 @@ const FALLBACK_FACTORS: ZhabanFactor[] = [
 ];
 
 function readableError(caught: unknown, fallback: string): string {
-  const message = caught instanceof Error ? caught.message : '';
-  if (['Load failed', 'Failed to fetch', 'NetworkError when attempting to fetch resource.'].includes(message)) {
-    return '后端连接暂时中断，已载入内置默认参数；恢复连接后可运行扫描和回测。';
-  }
-  return message || fallback;
+  const message = friendlyApiError(caught, fallback);
+  return message === '后端连接暂时中断，请稍后重试。'
+    ? '后端连接暂时中断，已载入内置默认参数；恢复连接后可运行扫描和回测。'
+    : message;
 }
 
 const dateInput = (value: Date) => {
@@ -152,17 +151,33 @@ export default function ZhabanPanel() {
   const [endDate, setEndDate] = useState(() => dateInput(new Date()));
   const [capital, setCapital] = useState(100000);
   const [loading, setLoading] = useState(true);
+  const [scanSubmitting, setScanSubmitting] = useState(false);
+  const [backtestSubmitting, setBacktestSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const pollTimers = useRef<Record<'scan' | 'backtest', number | null>>({ scan: null, backtest: null });
+
+  const stopPoll = useCallback((kind: 'scan' | 'backtest') => {
+    const timer = pollTimers.current[kind];
+    if (timer !== null) window.clearTimeout(timer);
+    pollTimers.current[kind] = null;
+  }, []);
+
+  useEffect(() => () => {
+    stopPoll('scan');
+    stopPoll('backtest');
+  }, [stopPoll]);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null); setNotice(null);
     try {
-      const response = await apiFetch<{ data: { config: { strategy: Config; factors: ZhabanFactor[] }; research: ZhabanResearch | null; backtest: ZhabanBacktest | null; warnings: string[] } }>('/quant/zhaban/bootstrap', { cache: 'no-store' });
+      const response = await apiFetch<{ data: { config: { strategy: Config; factors: ZhabanFactor[] }; research: ZhabanResearch | null; backtest: ZhabanBacktest | null; scan_job?: BackgroundJob | null; backtest_job?: BackgroundJob | null; warnings: string[] } }>('/quant/zhaban/bootstrap', { cache: 'no-store' });
       setConfig(response.data.config?.strategy || { ...FALLBACK_CONFIG });
       setFactors(response.data.config?.factors?.length ? response.data.config.factors : FALLBACK_FACTORS);
       setResearch(response.data.research || null);
       setBacktest(response.data.backtest || null);
+      setScanJob(response.data.scan_job || null);
+      setBacktestJob(response.data.backtest_job || null);
       if (response.data.warnings?.length) setNotice(response.data.warnings.join('；'));
     } catch (bootstrapError) {
       try {
@@ -184,34 +199,97 @@ export default function ZhabanPanel() {
 
   const update = (key: string, value: any) => setConfig((current) => ({ ...current, [key]: value }));
 
-  const poll = useCallback((job: BackgroundJob, endpoint: (id: string) => string, done: (data: any) => void, setJob: (job: BackgroundJob | null) => void) => {
+  const poll = useCallback((job: BackgroundJob, endpoint: (id: string) => string, done: (data: any) => void, setJob: (job: BackgroundJob | null) => void, kind: 'scan' | 'backtest') => {
+    stopPoll(kind);
     setJob(job);
-    const timer = window.setInterval(async () => {
+    let failures = 0;
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
       try {
         const response = await apiFetch<{ data: BackgroundJob & { research?: ZhabanResearch; backtest?: ZhabanBacktest } }>(endpoint(job.job_id));
+        if (stopped) return;
+        failures = 0;
         setJob(response.data);
-        if (response.data.status === 'completed') { window.clearInterval(timer); done(response.data.research || response.data.backtest); }
-        if (response.data.status === 'failed') { window.clearInterval(timer); setError(response.data.error || '任务执行失败'); }
-      } catch (caught) { window.clearInterval(timer); setError(caught instanceof Error ? caught.message : '任务状态读取失败'); }
-    }, 1200);
-  }, []);
+        if (response.data.status === 'completed') {
+          stopped = true;
+          stopPoll(kind);
+          setNotice(null);
+          const result = response.data.research || response.data.backtest;
+          if (result) done(result);
+          else void load();
+          return;
+        }
+        if (response.data.status === 'failed') {
+          stopped = true;
+          stopPoll(kind);
+          setError(response.data.error || '任务执行失败');
+          return;
+        }
+        pollTimers.current[kind] = window.setTimeout(tick, 1200);
+      } catch (caught) {
+        if (stopped) return;
+        failures += 1;
+        const message = friendlyApiError(caught, '任务状态读取失败');
+        if (message.includes('404')) {
+          stopped = true;
+          stopPoll(kind);
+          setJob(null);
+          setError('后台任务已中断或被服务重启清理，请重新发起研究。');
+          return;
+        }
+        setNotice(failures >= 3
+          ? `${message}，任务仍在后台运行，系统将继续重试（第${failures}次）。`
+          : '状态读取暂时中断，任务仍在后台运行，正在自动重试。');
+        // A transient Render wake-up/network failure must not orphan the job.
+        pollTimers.current[kind] = window.setTimeout(tick, Math.min(8000, 1200 * (1 + failures)));
+      }
+    };
+    void tick();
+  }, [load, stopPoll]);
+
+  useEffect(() => {
+    if (!scanJob || !['queued', 'running'].includes(scanJob.status) || pollTimers.current.scan !== null) return;
+    poll(scanJob, (id) => `/quant/zhaban/scan/status/${id}`, (value) => { if (value) setResearch(value as ZhabanResearch); }, setScanJob, 'scan');
+  }, [poll, scanJob]);
+
+  useEffect(() => {
+    if (!backtestJob || !['queued', 'running'].includes(backtestJob.status) || pollTimers.current.backtest !== null) return;
+    poll(backtestJob, (id) => `/quant/zhaban/backtest/status/${id}`, (value) => { if (value) setBacktest(value as ZhabanBacktest); }, setBacktestJob, 'backtest');
+  }, [backtestJob, poll]);
 
   const runScan = async () => {
+    setScanSubmitting(true);
     setError(null);
+    setNotice('炸板扫描请求已提交，正在连接后台任务。');
     try {
       const body: Config = { force: true, config };
       if (targetDate) body.target_date = targetDate;
       const response = await apiFetch<{ data: BackgroundJob }>('/quant/zhaban/scan', { method: 'POST', body: JSON.stringify(body) });
-      poll(response.data, (id) => `/quant/zhaban/scan/status/${id}`, (value) => { if (value) setResearch(value as ZhabanResearch); }, setScanJob);
-    } catch (caught) { setError(readableError(caught, '炸板扫描启动失败')); }
+      setNotice('炸板扫描已提交，正在读取后台进度。');
+      poll(response.data, (id) => `/quant/zhaban/scan/status/${id}`, (value) => { if (value) setResearch(value as ZhabanResearch); }, setScanJob, 'scan');
+    } catch (caught) {
+      setNotice(null);
+      setError(readableError(caught, '炸板扫描启动失败'));
+    } finally {
+      setScanSubmitting(false);
+    }
   };
 
   const runBacktest = async () => {
+    setBacktestSubmitting(true);
     setError(null);
+    setNotice('炸板回测请求已提交，正在连接后台任务。');
     try {
       const response = await apiFetch<{ data: BackgroundJob }>('/quant/zhaban/backtest', { method: 'POST', body: JSON.stringify({ start_date: startDate, end_date: endDate, initial_capital: capital, config, force: true }) });
-      poll(response.data, (id) => `/quant/zhaban/backtest/status/${id}`, (value) => { if (value) setBacktest(value as ZhabanBacktest); }, setBacktestJob);
-    } catch (caught) { setError(readableError(caught, '炸板回测启动失败')); }
+      setNotice('炸板回测已提交，正在读取后台进度。');
+      poll(response.data, (id) => `/quant/zhaban/backtest/status/${id}`, (value) => { if (value) setBacktest(value as ZhabanBacktest); }, setBacktestJob, 'backtest');
+    } catch (caught) {
+      setNotice(null);
+      setError(readableError(caught, '炸板回测启动失败'));
+    } finally {
+      setBacktestSubmitting(false);
+    }
   };
 
   const summary = backtest?.summary || {};
@@ -223,7 +301,7 @@ export default function ZhabanPanel() {
     <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3"><div><h2 className="flex items-center gap-2 text-base font-bold text-text"><FlaskConical size={18} className="text-accent" />炸板策略研究</h2><p className="mt-1 text-xs text-text-secondary">识别涨停共识被挑战后的价格韧性，日线结果只用于研究候选和模拟回测。</p></div><button type="button" onClick={load} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text"><RefreshCw size={13} />刷新缓存</button></div>
     <section className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-3">
       <FactorEditor factors={factors} config={config} onChange={update} />
-      <section className="border border-border rounded-md p-3"><div className="flex items-center gap-2 text-sm font-semibold text-text"><WalletCards size={15} className="text-accent" />研究执行</div><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><label className="text-text-secondary">事件日期<input type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} className="mt-1 w-full rounded border border-border bg-[#0D1117] px-2 py-1.5 font-mono text-text" /></label><label className="text-text-secondary">回测初始资金<input type="number" min={10000} value={capital} onChange={(event) => setCapital(Number(event.target.value) || 100000)} className="mt-1 w-full rounded border border-border bg-[#0D1117] px-2 py-1.5 font-mono text-text" /></label><label className="text-text-secondary">回测开始<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="mt-1 w-full rounded border border-border bg-[#0D1117] px-2 py-1.5 font-mono text-text" /></label><label className="text-text-secondary">回测结束<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="mt-1 w-full rounded border border-border bg-[#0D1117] px-2 py-1.5 font-mono text-text" /></label></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={runScan} disabled={Boolean(scanJob && ['queued', 'running'].includes(scanJob.status))} className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs text-white disabled:opacity-50"><Play size={13} />运行事件扫描</button><button type="button" onClick={runBacktest} disabled={Boolean(backtestJob && ['queued', 'running'].includes(backtestJob.status))} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text disabled:opacity-50"><BarChart3 size={13} />运行日线回测</button></div><div className="mt-3 text-[11px] leading-5 text-text-secondary">默认：下一交易日开盘成交、最长持有{config.holding_days || 3}日；止损{config.stop_loss_pct || 5}%、达到{config.take_profit_pct || 8}%分批止盈，余仓移至成本线。若打开历史竞价确认而缓存没有竞价数据，回测会明确返回数据不足。</div></section>
+      <section className="border border-border rounded-md p-3"><div className="flex items-center gap-2 text-sm font-semibold text-text"><WalletCards size={15} className="text-accent" />研究执行</div><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><label className="text-text-secondary">事件日期<input type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} className="mt-1 w-full rounded border border-border bg-[#0D1117] px-2 py-1.5 font-mono text-text" /></label><label className="text-text-secondary">回测初始资金<input type="number" min={10000} value={capital} onChange={(event) => setCapital(Number(event.target.value) || 100000)} className="mt-1 w-full rounded border border-border bg-[#0D1117] px-2 py-1.5 font-mono text-text" /></label><label className="text-text-secondary">回测开始<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="mt-1 w-full rounded border border-border bg-[#0D1117] px-2 py-1.5 font-mono text-text" /></label><label className="text-text-secondary">回测结束<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="mt-1 w-full rounded border border-border bg-[#0D1117] px-2 py-1.5 font-mono text-text" /></label></div><div className="mt-3 flex flex-wrap gap-2"><button type="button" onClick={runScan} disabled={scanSubmitting || Boolean(scanJob && ['queued', 'running'].includes(scanJob.status))} aria-busy={scanSubmitting} className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs text-white disabled:opacity-50"><Play size={13} className={scanSubmitting ? 'animate-pulse' : ''} />{scanSubmitting ? '提交中' : '运行事件扫描'}</button><button type="button" onClick={runBacktest} disabled={backtestSubmitting || Boolean(backtestJob && ['queued', 'running'].includes(backtestJob.status))} aria-busy={backtestSubmitting} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text disabled:opacity-50"><BarChart3 size={13} className={backtestSubmitting ? 'animate-pulse' : ''} />{backtestSubmitting ? '提交中' : '运行日线回测'}</button></div><div className="mt-3 text-[11px] leading-5 text-text-secondary">默认：下一交易日开盘成交、最长持有{config.holding_days || 3}日；止损{config.stop_loss_pct || 5}%、达到{config.take_profit_pct || 8}%分批止盈，余仓移至成本线。若打开历史竞价确认而缓存没有竞价数据，回测会明确返回数据不足。</div></section>
     </section>
     <ProgressBar job={scanJob} label="正在扫描炸板事件" />
     <ProgressBar job={backtestJob} label="正在回测炸板策略" />

@@ -798,6 +798,15 @@ class HistoryCacheService:
         # quantitative scans after a Render restart or an upstream outage.
         from quant.market_cache import save_quant_market_snapshot
         await save_quant_market_snapshot(snapshot)
+        pit_universe = None
+        try:
+            # Reuse this already verified full snapshot so the daily cache and
+            # the point-in-time universe cannot drift to different stock sets.
+            from services.pit_market_data import pit_market_data_service
+
+            pit_universe = await pit_market_data_service.capture_universe(snapshot)
+        except Exception as exc:
+            pit_universe = {"status": "unavailable", "error": type(exc).__name__}
 
         rows: list[dict] = []
         for stock in snapshot.get("stocks") or []:
@@ -862,6 +871,7 @@ class HistoryCacheService:
             "data_date": trade_date.isoformat(),
             "source_updated_at": snapshot.get("source_updated_at"),
             "is_realtime": bool(snapshot.get("is_realtime")),
+            "pit_universe": pit_universe,
         }
 
     async def _latest_stock_bar_dates(self, stock_codes: list[str]) -> dict[str, date]:

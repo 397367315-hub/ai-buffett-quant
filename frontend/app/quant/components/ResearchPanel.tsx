@@ -15,7 +15,7 @@ import {
   SlidersHorizontal,
   XCircle,
 } from 'lucide-react';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, friendlyApiError } from '@/lib/api';
 import type {
   BackgroundJob,
   ResearchExperiment,
@@ -56,8 +56,17 @@ function statusLabel(status: string): string {
   return labels[status] || status;
 }
 
+function inventoryLabel(status: string): { label: string; className: string } {
+  if (status === 'ready' || status === 'derived_ready') return { label: status === 'derived_ready' ? '日线推导可研究' : '可读取', className: 'border-up/50 bg-[#26A69A18] text-up' };
+  if (status === 'collecting' || status === 'partial' || status === 'derived_partial') return { label: status === 'derived_partial' ? '部分推导' : '持续积累', className: 'border-warn/50 bg-[#D2992218] text-warn' };
+  if (status === 'forward_only') return { label: '仅前向采集', className: 'border-warn/50 bg-[#D2992218] text-warn' };
+  if (status === 'missing') return { label: '尚未采集', className: 'border-down/50 bg-[#EF535018] text-down' };
+  return { label: status || '未知', className: 'border-border bg-[#161B22] text-text-secondary' };
+}
+
 function DatasetSnapshot({ dataset }: { dataset: ResearchWorkspace['dataset'] }) {
   const [from, to] = dataset.date_range || [null, null];
+  const inventory = dataset.data_inventory || [];
   return <section className="border border-border rounded-md p-3">
     <div className="flex flex-wrap items-center justify-between gap-2 mb-3"><h2 className="text-sm font-semibold text-text flex items-center gap-2"><Database size={15} className="text-accent" />数据快照</h2><span className={`rounded border px-1.5 py-0.5 text-[11px] ${dataset.available ? 'border-up/50 bg-[#26A69A18] text-up' : 'border-warn/50 bg-[#D2992218] text-warn'}`}>{dataset.available ? '可读取' : '不可用'}</span></div>
     <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
@@ -66,8 +75,9 @@ function DatasetSnapshot({ dataset }: { dataset: ResearchWorkspace['dataset'] })
       <div><div className="text-text-secondary">覆盖区间</div><div className="font-mono text-text mt-1">{from || '--'} 至 {to || '--'}</div></div>
       <div><div className="text-text-secondary">来源</div><div className="text-text mt-1 truncate" title={(dataset.source || []).join(',')}>{(dataset.source || []).join(', ') || '缓存不可用'}</div></div>
     </div>
-    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-text-secondary"><span>数据集 {dataset.dataset_id}</span><span>历史股票池 {dataset.universe?.status === 'ready' ? '完整' : dataset.universe?.status === 'partial' ? '部分覆盖（可研究、有偏差）' : '不可用'}</span><span>点时状态 {dataset.point_in_time?.status || '--'}</span><span>缓存参与 {dataset.cache_used ? '是' : '否'}</span></div>
+    <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-text-secondary"><span>数据集 {dataset.dataset_id}</span><span>历史股票池 {dataset.universe?.status === 'ready' ? '完整' : dataset.universe?.status === 'partial' ? '部分覆盖（可研究、有偏差）' : dataset.universe?.observed_from_daily_bars ? '日线观测（有偏差）' : '仅前向采集'}</span><span>点时状态 {dataset.point_in_time?.status || '--'}</span><span>行情缓存参与 {dataset.cache_used ? '是' : '否'}</span><span>清单缓存 {dataset.manifest_cache_used ? '命中' : '刚刷新'}</span></div>
     {(dataset.warnings || []).length > 0 && <div className="mt-3 space-y-1 text-[11px] text-warn">{dataset.warnings?.slice(0, 3).map((warning) => <div key={warning} className="flex gap-1.5"><AlertTriangle size={12} className="mt-0.5 shrink-0" />{warning}</div>)}</div>}
+    {inventory.length > 0 && <div className="mt-3 overflow-x-auto rounded-md border border-border"><table className="w-full min-w-[760px] text-[11px]"><thead className="bg-[#161B22] text-text-secondary"><tr><th className="px-2.5 py-2 text-left">数据集</th><th className="px-2.5 py-2 text-left">状态</th><th className="px-2.5 py-2 text-right">记录</th><th className="px-2.5 py-2 text-right">交易日</th><th className="px-2.5 py-2 text-left">覆盖区间</th><th className="px-2.5 py-2 text-left">口径</th></tr></thead><tbody>{inventory.map((item) => { const badge = inventoryLabel(item.status); const range = item.date_range || []; const sessions = item.complete_sessions ?? item.session_count ?? 0; const observed = item.observed_sessions ?? item.session_count ?? 0; const sessionLabel = observed !== sessions ? `${sessions}/${item.target_sessions || '--'}（观测${observed}）` : `${sessions}/${item.target_sessions || '--'}`; return <tr key={item.key} className="border-t border-border/70 align-top"><td className="px-2.5 py-2 text-text">{item.label}</td><td className="px-2.5 py-2"><span className={`rounded border px-1.5 py-0.5 ${badge.className}`}>{badge.label}</span></td><td className="px-2.5 py-2 text-right font-mono text-text">{(item.record_count || 0).toLocaleString('zh-CN')}</td><td className="px-2.5 py-2 text-right font-mono text-text">{sessionLabel}</td><td className="px-2.5 py-2 font-mono text-text-secondary">{range[0] || '--'} 至 {range[1] || '--'}</td><td className="max-w-[300px] px-2.5 py-2 text-text-secondary">{item.note || '--'}</td></tr>; })}</tbody></table></div>}
   </section>;
 }
 
@@ -152,25 +162,28 @@ export default function ResearchPanel() {
   const [dsl, setDsl] = useState(DEFAULT_DSL);
   const [dslResult, setDslResult] = useState<{ valid: boolean; status_label: string; errors: string[]; warnings: string[]; dsl_hash?: string } | null>(null);
 
-  const loadWorkspace = useCallback(async () => {
+  const loadWorkspace = useCallback(async (force = false) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await apiFetch<{ data: ResearchWorkspace }>('/quant/research/workspace');
+      const response = await apiFetch<{ data: ResearchWorkspace }>(`/quant/research/workspace${force ? '?refresh=true' : ''}`);
       setWorkspace(response.data);
       if (response.data.latest_report) setReport(response.data.latest_report);
       if (response.data.active_job) {
         setJob(response.data.active_job);
         setRunning(['queued', 'running'].includes(response.data.active_job.status));
         setProgress(response.data.active_job.progress || 0);
+      } else {
+        setJob(null);
+        setRunning(false);
       }
-      if (!response.data.experiments.some((item) => item.id === selectedId)) setSelectedId(response.data.experiments[0]?.id || '');
+      setSelectedId((current) => response.data.experiments.some((item) => item.id === current) ? current : response.data.experiments[0]?.id || '');
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '研究工作台读取失败');
+      setError(`研究工作台读取失败：${friendlyApiError(caught, '研究数据暂时无法读取')}`);
     } finally {
       setLoading(false);
     }
-  }, [selectedId]);
+  }, []);
 
   useEffect(() => { loadWorkspace(); }, [loadWorkspace]);
 
@@ -179,10 +192,12 @@ export default function ResearchPanel() {
   useEffect(() => {
     if (!job || !['queued', 'running'].includes(job.status)) return;
     let cancelled = false;
+    let failures = 0;
     const poll = async () => {
       try {
         const response = await apiFetch<{ data: BackgroundJob }>(`/quant/research/run/status/${job.job_id}`);
         if (cancelled) return;
+        failures = 0;
         const current = response.data;
         setJob(current);
         setProgress(current.progress || 0);
@@ -195,7 +210,10 @@ export default function ResearchPanel() {
           setError(current.error ? `研究失败：${current.error}` : current.message || '研究任务运行失败');
         }
       } catch (caught) {
-        if (!cancelled) setError(caught instanceof Error ? `研究状态读取失败：${caught.message}` : '研究状态读取失败');
+        if (!cancelled) {
+          failures += 1;
+          setError(`研究任务仍在后台运行，状态读取暂时中断（第${failures}次）：${friendlyApiError(caught, '状态读取失败')}`);
+        }
       }
     };
     void poll();
@@ -216,8 +234,7 @@ export default function ResearchPanel() {
       setJob(response.data);
       setProgress(response.data.progress || 0);
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : '';
-      setError(message === 'Load failed' ? '研究任务提交连接中断，请检查后端状态后重试。' : message || '研究任务提交失败');
+      setError(`研究任务提交失败：${friendlyApiError(caught, '研究任务提交失败')}`);
       setRunning(false);
     }
   };
@@ -234,10 +251,10 @@ export default function ResearchPanel() {
   };
 
   if (loading) return <div className="py-20 text-center text-text-secondary"><Loader2 size={28} className="mx-auto animate-spin text-accent" /><div className="text-sm mt-3">正在读取研究数据清单与因子注册表</div><div className="w-64 max-w-full h-1.5 mx-auto mt-4 bg-[#21262D] rounded-full overflow-hidden"><div className="h-full bg-accent transition-all" style={{ width: '38%' }} /></div></div>;
-  if (!workspace) return <div className="border border-border rounded-md py-16 text-center"><FlaskConical size={26} className="mx-auto text-warn" /><div className="text-sm text-text mt-3">研究工作台暂不可用</div><button type="button" onClick={loadWorkspace} className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text"><Play size={13} />重新读取</button></div>;
+  if (!workspace) return <div className="border border-border rounded-md py-16 text-center"><FlaskConical size={26} className="mx-auto text-warn" /><div className="text-sm text-text mt-3">研究工作台暂不可用</div><button type="button" onClick={() => loadWorkspace()} className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text"><Play size={13} />重新读取</button></div>;
 
   return <div className="space-y-4">
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3"><div><h2 className="text-base font-bold text-text flex items-center gap-2"><FlaskConical size={18} className="text-accent" />量化研究工作台</h2><p className="text-xs text-text-secondary mt-1">数据快照、因子假设、回测分区和晋级门槛统一留痕。</p></div><div className="text-[11px] text-text-secondary">研究结果只进入报告与模拟盘，不连接券商下单</div></div>
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-3"><div><h2 className="text-base font-bold text-text flex items-center gap-2"><FlaskConical size={18} className="text-accent" />量化研究工作台</h2><p className="text-xs text-text-secondary mt-1">数据快照、因子假设、回测分区和晋级门槛统一留痕。</p></div><div className="flex items-center gap-3"><div className="text-[11px] text-text-secondary">研究结果只进入报告与模拟盘，不连接券商下单</div><button type="button" onClick={() => loadWorkspace(true)} disabled={loading} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text disabled:opacity-50"><Database size={13} className={loading ? 'animate-pulse' : ''} />{loading ? '读取中' : '刷新数据清单'}</button></div></div>
     <DatasetSnapshot dataset={workspace.dataset} />
 
     <section className="space-y-3"><div className="flex items-center justify-between gap-2"><h2 className="text-sm font-semibold text-text flex items-center gap-2"><SlidersHorizontal size={15} className="text-accent" />实验轨道</h2><span className="text-[11px] text-text-secondary">选择一个实验后锁定参数运行</span></div><div className="grid grid-cols-1 lg:grid-cols-3 gap-3">{workspace.experiments.map((item) => <ExperimentCard key={item.id} item={item} selected={item.id === selectedId} onSelect={() => setSelectedId(item.id)} />)}</div></section>

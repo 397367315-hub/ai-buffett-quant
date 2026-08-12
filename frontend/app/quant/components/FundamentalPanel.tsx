@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, BarChart3, CheckCircle2, Clock3, Database, Layers3, Loader2, RefreshCw, ShieldAlert, SlidersHorizontal, Wifi } from 'lucide-react';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, friendlyApiError } from '@/lib/api';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import StockKlineButton from '@/components/StockKlineButton';
 import type { BackgroundJob, FQEDataSyncStatus, FQEHolding, FQEPortfolio, FQEResult } from '../types';
@@ -193,35 +193,89 @@ export default function FundamentalPanel() {
   const [mode, setMode] = useState<'strict' | 'pragmatic'>('pragmatic');
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [syncWorking, setSyncWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const loadGeneration = useRef(0);
+  const errorRef = useRef<string | null>(null);
+  const syncErrorRef = useRef<string | null>(null);
+  errorRef.current = error;
+  syncErrorRef.current = syncError;
+
+  const loadInitial = useCallback(async () => {
+    const generation = ++loadGeneration.current;
+    setLoading(true);
+    setError(null);
+    setSyncError(null);
+    try {
+      const response = await apiFetch<{
+        data: {
+          result: FQEResult | null;
+          job: BackgroundJob | null;
+          sync: FQEDataSyncStatus;
+        };
+      }>('/quant/fqe/bootstrap');
+      if (generation !== loadGeneration.current) return;
+      setResult(response.data.result || null);
+      setJob(response.data.job || null);
+      setSyncStatus(response.data.sync || null);
+      setNotice(null);
+      setLoading(false);
+      return;
+    } catch (bootstrapError) {
+      // Keep compatibility with a backend that is still rolling out the
+      // refresh-safe bootstrap route.
+      const results = await Promise.allSettled([
+        apiFetch<{ data: FQEResult | null }>('/quant/fqe/latest'),
+        apiFetch<{ data: FQEDataSyncStatus }>('/quant/fqe/data/status'),
+      ]);
+      if (generation !== loadGeneration.current) return;
+      const [latest, sync] = results;
+      setJob(null);
+      if (latest.status === 'fulfilled') {
+        setResult(latest.value.data || null);
+      } else {
+        setError(`最近结果读取失败：${friendlyApiError(latest.reason, 'FQE结果暂时无法读取')}`);
+      }
+      if (sync.status === 'fulfilled') {
+        setSyncStatus(sync.value.data);
+      } else {
+        setSyncError(`审计状态读取失败：${friendlyApiError(sync.reason, '审计数据状态暂时无法读取')}`);
+      }
+      if (latest.status === 'rejected' && sync.status === 'rejected') {
+        setError(`FQE工作台读取失败：${friendlyApiError(bootstrapError, '后端暂时无法连接')}`);
+      }
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let mounted = true;
-    Promise.allSettled([
-      apiFetch<{ data: FQEResult | null }>('/quant/fqe/latest'),
-      apiFetch<{ data: FQEDataSyncStatus }>('/quant/fqe/data/status'),
-    ]).then(([latest, sync]) => {
-      if (!mounted) return;
-      if (latest.status === 'fulfilled' && latest.value.data) setResult(latest.value.data);
-      if (sync.status === 'fulfilled') setSyncStatus(sync.value.data);
-    }).finally(() => { if (mounted) setLoading(false); });
-    return () => { mounted = false; };
-  }, []);
+    void loadInitial();
+    return () => { loadGeneration.current += 1; };
+  }, [loadInitial]);
 
   useEffect(() => {
     if (!job || !['queued', 'running'].includes(job.status)) return;
     let mounted = true;
+    let failures = 0;
     const poll = async () => {
       try {
         const response = await apiFetch<{ data: BackgroundJob }>(`/quant/fqe/status/${job.job_id}`);
         if (!mounted) return;
+        failures = 0;
         const next = response.data;
         setJob(next);
+        if (failures === 0 && errorRef.current?.startsWith('任务仍在后台运行')) setError(null);
         if (next.status === 'completed' && next.result) setResult(next.result as unknown as FQEResult);
         if (next.status === 'failed') setError(next.error || '双引擎任务失败，请检查数据源和缓存。');
+        if (next.status === 'completed') setNotice('双引擎计算完成，结果已更新。');
       } catch (caught) {
-        if (mounted) setError(caught instanceof Error ? caught.message : 'FQE任务状态读取失败');
+        if (mounted) {
+          failures += 1;
+          setNotice(`双引擎状态读取暂时中断，系统将继续重试（第${failures}次）。`);
+          if (failures >= 3) setError(`任务仍在后台运行：${friendlyApiError(caught, '状态读取失败')}`);
+        }
       }
     };
     poll();
@@ -233,12 +287,23 @@ export default function FundamentalPanel() {
     const run = syncStatus?.run;
     if (!run || !['queued', 'running'].includes(run.status)) return;
     let mounted = true;
+    let failures = 0;
     const poll = async () => {
       try {
         const response = await apiFetch<{ data: FQEDataSyncStatus }>('/quant/fqe/data/status');
-        if (mounted) setSyncStatus(response.data);
+        if (mounted) {
+          failures = 0;
+          setSyncStatus(response.data);
+          if (syncErrorRef.current?.startsWith('审计状态读取暂时中断')) setSyncError(null);
+          if (['completed', 'partial', 'failed'].includes(response.data.run?.status || '')) {
+            setNotice(response.data.run?.status === 'completed' ? '审计数据补齐完成，覆盖状态已更新。' : '审计数据任务已结束，请查看覆盖提示。');
+          }
+        }
       } catch (caught) {
-        if (mounted) setSyncError(caught instanceof Error ? caught.message : '审计数据状态读取失败');
+        if (mounted) {
+          failures += 1;
+          setSyncError(`审计状态读取暂时中断，正在自动重试（第${failures}次）：${friendlyApiError(caught, '状态读取失败')}`);
+        }
       }
     };
     const timer = window.setInterval(poll, 1500);
@@ -247,6 +312,7 @@ export default function FundamentalPanel() {
 
   const run = async (force: boolean) => {
     setWorking(true); setError(null);
+    setNotice(force ? '强制更新已提交，正在获取最新行情与审计数据。' : '双引擎任务已提交，正在后台计算。');
     try {
       const response = await apiFetch<{ data: BackgroundJob }>('/quant/fqe/compare', {
         method: 'POST',
@@ -254,14 +320,17 @@ export default function FundamentalPanel() {
       });
       setJob(response.data);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '双引擎启动失败');
+      setNotice(null);
+      setError(friendlyApiError(caught, '双引擎启动失败'));
     } finally {
       setWorking(false);
     }
   };
 
   const startDataSync = async () => {
+    setSyncWorking(true);
     setSyncError(null);
+    setNotice('审计数据补齐已提交，正在登记行情、PIT 与市场证据。');
     try {
       const response = await apiFetch<{ data: FQEDataSyncStatus['run'] }>('/quant/fqe/data/sync', {
         method: 'POST',
@@ -277,7 +346,10 @@ export default function FundamentalPanel() {
         },
       }));
     } catch (caught) {
-      setSyncError(caught instanceof Error ? caught.message : '审计数据补齐任务启动失败');
+      setNotice(null);
+      setSyncError(friendlyApiError(caught, '审计数据补齐任务启动失败'));
+    } finally {
+      setSyncWorking(false);
     }
   };
 
@@ -295,15 +367,15 @@ export default function FundamentalPanel() {
           <h2 className="flex items-center gap-2 text-base font-bold text-text"><Layers3 size={17} className="text-accent" />FQE 基本面双引擎</h2>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-secondary"><span className="inline-flex items-center gap-1"><Clock3 size={12} />研究日 {result?.as_of_date || '--'}</span><span className={`inline-flex items-center gap-1 ${sourceClass}`}>{result?.is_realtime ? <Wifi size={12} /> : <Database size={12} />}{sourceLabel}</span><span>最近生成 {time(result?.generated_at)}</span></div>
         </div>
-        <div className="text-xs text-text-secondary">零售侧重 GARP；机构侧重中性化与风险约束</div>
+        <div className="flex items-center gap-3"><div className="text-xs text-text-secondary">零售侧重 GARP；机构侧重中性化与风险约束</div><button type="button" onClick={() => void loadInitial()} disabled={loading} className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text disabled:opacity-50"><RefreshCw size={13} className={loading ? 'animate-spin' : ''} />{loading ? '读取中' : '重新读取'}</button></div>
       </div>
 
       <div className="grid grid-cols-1 gap-3 border border-border rounded-md p-3 md:grid-cols-[1fr_1fr_1fr_auto_auto] md:items-end">
         <label className="text-xs text-text-secondary"><span className="mb-1 flex items-center gap-1"><SlidersHorizontal size={12} />组合数量</span><input type="number" min={5} max={15} value={topN} onChange={(event) => setTopN(Math.min(15, Math.max(5, Number(event.target.value) || 10)))} className="w-full rounded-md border border-border bg-bg px-2.5 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label>
         <label className="text-xs text-text-secondary"><span className="mb-1 block">机构候选池</span><input type="number" min={20} max={120} step={10} value={candidatePool} onChange={(event) => setCandidatePool(Math.min(120, Math.max(20, Number(event.target.value) || 60)))} className="w-full rounded-md border border-border bg-bg px-2.5 py-2 font-mono text-sm text-text focus:border-accent focus:outline-none" /></label>
         <label className="text-xs text-text-secondary"><span className="mb-1 block">财务数据模式</span><select value={mode} onChange={(event) => setMode(event.target.value as 'strict' | 'pragmatic')} className="w-full rounded-md border border-border bg-bg px-2.5 py-2 text-sm text-text focus:border-accent focus:outline-none"><option value="pragmatic">宽松研究</option><option value="strict">严格可审计</option></select></label>
-        <button type="button" onClick={() => run(false)} disabled={active || working} className="inline-flex items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs text-white disabled:opacity-50"><RefreshCw size={14} className={active || working ? 'animate-spin' : ''} />{active ? '计算中' : '运行双引擎'}</button>
-        <button type="button" onClick={() => run(true)} disabled={active || working} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text disabled:opacity-50" title="忽略短期行情缓存并重新获取">强制更新</button>
+        <button type="button" onClick={() => run(false)} disabled={active || working} aria-busy={working} className="inline-flex items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-2 text-xs text-white disabled:opacity-50"><RefreshCw size={14} className={active || working ? 'animate-spin' : ''} />{working ? '提交中' : active ? '计算中' : '运行双引擎'}</button>
+        <button type="button" onClick={() => run(true)} disabled={active || working} aria-busy={working} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:border-accent hover:text-text disabled:opacity-50" title="忽略短期行情缓存并重新获取"><RefreshCw size={13} className={working ? 'animate-spin' : ''} />{working ? '提交中' : '强制更新'}</button>
       </div>
 
       <div className="text-xs text-text-secondary">优先使用盘中行情；非交易时段或源站失败时使用最近有效缓存。严格模式缺失上市历史或 PE 历史分位时会明确排除，不用零值补齐。</div>
@@ -315,10 +387,11 @@ export default function FundamentalPanel() {
           <span>正 PE 分位 <b className="font-mono font-normal text-text">{syncStatus?.coverage.current_valuation_percentiles ?? syncStatus?.coverage.valuation_percentiles ?? '--'}</b></span>
           <span>估值日期 <b className="font-mono font-normal text-text">{syncStatus?.coverage.valuation_date || '--'}</b></span>
         </div>
-        <button type="button" onClick={startDataSync} disabled={syncActive} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-accent px-3 py-2 text-xs text-accent hover:bg-[#1F6FEB1A] disabled:opacity-50"><Database size={14} />{syncActive ? '审计补数中' : '补齐审计数据'}</button>
+        <button type="button" onClick={startDataSync} disabled={syncActive || syncWorking} aria-busy={syncWorking} className="inline-flex items-center justify-center gap-1.5 rounded-md border border-accent px-3 py-2 text-xs text-accent hover:bg-[#1F6FEB1A] disabled:opacity-50"><Database size={14} className={syncWorking ? 'animate-pulse' : ''} />{syncWorking ? '提交中' : syncActive ? '审计补数中' : '补齐审计数据'}</button>
       </div>
       {syncStatus?.run && <DataSyncProgress status={syncStatus} />}
       {syncError && <div className="flex items-start gap-2 rounded-md border border-down/50 bg-[#EF535022] p-3 text-xs text-down"><AlertTriangle size={15} className="shrink-0" />{syncError}</div>}
+      {notice && <div className="flex items-start gap-2 rounded-md border border-accent/50 bg-[#1F6FEB1A] p-3 text-xs text-accent"><CheckCircle2 size={15} className="shrink-0" />{notice}</div>}
       {job && (active || job.status === 'completed') && <Progress job={job} />}
       {job?.status === 'failed' && <div className="flex items-start gap-2 rounded-md border border-down/50 bg-[#EF535022] p-3 text-xs text-down"><AlertTriangle size={15} className="shrink-0" />{job.error || '任务失败，请重试。'}</div>}
       {error && job?.status !== 'failed' && <div className="flex items-start gap-2 rounded-md border border-down/50 bg-[#EF535022] p-3 text-xs text-down"><AlertTriangle size={15} className="shrink-0" />{error}</div>}

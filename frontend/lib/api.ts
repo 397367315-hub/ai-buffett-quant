@@ -2,6 +2,26 @@ import { clearAuthSession, readAuthSession } from '@/lib/authSession';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+const TRANSIENT_NETWORK_ERRORS = new Set([
+  'Load failed',
+  'Failed to fetch',
+  'NetworkError when attempting to fetch resource.',
+]);
+
+/** Keep browser-specific fetch errors out of user-facing module messages. */
+export function friendlyApiError(caught: unknown, fallback = '请求失败，请稍后重试'): string {
+  const message = caught instanceof Error ? caught.message : String(caught || '');
+  if (!message || TRANSIENT_NETWORK_ERRORS.has(message)) {
+    return '后端连接暂时中断，请稍后重试。';
+  }
+  return message || fallback;
+}
+
+export function isTransientApiError(caught: unknown): boolean {
+  const message = caught instanceof Error ? caught.message : String(caught || '');
+  return TRANSIENT_NETWORK_ERRORS.has(message) || /连接暂时中断|网络|超时/i.test(message);
+}
+
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}/api/v1${path}`;
   const headers = new Headers(options?.headers);
@@ -10,10 +30,15 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
   if (session && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${session.token}`);
   }
-  const res = await fetch(url, {
-    ...options,
-    headers,
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...options,
+      headers,
+    });
+  } catch (caught) {
+    throw new Error(friendlyApiError(caught));
+  }
   let payload: any = null;
   try {
     payload = await res.json();

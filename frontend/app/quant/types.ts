@@ -312,10 +312,30 @@ export interface ResearchDataset {
   error?: string;
   warnings?: string[];
   cache_used?: boolean;
+  manifest_cache_used?: boolean;
+  cache_generated_at?: string | null;
+  data_inventory?: Array<{
+    key: string;
+    label: string;
+    status: string;
+    record_count: number;
+    stock_count: number;
+    session_count: number;
+    target_sessions: number;
+    coverage_pct: number;
+    date_range?: [string | null, string | null];
+    note?: string;
+    exact_sessions?: number;
+    derived_sessions?: number;
+    complete_sessions?: number;
+    observed_sessions?: number;
+  }>;
   universe?: {
     status: string;
     historical_membership: boolean;
     note?: string;
+    observed_daily_sessions?: number;
+    observed_from_daily_bars?: boolean;
   };
   point_in_time?: {
     status: string;

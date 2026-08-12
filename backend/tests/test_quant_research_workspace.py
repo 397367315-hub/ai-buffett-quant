@@ -1,4 +1,7 @@
+import asyncio
+import time
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from services.quant_research_workspace import (
     FACTOR_CATALOG,
@@ -85,6 +88,20 @@ class QuantResearchWorkspaceTests(unittest.TestCase):
         self.assertTrue(base["available"])
         self.assertTrue(stressed["available"])
         self.assertLess(stressed["total_return"], base["total_return"])
+
+    def test_manifest_uses_fresh_memory_cache_before_scanning_large_tables(self):
+        service = type(quant_research_workspace)()
+        service._manifest_memory = (time.monotonic(), {"available": True, "dataset_id": "cached"})
+
+        async def load_cached():
+            with patch.object(service, "_build_dataset_manifest", new_callable=AsyncMock) as build:
+                result = await service.dataset_manifest()
+                build.assert_not_awaited()
+                return result
+
+        cached = asyncio.run(load_cached())
+        self.assertEqual(cached["dataset_id"], "cached")
+        self.assertTrue(cached["manifest_cache_used"])
 
 
 if __name__ == "__main__":

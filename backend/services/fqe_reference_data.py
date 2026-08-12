@@ -215,22 +215,64 @@ class FQEReferenceDataService:
                 await self._set_run(
                     run_id,
                     stage="market_evidence",
-                    message="正在补齐市场宽度、成交额与涨停情绪历史",
+                    message="正在登记点时股票池、公告日财务与市场情绪历史",
                 )
-                evidence_warning = None
+                evidence_warnings: list[str] = []
                 try:
                     from services.strategic_market_data import strategic_market_data_service
 
-                    await strategic_market_data_service.sync_recent(days=30 if run.sync_mode == "full" else 5)
+                    strategic_result = await strategic_market_data_service.sync_recent(
+                        days=260 if run.sync_mode == "full" else 20,
+                    )
+                    if not isinstance(strategic_result, dict):
+                        evidence_warnings.append("战略市场证据同步返回无效结果")
+                    else:
+                        strategic_status = str(strategic_result.get("status") or "unavailable")
+                        requested = int(strategic_result.get("requested") or 0)
+                        written = int(strategic_result.get("written") or 0)
+                        if strategic_status not in {"success", "partial"}:
+                            evidence_warnings.append(
+                                f"战略市场证据未写入：{strategic_result.get('reason') or strategic_status}"
+                            )
+                        elif requested and written < requested:
+                            evidence_warnings.append(
+                                f"战略市场证据仅写入{written}/{requested}个交易日"
+                            )
+                        elif strategic_status == "partial":
+                            evidence_warnings.append("战略市场证据同步部分完成，仍有交易日待补")
                 except Exception as exc:
-                    evidence_warning = f"战略市场证据同步失败: {type(exc).__name__}"
+                    evidence_warnings.append(f"战略市场证据同步失败: {type(exc).__name__}")
+                try:
+                    from quant.market_cache import load_quant_market_snapshot
+                    from services.pit_market_data import pit_market_data_service
+
+                    universe_result = await pit_market_data_service.capture_universe(
+                        await load_quant_market_snapshot(),
+                    )
+                    if universe_result.get("status") not in {"success", "partial"}:
+                        evidence_warnings.append("当前点时股票池等待下一次完整全市场行情快照")
+                except Exception as exc:
+                    evidence_warnings.append(f"点时股票池登记失败: {type(exc).__name__}")
+                try:
+                    from services.stock_features import stock_feature_service
+
+                    financial_result = await stock_feature_service.capture_financial_pit()
+                    if financial_result.get("status") != "success":
+                        evidence_warnings.append("公告日财务PIT源当前无可保存记录")
+                except Exception as exc:
+                    evidence_warnings.append(f"公告日财务PIT同步失败: {type(exc).__name__}")
+                try:
+                    from services.quant_research_workspace import quant_research_workspace
+
+                    quant_research_workspace.invalidate_manifest_cache()
+                except Exception:
+                    pass
 
                 coverage = await self.coverage()
                 warnings = list(master_warnings)
                 if failures:
                     warnings.append(f"PE历史仍有 {len(failures)} 只上游失败")
-                if evidence_warning:
-                    warnings.append(evidence_warning)
+                warnings.extend(evidence_warnings)
                 if coverage["listing_dated"] < coverage["currently_listed"]:
                     warnings.append("部分现存股票上市日期仍待数据源补齐")
                 status = "partial" if warnings else "completed"

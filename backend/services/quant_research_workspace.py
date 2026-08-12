@@ -8,9 +8,12 @@ point-in-time data is reported as a blocker instead of being filled in.
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import hashlib
 import json
 import math
+import time
 from datetime import date, datetime
 from typing import Any
 
@@ -234,8 +237,80 @@ def _safe_date(value: Any) -> str | None:
 
 class QuantResearchWorkspaceService:
     CACHE_KEY = "quant_research_workspace_v1"
+    MANIFEST_CACHE_KEY = "quant_research_manifest_v2"
+    MANIFEST_CACHE_SECONDS = 10 * 60
 
-    async def dataset_manifest(self) -> dict[str, Any]:
+    def __init__(self) -> None:
+        self._manifest_memory: tuple[float, dict[str, Any]] | None = None
+        self._manifest_lock = asyncio.Lock()
+
+    @staticmethod
+    def _cache_age_seconds(value: Any) -> float | None:
+        try:
+            parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.utcnow()
+        return (now - parsed).total_seconds()
+
+    async def _read_manifest_cache(self) -> dict[str, Any] | None:
+        memory = self._manifest_memory
+        if memory and time.monotonic() - memory[0] <= self.MANIFEST_CACHE_SECONDS:
+            return copy.deepcopy(memory[1])
+        try:
+            async with async_session() as session:
+                row = await session.get(MarketDataCache, self.MANIFEST_CACHE_KEY)
+        except Exception:
+            return None
+        payload = row.payload if row and isinstance(row.payload, dict) else {}
+        manifest = payload.get("manifest")
+        age = self._cache_age_seconds(payload.get("cached_at"))
+        if not isinstance(manifest, dict) or age is None or not 0 <= age <= self.MANIFEST_CACHE_SECONDS:
+            return None
+        self._manifest_memory = (time.monotonic(), copy.deepcopy(manifest))
+        return copy.deepcopy(manifest)
+
+    async def _write_manifest_cache(self, manifest: dict[str, Any]) -> None:
+        cached_at = datetime.utcnow().isoformat() + "Z"
+        stored = copy.deepcopy({**manifest, "cache_generated_at": cached_at})
+        self._manifest_memory = (time.monotonic(), stored)
+        try:
+            async with async_session() as session:
+                row = await session.get(MarketDataCache, self.MANIFEST_CACHE_KEY)
+                payload = {"version": 2, "cached_at": cached_at, "manifest": stored}
+                if row is None:
+                    session.add(MarketDataCache(key=self.MANIFEST_CACHE_KEY, payload=payload))
+                else:
+                    row.payload = payload
+                    row.updated_at = datetime.utcnow()
+                await session.commit()
+        except Exception:
+            # The freshly built in-process value is still usable if persistence
+            # has a temporary outage.
+            return
+
+    def invalidate_manifest_cache(self) -> None:
+        self._manifest_memory = None
+
+    async def dataset_manifest(self, *, force_refresh: bool = False) -> dict[str, Any]:
+        if not force_refresh:
+            cached = await self._read_manifest_cache()
+            if cached:
+                cached["manifest_cache_used"] = True
+                return cached
+        async with self._manifest_lock:
+            if not force_refresh:
+                cached = await self._read_manifest_cache()
+                if cached:
+                    cached["manifest_cache_used"] = True
+                    return cached
+            manifest = await self._build_dataset_manifest()
+            if manifest.get("available"):
+                await self._write_manifest_cache(manifest)
+            manifest["manifest_cache_used"] = False
+            return manifest
+
+    async def _build_dataset_manifest(self) -> dict[str, Any]:
         try:
             async with async_session() as session:
                 daily = (await session.execute(select(
@@ -301,6 +376,12 @@ class QuantResearchWorkspaceService:
                         & MarketSentimentDaily.failed_limit_rate.is_not(None)
                         & MarketSentimentDaily.max_streak_height.is_not(None), 1
                     ), else_=0)),
+                    func.sum(case((MarketSentimentDaily.source == "daily_bar_derived", 1), else_=0)),
+                    func.sum(case((
+                        (MarketSentimentDaily.source != "daily_bar_derived")
+                        & MarketSentimentDaily.failed_limit_rate.is_not(None)
+                        & MarketSentimentDaily.max_streak_height.is_not(None), 1
+                    ), else_=0)),
                 ))).one()
         except Exception as exc:
             return {
@@ -363,6 +444,18 @@ class QuantResearchWorkspaceService:
                 "date_range": [start_date, end_date],
                 "note": "按股票代码和交易日唯一的行情缓存。",
             },
+            {
+                "key": "observed_universe",
+                "label": "历史日线观测股票池",
+                "status": "derived_ready" if count and daily_sessions >= 120 else "derived_partial" if count else "missing",
+                "record_count": count,
+                "stock_count": stock_count,
+                "session_count": daily_sessions,
+                "target_sessions": 250,
+                "coverage_pct": round(min(daily_sessions / 250, 1) * 100, 1),
+                "date_range": [start_date, end_date],
+                "note": "由当日存在的真实日线记录重建可观察成员；可做基线研究，但停牌成员仍可能遗漏。",
+            },
             inventory(
                 "universe", "点时股票池/行业/市值", universe,
                 target_sessions=250,
@@ -386,16 +479,29 @@ class QuantResearchWorkspaceService:
             {
                 "key": "market_sentiment",
                 "label": "市场宽度/炸板/连板/换手",
-                "status": "ready" if int(sentiment[3] or 0) >= 120 else "collecting" if int(sentiment[0] or 0) else "missing",
+                "status": (
+                    "ready" if int(sentiment[5] or 0) >= 120
+                    else "derived_ready" if int(sentiment[3] or 0) >= 120
+                    else "derived_partial" if int(sentiment[4] or 0)
+                    else "collecting" if int(sentiment[0] or 0)
+                    else "missing"
+                ),
                 "record_count": int(sentiment[0] or 0),
                 "stock_count": 1,
                 "session_count": int(sentiment[3] or 0),
                 "target_sessions": 120,
                 "coverage_pct": round(min(int(sentiment[3] or 0) / 120, 1) * 100, 1),
                 "date_range": [_safe_date(sentiment[1]), _safe_date(sentiment[2])],
-                "note": "完整字段日同时含成交额、涨跌宽度、炸板率与最高连板。",
+                "exact_sessions": int(sentiment[5] or 0),
+                "derived_sessions": int(sentiment[4] or 0),
+                "complete_sessions": int(sentiment[3] or 0),
+                "observed_sessions": int(sentiment[0] or 0),
+                "note": "宽度/成交额/换手来自真实日线聚合；历史涨停、炸板与连板若无源生事件池则明确标记为日线近似。",
             },
         ]
+        for item in inventories:
+            if item["key"] in {"universe", "auction"} and item["record_count"] == 0:
+                item["status"] = "forward_only"
         inventory_by_key = {item["key"]: item for item in inventories}
         universe_sessions = inventory_by_key["universe"]["session_count"]
         auction_sessions = inventory_by_key["auction"]["session_count"]
@@ -422,9 +528,12 @@ class QuantResearchWorkspaceService:
                 "listing_dated": listing_dated,
                 "status_events": status_events,
                 "snapshot_sessions": universe_sessions,
+                "observed_daily_sessions": daily_sessions,
+                "observed_from_daily_bars": bool(count),
                 "note": (
                     f"证券主表{security_total}只（历史非活跃/退市{inactive_total}只），"
-                    f"每日点时股票池已积累{universe_sessions}个交易日。"
+                    f"每日点时股票池已积累{universe_sessions}个交易日；"
+                    f"另有{daily_sessions}个交易日可按真实日线观测成员做有偏差基线研究。"
                 ),
             },
             "point_in_time": {
@@ -438,34 +547,86 @@ class QuantResearchWorkspaceService:
             "warnings": [item for item in [
                 "当前日线基线可计算，但数据集清单不能替代逐原始文件审计。",
                 (
-                    f"点时股票池从{inventory_by_key['universe']['date_range'][0] or '尚未开始'}起积累，"
-                    "此前历史仍存在幸存者偏差。"
+                    f"点时股票池从{inventory_by_key['universe']['date_range'][0] or '尚未开始'}起前向积累；"
+                    "现有日线可重建观察成员，但停牌与历史行业信息仍有偏差。"
                     if not universe_ready else None
                 ),
                 (
-                    f"竞价快照已积累{auction_sessions}/60个交易日；不足部分保持阻断。"
+                    f"竞价快照已积累{auction_sessions}/60个交易日；部署前09:25历史无法由日K真实还原，只能前向积累。"
                     if auction_sessions < 60 else None
                 ),
                 (
                     f"公告日财务PIT已覆盖{financial_dates}个披露日；完整跨周期研究仍需继续积累。"
                     if financial_dates < 8 else None
                 ),
+                (
+                    f"市场情绪完整字段{sentiment_complete_sessions}日，其中日线近似{int(sentiment[4] or 0)}日；"
+                    "近似口径仅供研究，不作为逐笔事件真值。"
+                    if int(sentiment[4] or 0) else None
+                ),
             ] if item],
             "researchability": {
                 "daily_bar_baseline": "ready_with_bias_warning",
+                "observed_universe_history": "ready_with_suspension_bias" if count else "missing",
                 "auction_history": inventory_by_key["auction"]["status"],
                 "pit_financials": inventory_by_key["financial_pit"]["status"],
                 "sector_membership_history": inventory_by_key["universe"]["status"],
-                "market_sentiment_history": "ready" if sentiment_complete_sessions >= 120 else "collecting" if sentiment_complete_sessions else "missing",
+                "market_sentiment_history": inventory_by_key["market_sentiment"]["status"],
             },
         }
+        manifest["generated_at"] = datetime.utcnow().isoformat() + "Z"
         manifest["manifest_hash"] = _canonical_hash(manifest)
         manifest["available"] = bool(count and start_date and end_date)
         return manifest
 
     @staticmethod
-    def _experiment_view(item: dict[str, Any]) -> dict[str, Any]:
-        return {**item, "factor_names": [FACTOR_BY_ID[factor_id]["name"] for factor_id in item["factor_ids"] if factor_id in FACTOR_BY_ID]}
+    def _experiment_view(item: dict[str, Any], manifest: dict[str, Any] | None = None) -> dict[str, Any]:
+        blockers = list(item.get("blockers") or [])
+        inventory = {
+            entry.get("key"): entry
+            for entry in (manifest or {}).get("data_inventory") or []
+            if isinstance(entry, dict)
+        }
+        if manifest and item.get("id") == "weekly_momentum_baseline_v1":
+            observed = inventory.get("observed_universe") or {}
+            blockers = [
+                (
+                    f"已有{observed.get('session_count', 0)}个交易日的日线观测成员，可运行基线；"
+                    "退市、停牌和历史行业成员仍按偏差警告处理"
+                ),
+                "财务点时字段不进入本实验",
+            ]
+        elif manifest and item.get("id") == "overnight_auction_v1":
+            auction = inventory.get("auction") or {}
+            blockers = [
+                f"真实09:25竞价已前向积累{auction.get('session_count', 0)}/60个交易日；部署前历史不能由日K还原",
+                "历史股票池与涨跌停可成交状态尚未完整冻结",
+            ]
+        elif manifest and item.get("id") == "garp_monthly_pit_v1":
+            financial = inventory.get("financial_pit") or {}
+            blockers = [
+                f"公告日财务PIT已覆盖{financial.get('session_count', 0)}个披露日，仍需跨财报周期积累",
+                "历史行业与市值中性数据不足",
+            ]
+        elif manifest and item.get("id") == "mao_five_struggles_v1":
+            sentiment = inventory.get("market_sentiment") or {}
+            blockers = [
+                (
+                    f"市场宽度与情绪已有{sentiment.get('session_count', 0)}日；"
+                    f"其中{sentiment.get('derived_sessions', 0)}日涨停/炸板为日线近似，不能冒充逐笔事件"
+                ),
+                "历史板块成分与板块上涨比例不完整",
+                "未满足样本外、交易成本压力测试和至少8周模拟盘门槛",
+            ]
+        return {
+            **item,
+            "blockers": blockers,
+            "factor_names": [
+                FACTOR_BY_ID[factor_id]["name"]
+                for factor_id in item["factor_ids"]
+                if factor_id in FACTOR_BY_ID
+            ],
+        }
 
     async def get_latest_report(self) -> dict[str, Any] | None:
         try:
@@ -477,8 +638,8 @@ class QuantResearchWorkspaceService:
             return None
         return None
 
-    async def workspace(self) -> dict[str, Any]:
-        manifest = await self.dataset_manifest()
+    async def workspace(self, *, force_refresh: bool = False) -> dict[str, Any]:
+        manifest = await self.dataset_manifest(force_refresh=force_refresh)
         latest = await self.get_latest_report()
         categories: dict[str, int] = {}
         for factor in FACTOR_CATALOG:
@@ -488,7 +649,7 @@ class QuantResearchWorkspaceService:
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "factor_catalog": FACTOR_CATALOG,
             "factor_summary": {"total": len(FACTOR_CATALOG), "by_status": _status_summary(), "by_category": categories},
-            "experiments": [self._experiment_view(item) for item in EXPERIMENT_CATALOG],
+            "experiments": [self._experiment_view(item, manifest) for item in EXPERIMENT_CATALOG],
             "lifecycle": LIFECYCLE,
             "hard_gates": HARD_GATES,
             "dataset": manifest,
