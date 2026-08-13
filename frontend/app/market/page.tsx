@@ -26,6 +26,7 @@ import StockKlineButton from '@/components/StockKlineButton';
 import { apiFetch, friendlyApiError } from '@/lib/api';
 
 interface WorkbenchMeta {
+  contract_version?: string;
   decision_date: string | null;
   calculated_at: string;
   updated_at: string;
@@ -59,6 +60,70 @@ interface MarketState {
   dimensions: ScoreDimension[];
   version: string;
   missing_policy: string;
+}
+
+interface StructureHealth {
+  score: number | null;
+  status: string;
+  coverage_pct: number;
+  components: Record<string, number | null>;
+  evidence: string[];
+  missing: string[];
+  method: string;
+}
+
+interface VolumePriceAlignment {
+  score: number | null;
+  status: string;
+  coverage_pct: number;
+  metrics: Record<string, number | null>;
+  evidence: string[];
+  missing: string[];
+  method: string;
+}
+
+interface CrowdingRisk {
+  score: number | null;
+  status: string;
+  feedback: string;
+  coverage_pct: number;
+  components: Record<string, number | null>;
+  evidence: string[];
+  missing: string[];
+  method: string;
+}
+
+interface MarketCognition {
+  facts: string[];
+  principal_contradiction: { statement: string; evidence: string[]; confidence_pct: number | null };
+  dominant_aspect: { statement: string; direction: string; evidence: string[] };
+  stage: { code: string; label: string };
+  quantitative_changes: Array<{ id: string; label: string; streak: number; status: string; evidence: string }>;
+  qualitative_shift: { status: string; evidence: string[] };
+  practice_hypothesis: { statement: string; validation_window: string; falsification: string[] };
+  final_action: 'execute' | 'caution' | 'observe' | 'no_trade';
+  action_label: string;
+  method: string;
+}
+
+interface StrategyHealth {
+  id: string;
+  name: string;
+  state: string;
+  health_score: number | null;
+  metrics: {
+    sample_count: number;
+    run_count: number;
+    win_rate_pct: number | null;
+    expectancy: number | null;
+    profit_factor: number | null;
+    max_drawdown_amount: number | null;
+    max_loss_streak: number;
+    out_of_sample: number | null;
+  };
+  reason: string;
+  evidence: string[];
+  missing: string[];
 }
 
 interface HeadlineMetrics {
@@ -179,6 +244,25 @@ interface WorkbenchData {
   available: boolean;
   meta: WorkbenchMeta;
   market_state: MarketState;
+  structure_health: StructureHealth;
+  volume_price_alignment: VolumePriceAlignment;
+  crowding_risk: CrowdingRisk;
+  market_cognition: MarketCognition;
+  contradiction_evolution: {
+    quantitative_changes: MarketCognition['quantitative_changes'];
+    accumulating_count: number;
+    qualitative_shift: string;
+    evidence: string[];
+    method: string;
+    data_coverage: Record<string, number>;
+  };
+  strategy_health: StrategyHealth[];
+  adaptive_strategy_weights: {
+    weights: Array<{ strategy_id: string; name?: string; weight_pct: number }>;
+    health_adjustments: Record<string, string>;
+    final_action: string;
+    rule: string;
+  };
   headline_metrics: HeadlineMetrics;
   ai_judgement: AIJudgement;
   strategy_selector: StrategySelector;
@@ -218,7 +302,8 @@ interface WorkbenchData {
   quick_links: Array<{ label: string; href: string }>;
 }
 
-const LOCAL_CACHE_KEY = 'market_decision_workbench_v1';
+const WORKBENCH_CONTRACT_VERSION = 'market-workbench-v2.0.1';
+const LOCAL_CACHE_KEY = 'market_decision_workbench_v2_0_1';
 
 function finite(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -278,6 +363,41 @@ function phaseTone(status: string): string {
   if (status === '运行中') return 'border-accent/40 text-accent';
   if (status === '无信号') return 'border-border text-text-secondary';
   return 'border-warn/40 text-warn';
+}
+
+function actionTone(action: string): string {
+  if (action === 'execute') return 'text-up border-up/40 bg-up/10';
+  if (action === 'caution') return 'text-warn border-warn/40 bg-warn/10';
+  if (action === 'observe') return 'text-accent border-accent/40 bg-accent/10';
+  return 'text-down border-down/40 bg-down/10';
+}
+
+function healthTone(state: string): string {
+  if (state === 'ACTIVE') return 'text-up';
+  if (state === 'CAUTION' || state === 'REDUCE') return 'text-warn';
+  if (state === 'SUSPENDED') return 'text-down';
+  return 'text-accent';
+}
+
+const COMPONENT_LABELS: Record<string, string> = {
+  sector_diffusion: '板块扩散度',
+  market_breadth: '市场宽度',
+  volume_price: '量价匹配',
+  mainline_stability: '主线稳定性',
+  sector_synchronization: '板块同步性',
+  leader_follower: '龙头跟风关系',
+  high_level_negative_feedback: '高位负反馈',
+  high_level_crowding: '高位拥挤',
+  high_level_pullback: '高位回撤',
+  leader_negative_feedback: '龙头负反馈',
+  follower_weakening: '跟风弱化',
+  failed_limit_rate: '炸板率',
+  promotion_rate_decline: '晋级率弱化',
+  capital_concentration: '资金集中度',
+};
+
+function componentLabel(key: string): string {
+  return COMPONENT_LABELS[key] || key;
 }
 
 function MetricCell({ label, primary, secondary, tone = 'text-text' }: {
@@ -349,6 +469,9 @@ export default function MarketDecisionWorkbenchPage() {
         { cache: 'no-store' },
       );
       if (response.code !== 0 || !response.data) throw new Error('工作台返回无效数据');
+      if (response.data.meta?.contract_version !== WORKBENCH_CONTRACT_VERSION) {
+        throw new Error('工作台正在更新，请稍后重试');
+      }
       setData(response.data);
       setProgress(100);
       if (typeof window !== 'undefined') {
@@ -364,7 +487,7 @@ export default function MarketDecisionWorkbenchPage() {
           cached = null;
         }
       }
-      if (cached?.available) {
+      if (cached?.available && cached.meta?.contract_version === WORKBENCH_CONTRACT_VERSION) {
         setData(cached);
         setNotice('后端连接暂时中断，当前显示本浏览器最近一次成功快照。');
       } else {
@@ -429,9 +552,9 @@ export default function MarketDecisionWorkbenchPage() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <BrainCircuit size={21} className="shrink-0 text-accent" />
-            <h1 className="text-xl font-semibold text-text sm:text-2xl">A股 AI 决策工作台</h1>
+            <h1 className="text-xl font-semibold text-text sm:text-2xl">A股 AI 自适应决策工作台</h1>
           </div>
-          <p className="mt-1.5 text-xs text-text-secondary">市场状态 → 资金行为 → 板块主线 → 个股结构 → 策略执行</p>
+          <p className="mt-1.5 text-xs text-text-secondary">客观事实 → 主要矛盾 → 阶段判断 → 策略许可 → 实践验证</p>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-secondary">
             <span className={meta.is_realtime ? 'text-up' : 'text-warn'}>{meta.is_realtime ? '盘中实时决策' : meta.decision_scope}</span>
             <span>决策日 <b className="font-mono font-normal text-text">{meta.decision_date || '--'}</b></span>
@@ -481,6 +604,14 @@ export default function MarketDecisionWorkbenchPage() {
           <MetricCell label="炸板率" primary={`${value(metrics.failed_limit_rate)}%`} secondary="越低越稳定" tone={finite(metrics.failed_limit_rate) && metrics.failed_limit_rate >= 25 ? 'text-down' : 'text-text'} />
           <MetricCell label="第一主线" primary={metrics.main_line || '--'} secondary={data.main_lines[0] ? `${data.main_lines[0].lifecycle} · ${value(data.main_lines[0].strength_score)}分` : '待识别'} tone="text-accent" />
         </div>
+      </section>
+
+      <section className="mb-4 grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card sm:grid-cols-3 lg:grid-cols-5" aria-label="V2核心状态">
+        <MetricCell label="市场状态" primary={`${marketState.state_code} ${marketState.state_label}`} secondary={`覆盖 ${value(marketState.coverage_pct, 0)}%`} tone={stateTone(marketState.state_code).split(' ')[0]} />
+        <MetricCell label="结构健康" primary={value(data.structure_health.score)} secondary={data.structure_health.status} tone={data.structure_health.score != null && data.structure_health.score >= 65 ? 'text-up' : 'text-warn'} />
+        <MetricCell label="量价匹配" primary={value(data.volume_price_alignment.score)} secondary={data.volume_price_alignment.status === 'supportive' ? '承接支持' : data.volume_price_alignment.status === 'divergent' ? '冲高缺承接' : '混合'} tone={data.volume_price_alignment.status === 'divergent' ? 'text-down' : 'text-text'} />
+        <MetricCell label="抱团风险" primary={value(data.crowding_risk.score)} secondary={data.crowding_risk.status} tone={data.crowding_risk.score != null && data.crowding_risk.score >= 71 ? 'text-down' : data.crowding_risk.score != null && data.crowding_risk.score >= 51 ? 'text-warn' : 'text-up'} />
+        <MetricCell label="今日最终行动" primary={data.market_cognition.action_label} secondary={`阶段：${data.market_cognition.stage.label}`} tone={actionTone(data.market_cognition.final_action).split(' ')[0]} />
       </section>
 
       <section className="mb-4 grid overflow-hidden rounded-md border border-border bg-card lg:grid-cols-[360px_minmax(0,1fr)]">
@@ -545,6 +676,82 @@ export default function MarketDecisionWorkbenchPage() {
             解释置信度 {value(data.ai_judgement.confidence_pct, 0)}% · {data.ai_judgement.note}
           </div>
         </div>
+      </section>
+
+      <section className="mb-4 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><BrainCircuit size={15} className="text-accent" />市场矛盾分析</h2>
+            <span className={`rounded border px-2 py-1 text-[10px] ${actionTone(data.market_cognition.final_action)}`}>{data.market_cognition.action_label}</span>
+          </div>
+          <div className="grid gap-4 p-4 sm:grid-cols-2">
+            <div>
+              <div className="text-[10px] text-text-secondary">客观事实</div>
+              <ul className="mt-2 space-y-1.5 text-xs leading-5 text-text">
+                {data.market_cognition.facts.slice(0, 4).map((item) => <li key={item}>· {item}</li>)}
+              </ul>
+            </div>
+            <div>
+              <div className="text-[10px] text-text-secondary">当前主要矛盾</div>
+              <p className="mt-2 text-sm leading-6 text-text">{data.market_cognition.principal_contradiction.statement}</p>
+              <div className="mt-2 text-[10px] leading-4 text-text-secondary">{data.market_cognition.principal_contradiction.evidence.slice(0, 2).join('；')}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-text-secondary">矛盾主要方面</div>
+              <p className="mt-2 text-sm leading-6 text-text">{data.market_cognition.dominant_aspect.statement}</p>
+              <div className="mt-2 text-[10px] text-text-secondary">阶段：{data.market_cognition.stage.label} · 质变：{data.market_cognition.qualitative_shift.status}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-text-secondary">实践假设</div>
+              <p className="mt-2 text-xs leading-5 text-text-secondary">{data.market_cognition.practice_hypothesis.statement}</p>
+              <div className="mt-2 text-[10px] text-accent">验证窗口：{data.market_cognition.practice_hypothesis.validation_window}</div>
+            </div>
+          </div>
+          <div className="border-t border-border px-4 py-2.5 text-[10px] leading-5 text-text-secondary">{data.market_cognition.method}</div>
+        </section>
+
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Activity size={15} className="text-accent" />量变 → 质变监测</h2>
+            <span className={`text-[10px] ${data.contradiction_evolution.qualitative_shift === 'confirmed' ? 'text-down' : data.contradiction_evolution.qualitative_shift === 'warning' ? 'text-warn' : 'text-up'}`}>{data.contradiction_evolution.qualitative_shift}</span>
+          </div>
+          <div className="divide-y divide-border">
+            {data.contradiction_evolution.quantitative_changes.length ? data.contradiction_evolution.quantitative_changes.map((item) => (
+              <div key={item.id} className="px-4 py-3">
+                <div className="flex items-center justify-between gap-3 text-xs"><span className="text-text">{item.label}</span><span className={item.status === 'accumulating' ? 'text-warn' : 'text-text-secondary'}>{item.streak} 次</span></div>
+                <div className="mt-1 text-[10px] leading-4 text-text-secondary">{item.evidence}</div>
+              </div>
+            )) : <div className="px-4 py-8 text-center text-xs text-text-secondary">暂无连续异常证据</div>}
+          </div>
+          <div className="border-t border-border px-4 py-2.5 text-[10px] text-text-secondary">{data.contradiction_evolution.method}</div>
+        </section>
+      </section>
+
+      <section className="mb-4 grid gap-4 lg:grid-cols-3">
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="text-sm font-semibold text-text">结构健康分解</h2><span className="font-mono text-xs text-accent">{value(data.structure_health.score)}</span></div>
+          <div className="space-y-2 p-4">
+            {Object.entries(data.structure_health.components).map(([key, item]) => <div key={key}><div className="flex justify-between text-[10px] text-text-secondary"><span>{componentLabel(key)}</span><span className="font-mono text-text">{value(item)}</span></div><div className="mt-1 h-1 bg-[#21262D]"><div className="h-full bg-accent" style={{ width: `${finite(item) ? Math.max(2, item) : 0}%` }} /></div></div>)}
+          </div>
+        </section>
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="text-sm font-semibold text-text">抱团风险分解</h2><span className={`font-mono text-xs ${data.crowding_risk.score != null && data.crowding_risk.score >= 71 ? 'text-down' : 'text-warn'}`}>{value(data.crowding_risk.score)}</span></div>
+          <div className="space-y-2 p-4">
+            {Object.entries(data.crowding_risk.components).map(([key, item]) => <div key={key}><div className="flex justify-between text-[10px] text-text-secondary"><span>{componentLabel(key)}</span><span className="font-mono text-text">{value(item)}</span></div><div className="mt-1 h-1 bg-[#21262D]"><div className={`h-full ${data.crowding_risk.score != null && data.crowding_risk.score >= 71 ? 'bg-down' : 'bg-warn'}`} style={{ width: `${finite(item) ? Math.max(2, item) : 0}%` }} /></div></div>)}
+          </div>
+        </section>
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="text-sm font-semibold text-text">自适应策略权重</h2><span className={`rounded border px-2 py-1 text-[10px] ${actionTone(data.adaptive_strategy_weights.final_action)}`}>{data.market_cognition.action_label}</span></div>
+          <div className="space-y-3 p-4">
+            {data.adaptive_strategy_weights.weights.map((item) => <div key={item.strategy_id}><div className="flex justify-between text-[10px] text-text-secondary"><span>{item.name || item.strategy_id}</span><span className="font-mono text-text">{item.weight_pct.toFixed(0)}%</span></div><div className="mt-1 h-1 bg-[#21262D]"><div className="h-full bg-accent" style={{ width: `${item.weight_pct}%` }} /></div></div>)}
+          </div>
+          <div className="border-t border-border px-4 py-2.5 text-[10px] leading-4 text-text-secondary">{data.adaptive_strategy_weights.rule}</div>
+        </section>
+      </section>
+
+      <section className="mb-4 overflow-hidden rounded-md border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Target size={15} className="text-accent" />策略有效性</h2><span className="text-[10px] text-text-secondary">只统计真实前向模拟样本</span></div>
+        <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-xs"><thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary"><tr><th className="px-4 py-2.5 text-left">策略</th><th className="px-3 text-left">状态</th><th className="px-3 text-right">样本</th><th className="px-3 text-right">胜率</th><th className="px-3 text-right">期望值</th><th className="px-3 text-right">盈亏比</th><th className="px-3 text-right">最大回撤</th><th className="px-4 text-left">结论</th></tr></thead><tbody className="divide-y divide-border/70">{data.strategy_health.length ? data.strategy_health.map((item) => <tr key={item.id}><td className="px-4 py-3 text-text">{item.name}<div className="mt-1 font-mono text-[10px] text-text-secondary">{item.id}</div></td><td className={`px-3 py-3 font-mono ${healthTone(item.state)}`}>{item.state}</td><td className="px-3 py-3 text-right font-mono text-text">{item.metrics.sample_count}</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.win_rate_pct)}%</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.expectancy, 2)}</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.profit_factor, 2)}</td><td className="px-3 py-3 text-right font-mono text-text">{amount(item.metrics.max_drawdown_amount)}</td><td className="max-w-[300px] px-4 py-3 text-[10px] leading-4 text-text-secondary">{item.reason}</td></tr>) : <tr><td colSpan={8} className="px-4 py-8 text-center text-xs text-text-secondary">暂无策略前向样本，不能判定有效性</td></tr>}</tbody></table></div>
       </section>
 
       <div className="mb-4 grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">

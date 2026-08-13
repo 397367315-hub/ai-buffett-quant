@@ -3,7 +3,9 @@ from datetime import date, timedelta
 
 from services.market_decision_workbench import (
     MarketDecisionWorkbenchService,
+    WORKBENCH_CONTRACT_VERSION,
     SCORE_VERSION,
+    _adaptive_strategy_weights,
     assemble_workbench,
     calculate_market_state,
 )
@@ -175,6 +177,10 @@ class MarketDecisionWorkbenchTests(unittest.TestCase):
         payload = assemble_workbench(snapshot, [], [], None, {})
         self.assertEqual(payload["risk"]["market"], ["市场风险字段待采集，当前不可判定"])
         self.assertEqual(payload["risk"]["stock"], ["个股风险需在候选生成后判定"])
+        self.assertTrue(all(item["weight_pct"] == 0 for item in payload["adaptive_strategy_weights"]["weights"]))
+        self.assertEqual(payload["market_cognition"]["dominant_aspect"]["direction"], "unknown")
+        self.assertEqual(payload["execution_queue"]["phases"][-1]["display_status"], "市场不交易")
+        self.assertTrue(all(item["status"] == "forbidden" for item in payload["strategy_selector"]["strategies"]))
 
     def test_previous_day_index_is_visible_but_excluded_from_score(self):
         history = index_history()[:-1]
@@ -361,7 +367,7 @@ class MarketDecisionWorkbenchTests(unittest.TestCase):
     def test_verified_cache_wins_over_degraded_refresh(self):
         cached = {
             "available": True,
-            "meta": {"decision_date": "2026-08-12", "coverage_pct": 100},
+            "meta": {"contract_version": WORKBENCH_CONTRACT_VERSION, "decision_date": "2026-08-12", "coverage_pct": 100},
             "market_state": {"score": 70, "dimensions": []},
             "audit": {"score_version": SCORE_VERSION},
         }
@@ -379,7 +385,7 @@ class MarketDecisionWorkbenchTests(unittest.TestCase):
     def test_new_complete_trade_date_replaces_older_cache(self):
         cached = {
             "available": True,
-            "meta": {"decision_date": "2026-08-12", "coverage_pct": 100},
+            "meta": {"contract_version": WORKBENCH_CONTRACT_VERSION, "decision_date": "2026-08-12", "coverage_pct": 100},
             "market_state": {"score": 70, "dimensions": []},
             "audit": {"score_version": SCORE_VERSION},
         }
@@ -393,12 +399,98 @@ class MarketDecisionWorkbenchTests(unittest.TestCase):
     def test_legacy_low_coverage_score_cache_is_rejected(self):
         cached = {
             "available": True,
-            "meta": {"decision_date": "2026-08-12", "coverage_pct": 10},
+            "meta": {"contract_version": WORKBENCH_CONTRACT_VERSION, "decision_date": "2026-08-12", "coverage_pct": 10},
             "market_state": {"score": 100, "dimensions": [{}]},
             "audit": {"score_version": SCORE_VERSION},
         }
 
         self.assertFalse(MarketDecisionWorkbenchService._cache_contract_valid(cached))
+
+    def test_v1_cache_is_rejected_after_v2_contract_bump(self):
+        cached = {
+            "available": True,
+            "meta": {"contract_version": "market-workbench-v1.0.0", "decision_date": "2026-08-12", "coverage_pct": 100},
+            "market_state": {"score": 70, "dimensions": []},
+            "audit": {"score_version": "market-state-v1.0.0"},
+        }
+        self.assertFalse(MarketDecisionWorkbenchService._cache_contract_valid(cached))
+
+    def test_v2_cognition_contract_exposes_no_trade_and_evidence_chain(self):
+        snapshot = topic_snapshot()
+        snapshot["market"]["sentiment"]["up_ratio"] = 30
+        snapshot["market"]["emotion"]["break_rate"] = 42
+        snapshot["topics"][0]["breadth"] = 30
+        snapshot["topics"][1]["breadth"] = 28
+        history = sentiment_history()
+        for index, row in enumerate(history[-5:]):
+            row["market_amount"] = 2_400_000_000_000 - index * 200_000_000_000
+            row["failed_limit_rate"] = 15 + index * 8
+        payload = assemble_workbench(snapshot, index_history(), history, None, {})
+
+        self.assertIn(payload["market_cognition"]["final_action"], {"no_trade", "caution"})
+        self.assertIn(payload["market_cognition"]["qualitative_shift"]["status"], {"not_confirmed", "warning", "confirmed"})
+        self.assertIn("principal_contradiction", payload["market_cognition"])
+        self.assertEqual(payload["audit"]["contract_version"], WORKBENCH_CONTRACT_VERSION)
+
+    def test_strategy_health_without_forward_samples_is_recovery_not_failure(self):
+        overnight = {
+            "strategy_store": {"strategies": [{"id": "tail_1455", "name": "尾盘研究"}]},
+            "runs": [],
+            "positions": [],
+        }
+        payload = assemble_workbench(topic_snapshot(), index_history(), sentiment_history(), None, overnight)
+        health = next(item for item in payload["strategy_health"] if item["id"] == "tail_1455")
+        self.assertEqual(health["state"], "RECOVERY")
+        self.assertIsNone(health["metrics"]["win_rate_pct"])
+
+    def test_strategy_health_counts_legacy_records_using_default_strategy_fallback(self):
+        overnight = {
+            "strategy_store": {"strategies": [{"id": "overnight_review_v2", "name": "一夜持股"}]},
+            "runs": [{"status": "completed", "data_quality": {}}],
+            "positions": [
+                {"pnl": 120.0, "audit": {}},
+                {"pnl": -40.0},
+            ],
+        }
+        payload = assemble_workbench(topic_snapshot(), index_history(), sentiment_history(), None, overnight)
+        health = next(item for item in payload["strategy_health"] if item["id"] == "overnight_review_v2")
+        self.assertEqual(health["metrics"]["sample_count"], 2)
+        self.assertEqual(health["metrics"]["run_count"], 1)
+        self.assertEqual(health["metrics"]["wins"], 1)
+        self.assertEqual(health["metrics"]["losses"], 1)
+
+    def test_adaptive_weights_map_overnight_health_to_real_strategy_id(self):
+        payload = _adaptive_strategy_weights(
+            {"state_code": "S2", "score": 75},
+            {"score": 75},
+            {"score": 25},
+            [{"id": "overnight_review_v2", "state": "SUSPENDED"}],
+            {"strategy": {"id": "overnight_review_v2"}},
+        )
+        weights = {item["strategy_id"]: item for item in payload["weights"]}
+        self.assertEqual(weights["tail_1455"]["weight_pct"], 0)
+        self.assertEqual(payload["health_adjustments"]["tail_1455"], "SUSPENDED")
+
+    def test_contradiction_evolution_counts_only_trailing_streak(self):
+        history = sentiment_history()
+        values = [100, 90, 95, 85, 86]
+        for row, amount in zip(history[-5:], values):
+            row["market_amount"] = amount
+        payload = assemble_workbench(topic_snapshot(), index_history(), history, None, {})
+        item = next(
+            row for row in payload["contradiction_evolution"]["quantitative_changes"]
+            if row["id"] == "liquidity_contraction"
+        )
+        self.assertEqual(item["streak"], 0)
+        self.assertEqual(item["status"], "neutral")
+
+    def test_cross_date_history_is_not_used_as_current_volume_baseline(self):
+        snapshot = topic_snapshot()
+        history = [{"trade_date": "2026-08-13", "market_amount": 9_999_999_999_999}]
+        payload = assemble_workbench(snapshot, index_history(), history, None, {})
+        alignment = payload["volume_price_alignment"]
+        self.assertIsNone(alignment["metrics"]["market_amount_change_pct"])
+        self.assertIn("历史成交额基准", alignment["missing"])
 
 
 if __name__ == "__main__":
