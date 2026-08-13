@@ -302,8 +302,8 @@ interface WorkbenchData {
   quick_links: Array<{ label: string; href: string }>;
 }
 
-const WORKBENCH_CONTRACT_VERSION = 'market-workbench-v2.0.1';
-const LOCAL_CACHE_KEY = 'market_decision_workbench_v2_0_1';
+const WORKBENCH_CONTRACT_VERSION = 'market-workbench-v2.0.2';
+const LOCAL_CACHE_KEY = 'market_decision_workbench_v2_0_2';
 
 function finite(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value);

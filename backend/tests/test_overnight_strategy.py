@@ -7,8 +7,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import Base
-from models import OvernightPosition, OvernightStrategyRun, StockDailyBar
+from models import MarketDataCache, OvernightPosition, OvernightStrategyRun, StockDailyBar
 from services.data_collector import EastMoneyDataCollector
+from services.market_decision_contract import WORKBENCH_CACHE_PREFIX, WORKBENCH_CONTRACT_VERSION
 from services.overnight_strategy import AUCTION_STRATEGY_CONFIG, OvernightStrategyService
 
 
@@ -294,6 +295,23 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     volume=item["volume"],
                     change_pct=item["change_pct"],
                 ))
+            session.add(MarketDataCache(
+                key=f"{WORKBENCH_CACHE_PREFIX}2026-08-04",
+                payload={
+                    "available": True,
+                    "meta": {
+                        "contract_version": WORKBENCH_CONTRACT_VERSION,
+                        "decision_date": "2026-08-04",
+                    },
+                    "market_cognition": {"final_action": "execute"},
+                    "adaptive_strategy_weights": {
+                        "weights": [
+                            {"strategy_id": "tail_1455", "weight_pct": 50},
+                            {"strategy_id": "auction_confirmation", "weight_pct": 60},
+                        ],
+                    },
+                },
+            ))
             await session.commit()
 
     async def asyncTearDown(self):
@@ -364,6 +382,107 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["blocked"])
         self.assertEqual(result["consecutive_losses"], 3)
         self.assertNotIn("pause_until", result)
+
+    async def test_market_no_trade_gate_keeps_candidate_but_blocks_simulated_position(self):
+        async with self.session_factory() as session:
+            gate_row = await session.get(MarketDataCache, f"{WORKBENCH_CACHE_PREFIX}2026-08-04")
+            gate_row.payload = {
+                **gate_row.payload,
+                "market_cognition": {"final_action": "no_trade"},
+                "adaptive_strategy_weights": {
+                    "weights": [{"strategy_id": "tail_1455", "weight_pct": 0}],
+                },
+            }
+            run = OvernightStrategyRun(
+                stage="entry",
+                trigger="manual",
+                status="running",
+                progress=80,
+                message="testing",
+                data_quality={"strategy_id": "overnight_review_v2"},
+            )
+            session.add(run)
+            await session.commit()
+            await session.refresh(run)
+
+        candidate = {
+            "code": "600000",
+            "name": "浦发银行",
+            "sector": "银行",
+            "qualified": True,
+            "selected_for_entry": False,
+            "score": 88,
+            "previous_close": 17.5,
+            "signal_at": "2026-08-04T14:55",
+            "failed_reasons": [],
+            "unavailable_reasons": [],
+            "conditions": [],
+            "minute": {
+                "market_price": 18.0,
+                "entry_price": 18.018,
+                "latest_bar_at": "2026-08-04T14:55",
+            },
+        }
+        selected = await self.service._create_positions(
+            run.id,
+            [candidate],
+            datetime(2026, 8, 4, 14, 55, tzinfo=ZoneInfo("Asia/Shanghai")),
+            {
+                **AUCTION_STRATEGY_CONFIG,
+                "id": "overnight_review_v2",
+                "requires_auction_confirmation": False,
+            },
+        )
+
+        self.assertEqual(selected, 0)
+        self.assertFalse(candidate["qualified"])
+        self.assertTrue(candidate["market_execution_gate"]["blocked"])
+        self.assertIn("不交易", candidate["failed_reasons"][-1])
+        async with self.session_factory() as session:
+            positions = (await session.execute(select(OvernightPosition))).scalars().all()
+            stored_run = await session.get(OvernightStrategyRun, run.id)
+        self.assertEqual(positions, [])
+        self.assertTrue(stored_run.data_quality["market_execution_gate"]["blocked"])
+
+    async def test_missing_candidate_signal_date_fails_closed(self):
+        async with self.session_factory() as session:
+            run = OvernightStrategyRun(
+                stage="entry",
+                trigger="manual",
+                status="running",
+                progress=80,
+                message="testing",
+                data_quality={"strategy_id": "overnight_review_v2"},
+            )
+            session.add(run)
+            await session.commit()
+            await session.refresh(run)
+
+        candidate = {
+            "code": "600000",
+            "name": "浦发银行",
+            "qualified": True,
+            "score": 88,
+            "failed_reasons": [],
+            "minute": {
+                "market_price": 18.0,
+                "entry_price": 18.018,
+                "latest_bar_at": "2026-08-04T14:55",
+            },
+        }
+        selected = await self.service._create_positions(
+            run.id,
+            [candidate],
+            datetime(2026, 8, 4, 14, 55, tzinfo=ZoneInfo("Asia/Shanghai")),
+            AUCTION_STRATEGY_CONFIG | {
+                "id": "overnight_review_v2",
+                "requires_auction_confirmation": False,
+            },
+        )
+
+        self.assertEqual(selected, 0)
+        self.assertFalse(candidate["qualified"])
+        self.assertIn("信号日缺失或不一致", candidate["failed_reasons"][-1])
 
     async def test_scheduled_completed_run_is_deduplicated_for_five_minutes(self):
         first, created = await self.service._create_run("entry", "schedule")

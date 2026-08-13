@@ -14,6 +14,7 @@ from sqlalchemy import desc, func, select
 
 from database import async_session
 from models import (
+    MarketDataCache,
     OvernightPosition,
     OvernightStrategyRun,
     PersonalSystemConfig,
@@ -25,6 +26,10 @@ from quant.risk import CRITICAL_ANNOUNCEMENT_TERMS
 from services.data_collector import collector, shanghai_now
 from services.history_cache import history_cache
 from services.macro_policy_news import macro_policy_news_collector
+from services.market_decision_contract import (
+    WORKBENCH_CACHE_PREFIX,
+    evaluate_market_execution_gate,
+)
 from services.quote_cache import quote_snapshot_service
 from services.report_calendar import report_calendar_service
 
@@ -1320,6 +1325,8 @@ class OvernightStrategyService:
 
         candidates.sort(key=lambda item: (bool(item.get("qualified")), item.get("score") or 0), reverse=True)
         selected_count = 0
+        tail_count = 0
+        market_execution_gate: dict[str, Any] | None = None
         if stage == "entry":
             tail_count = sum(bool(item.get("qualified")) for item in candidates)
             for candidate in candidates:
@@ -1332,6 +1339,15 @@ class OvernightStrategyService:
             else:
                 await self._set_progress(run_id, 88, "分钟条件核验完成，正在执行仓位上限并建立100股模拟持仓")
                 selected_count = await self._create_positions(run_id, candidates, now, config)
+                market_execution_gate = next(
+                    (
+                        item.get("market_execution_gate")
+                        for item in candidates
+                        if isinstance(item.get("market_execution_gate"), dict)
+                        and item["market_execution_gate"].get("blocked")
+                    ),
+                    None,
+                )
 
         data_quality = {
             "strategy_id": config["id"],
@@ -1375,6 +1391,14 @@ class OvernightStrategyService:
             "missing_policy": "任一强制字段缺失即不入选；不会以日线推断尾盘分钟条件",
             "backtest_limitation": "现有分钟缓存不是历史全市场点时样本，不能据此宣称十年精确回测或固定胜率",
         }
+        if stage == "entry":
+            data_quality["execution"] = {
+                "rule_qualified_count": tail_count,
+                "simulated_entry_count": selected_count,
+                "blocked_by_market_gate": bool(market_execution_gate),
+            }
+        if market_execution_gate:
+            data_quality["market_execution_gate"] = market_execution_gate
         if stage == "preliminary":
             message = f"14:30预扫描完成：{len(daily_passed)}只等待14:55最终分钟复核"
         elif config.get("requires_auction_confirmation"):
@@ -1384,10 +1408,17 @@ class OvernightStrategyService:
                 else "空仓日：没有满足尾盘全部因子的标的，次日无需竞价确认"
             )
         else:
-            message = (
-                f"尾盘复核完成：{sum(item['qualified'] for item in candidates)}只合格，模拟买入{selected_count}只"
-                if selected_count else "空仓日：尾盘复核后没有满足全部因子的标的"
-            )
+            if market_execution_gate:
+                message = (
+                    f"尾盘复核完成：{tail_count}只通过策略条件；"
+                    f"{market_execution_gate['reason']}"
+                )
+            elif selected_count:
+                message = f"尾盘复核完成：{tail_count}只通过策略条件，模拟买入{selected_count}只"
+            elif tail_count:
+                message = f"尾盘复核完成：{tail_count}只通过策略条件，仓位或持仓约束后未新增模拟仓位"
+            else:
+                message = "空仓日：尾盘复核后没有满足全部因子的标的"
         await self._finish(
             run_id,
             status="completed",
@@ -1613,6 +1644,15 @@ class OvernightStrategyService:
         candidates.sort(key=lambda item: (bool(item.get("qualified")), item.get("score") or 0), reverse=True)
         await self._set_progress(run_id, 82, "竞价双条件审计完成，正在按仓位上限模拟买入100股")
         selected_count = await self._create_positions(run_id, candidates, now, config)
+        market_execution_gate = next(
+            (
+                item.get("market_execution_gate")
+                for item in candidates
+                if isinstance(item.get("market_execution_gate"), dict)
+                and item["market_execution_gate"].get("blocked")
+            ),
+            None,
+        )
         fresh_count = sum(bool((item.get("auction") or {}).get("is_realtime")) for item in candidates)
         passed_count = sum(bool(item.get("auction_passed")) for item in candidates)
         available = bool(quote_payload.get("stocks"))
@@ -1620,8 +1660,18 @@ class OvernightStrategyService:
         status = "completed" if complete_realtime else "partial" if available else "unavailable"
         if not available:
             message = "竞价实时数据不可用，未使用缓存建立模拟仓位"
+        elif market_execution_gate:
+            message = (
+                f"AI竞价盯盘Agent完成：{len(candidates)}只，双条件通过{passed_count}只；"
+                f"{market_execution_gate['reason']}"
+            )
         else:
             message = f"AI竞价盯盘Agent完成：{len(candidates)}只，双条件通过{passed_count}只，模拟买入{selected_count}只"
+        execution_quality = {
+            "rule_qualified_count": passed_count,
+            "simulated_entry_count": selected_count,
+            "blocked_by_market_gate": bool(market_execution_gate),
+        }
         await self._finish(
             run_id,
             status=status,
@@ -1636,6 +1686,8 @@ class OvernightStrategyService:
                 "cash_day": not any(item.get("qualified") for item in candidates),
                 "loss_circuit": circuit,
                 "pending_entry_run_id": pending_id,
+                "execution": execution_quality,
+                **({"market_execution_gate": market_execution_gate} if market_execution_gate else {}),
                 "auction": {
                     "status": "completed" if complete_realtime else "partial" if available else "unavailable",
                     "agent": "AI竞价盯盘Agent",
@@ -1662,7 +1714,46 @@ class OvernightStrategyService:
     ) -> int:
         qualified = [item for item in candidates if item.get("qualified")]
         qualified.sort(key=lambda item: (item.get("score") or 0, item.get("code") or ""), reverse=True)
+        if not qualified:
+            return 0
+        parsed_signal_dates = [_date(item.get("signal_at")) for item in qualified]
+        signal_dates = {signal_date for signal_date in parsed_signal_dates if signal_date is not None}
+        decision_date = next(iter(signal_dates)) if len(signal_dates) == 1 else now.date()
+        cache_key = f"{WORKBENCH_CACHE_PREFIX}{decision_date.isoformat()}"
         async with async_session() as session:
+            cache_row = await session.get(MarketDataCache, cache_key)
+        gate = evaluate_market_execution_gate(
+            dict(cache_row.payload) if cache_row and isinstance(cache_row.payload, dict) else None,
+            decision_date=decision_date,
+            strategy_id=str(config.get("id") or ""),
+            requires_auction_confirmation=bool(config.get("requires_auction_confirmation")),
+        )
+        if len(signal_dates) != 1 or any(signal_date is None for signal_date in parsed_signal_dates):
+            gate = {
+                **gate,
+                "available": False,
+                "blocked": True,
+                "reason": "候选信号日缺失或不一致，按失败关闭规则不建立新模拟仓位",
+            }
+        for candidate in qualified:
+            candidate["market_execution_gate"] = gate
+        if gate["blocked"]:
+            for candidate in qualified:
+                candidate["qualified"] = False
+                candidate.setdefault("failed_reasons", []).append(str(gate["reason"]))
+                candidate["selected_for_entry"] = False
+            async with async_session() as session:
+                run = await session.get(OvernightStrategyRun, run_id)
+                if run is not None:
+                    quality = run.data_quality if isinstance(run.data_quality, dict) else {}
+                    run.data_quality = {**quality, "market_execution_gate": gate}
+                    await session.commit()
+            return 0
+        async with async_session() as session:
+            run = await session.get(OvernightStrategyRun, run_id)
+            if run is not None:
+                quality = run.data_quality if isinstance(run.data_quality, dict) else {}
+                run.data_quality = {**quality, "market_execution_gate": gate}
             open_rows = (await session.execute(
                 select(OvernightPosition).where(OvernightPosition.status == "open")
             )).scalars().all()
@@ -1738,6 +1829,7 @@ class OvernightStrategyService:
                         "auction_confirmed": bool(config.get("requires_auction_confirmation")),
                         "auction": auction if config.get("requires_auction_confirmation") else None,
                         "entry_slippage_rate": config["slippage_rate"],
+                        "market_execution_gate": gate,
                     },
                 ))
                 candidate["selected_for_entry"] = True

@@ -432,6 +432,26 @@ class MarketDecisionWorkbenchTests(unittest.TestCase):
         self.assertIn("principal_contradiction", payload["market_cognition"])
         self.assertEqual(payload["audit"]["contract_version"], WORKBENCH_CONTRACT_VERSION)
 
+    def test_crowding_warning_names_its_trigger_and_disables_zero_weight_strategies(self):
+        snapshot = topic_snapshot()
+        snapshot["market"]["emotion"]["break_rate"] = 45
+        for item in snapshot["topics"]:
+            item["leader"]["return_5d_pct"] = 40
+            item["leader"]["overheated"] = True
+        payload = assemble_workbench(snapshot, index_history(), sentiment_history(), None, {})
+
+        self.assertGreaterEqual(payload["crowding_risk"]["score"], 71)
+        self.assertEqual(payload["contradiction_evolution"]["qualitative_shift"], "warning")
+        self.assertTrue(
+            any("抱团风险" in item and "阈值 71" in item for item in payload["contradiction_evolution"]["evidence"])
+        )
+        weights = {item["strategy_id"]: item["weight_pct"] for item in payload["adaptive_strategy_weights"]["weights"]}
+        permissions = {item["id"]: item for item in payload["strategy_selector"]["strategies"]}
+        for strategy_id in ("tail_1455", "auction_confirmation"):
+            self.assertEqual(weights[strategy_id], 0)
+            self.assertEqual(permissions[strategy_id]["status"], "forbidden")
+            self.assertEqual(permissions[strategy_id]["max_position_pct"], 0)
+
     def test_strategy_health_without_forward_samples_is_recovery_not_failure(self):
         overnight = {
             "strategy_store": {"strategies": [{"id": "tail_1455", "name": "尾盘研究"}]},

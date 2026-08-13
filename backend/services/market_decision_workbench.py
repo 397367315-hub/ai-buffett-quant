@@ -16,18 +16,19 @@ from sqlalchemy import desc, select
 from database import async_session
 from models import MarketDataCache, MarketSentimentDaily, StockSelectionRun
 from services.data_collector import collector, is_a_share_market_session, shanghai_now
+from services.market_decision_contract import (
+    CANDIDATE_SCORE_VERSION,
+    FINAL_ACTIONS,
+    SCORE_VERSION,
+    WORKBENCH_CACHE_KEY,
+    WORKBENCH_CACHE_PREFIX,
+    WORKBENCH_CONTRACT_VERSION,
+)
 from services.overnight_strategy import overnight_strategy_service
 from services.topic_strength import topic_strength_service
 
 
-WORKBENCH_CACHE_KEY = "market_decision_workbench_latest_v2"
-WORKBENCH_CACHE_PREFIX = "market_decision_workbench_v2:"
-WORKBENCH_CONTRACT_VERSION = "market-workbench-v2.0.1"
-SCORE_VERSION = "market-state-v2.0.0"
-CANDIDATE_SCORE_VERSION = "workbench-candidate-v2.0.0"
-
 STRATEGY_HEALTH_STATES = ("ACTIVE", "CAUTION", "REDUCE", "SUSPENDED", "RECOVERY")
-FINAL_ACTIONS = ("execute", "caution", "observe", "no_trade")
 
 ADAPTIVE_STRATEGY_DEFINITIONS = (
     ("trend_breakout", "趋势突破", ("trend_breakout", "strat_builtin_short_v1")),
@@ -894,11 +895,16 @@ def _contradiction_evolution(
     warning = len(accumulating) >= 1 or (crowd_score is not None and crowd_score >= 71)
     confirmed = len(accumulating) >= 2 and structure_score is not None and structure_score < 45
     qualitative_shift = "confirmed" if confirmed else "warning" if warning else "not_confirmed"
+    evolution_evidence = [item["evidence"] for item in accumulating[:4]]
+    if crowd_score is not None and crowd_score >= 71:
+        evolution_evidence.append(f"抱团风险 {crowd_score:.1f}，达到预警阈值 71")
+    if confirmed:
+        evolution_evidence.append(f"结构健康 {structure_score:.1f}，且至少两项连续异常，确认结构变化")
     return {
         "quantitative_changes": changes,
         "accumulating_count": len(accumulating),
         "qualitative_shift": qualitative_shift,
-        "evidence": [item["evidence"] for item in accumulating[:4]] or ["尚未观察到连续同向异常"],
+        "evidence": evolution_evidence or ["尚未观察到连续同向异常或高拥挤预警"],
         "method": "只用决策日前最多5个历史样本观察连续性；单日异常不升级为质变",
         "data_coverage": {
             "history_samples": len(history),
@@ -1222,6 +1228,11 @@ def _overnight_candidates(overnight: dict, decision_date: str) -> list[dict]:
             for row in conditions if row.get("status") == "passed"
         ]
         strategy = (run.get("data_quality") or {}).get("strategy") or {}
+        adaptive_strategy_key = (
+            "auction_confirmation"
+            if strategy.get("requires_auction_confirmation")
+            else "tail_1455"
+        )
         output.append({
             "code": code,
             "name": str(item.get("name") or item.get("stock_name") or code),
@@ -1233,6 +1244,7 @@ def _overnight_candidates(overnight: dict, decision_date: str) -> list[dict]:
             "score_breakdown": item.get("score_breakdown") or {},
             "score_method": str(strategy.get("version") or "overnight-strategy"),
             "strategy": str(run.get("strategy_name") or "14:55尾盘候选策略"),
+            "adaptive_strategy_key": adaptive_strategy_key,
             "pool": "14:55执行池" if eligible_run else "尾盘观察池",
             "status": "待竞价确认" if eligible_run else "观察",
             "execution_eligible": eligible_run,
@@ -1352,14 +1364,15 @@ def _strategy_selector(market_state: dict, overnight: dict) -> dict:
 
 
 def _apply_market_action_gate(strategy_selector: dict, candidates: list[dict], final_action: str) -> None:
-    """Apply the market-level no-trade decision without deleting observations."""
-    if final_action != "no_trade":
+    """Block simulated execution for observe/no-trade while retaining candidates."""
+    if final_action not in {"observe", "no_trade"}:
         return
+    action_label = "仅观察" if final_action == "observe" else "不交易"
     for strategy in strategy_selector.get("strategies") or []:
         strategy["status"] = "forbidden"
         strategy["max_position_pct"] = 0
-        strategy["reason"] = "市场认知层输出不交易；候选保留观察，不进入模拟执行"
-    strategy_selector["conclusion"] = "不交易"
+        strategy["reason"] = f"市场认知层输出{action_label}；候选保留观察，不进入模拟执行"
+    strategy_selector["conclusion"] = action_label
     strategy_selector["max_total_position_pct"] = 0
     strategy_selector["allowed"] = [item["name"] for item in strategy_selector.get("strategies") or [] if item.get("status") == "allowed"]
     strategy_selector["limited"] = [item["name"] for item in strategy_selector.get("strategies") or [] if item.get("status") == "limited"]
@@ -1368,10 +1381,45 @@ def _apply_market_action_gate(strategy_selector: dict, candidates: list[dict], f
         if not candidate.get("execution_eligible"):
             continue
         candidate["execution_eligible"] = False
-        candidate["status"] = "市场不交易"
+        candidate["status"] = f"市场{action_label}"
         candidate["pool"] = "观察池（全局闸门）"
-        candidate.setdefault("why_not_full", []).append("市场认知层在个股之上触发不交易")
+        candidate.setdefault("why_not_full", []).append(f"市场认知层在个股之上触发{action_label}")
         candidate.setdefault("abandon_conditions", []).insert(0, "市场结构/矛盾确认前不得执行")
+
+
+def _apply_adaptive_weight_gate(
+    strategy_selector: dict,
+    adaptive_weights: dict,
+    candidates: list[dict],
+) -> None:
+    """Keep strategy permissions consistent with the final adaptive weights."""
+    weights = {
+        str(item.get("strategy_id")): _number(item.get("weight_pct"))
+        for item in adaptive_weights.get("weights") or []
+    }
+    adjustments = adaptive_weights.get("health_adjustments") or {}
+    for strategy in strategy_selector.get("strategies") or []:
+        strategy_id = str(strategy.get("id") or "")
+        if strategy_id not in weights or weights[strategy_id] != 0:
+            continue
+        strategy["status"] = "forbidden"
+        strategy["max_position_pct"] = 0
+        reason = adjustments.get(strategy_id)
+        strategy["reason"] = (
+            f"自适应权重已降为0（策略健康状态 {reason}），仅保留观察"
+            if reason else "自适应权重已因市场结构或拥挤风险降为0，仅保留观察"
+        )
+    strategy_selector["allowed"] = [item["name"] for item in strategy_selector.get("strategies") or [] if item.get("status") == "allowed"]
+    strategy_selector["limited"] = [item["name"] for item in strategy_selector.get("strategies") or [] if item.get("status") == "limited"]
+    strategy_selector["forbidden"] = [item["name"] for item in strategy_selector.get("strategies") or [] if item.get("status") == "forbidden"]
+    for candidate in candidates:
+        strategy_key = str(candidate.get("adaptive_strategy_key") or "")
+        if not candidate.get("execution_eligible") or not strategy_key or weights.get(strategy_key) != 0:
+            continue
+        candidate["execution_eligible"] = False
+        candidate["status"] = "策略权重为0"
+        candidate["pool"] = "观察池（策略闸门）"
+        candidate.setdefault("why_not_full", []).append("对应策略动态权重为0，不进入模拟执行")
 
 
 def _phase(run: dict | None, phase_id: str, label: str, scheduled_at: str) -> dict:
@@ -1410,15 +1458,17 @@ def _execution_queue(overnight: dict, final_action: str) -> dict:
         _phase(overnight.get("latest_auction_run"), "auction", "AI竞价盯盘", "次日09:24-09:27"),
     ]
     auction = phases[-1]
+    execution_blocked = final_action in {"observe", "no_trade"}
+    blocked_label = "市场仅观察" if final_action == "observe" else "市场不交易"
     phases.append({
         "id": "decision",
         "label": "模拟执行决策",
         "scheduled_at": "次日09:30",
-        "status": "blocked" if final_action == "no_trade" else "ready" if auction["display_status"] == "有候选" else "waiting",
-        "display_status": "市场不交易" if final_action == "no_trade" else "买入/持有" if auction["display_status"] == "有候选" else "等待确认",
+        "status": "blocked" if execution_blocked else "ready" if auction["display_status"] == "有候选" else "waiting",
+        "display_status": blocked_label if execution_blocked else "买入/持有" if auction["display_status"] == "有候选" else "等待确认",
         "data_date": auction["data_date"],
         "candidate_count": auction["candidate_count"],
-        "message": "市场认知层已阻断模拟执行，候选只保留观察。" if final_action == "no_trade" else "只有规则确认后的候选进入100股模拟记录；不连接券商。",
+        "message": "市场认知层已阻断模拟执行，候选只保留观察。" if execution_blocked else "只有规则确认后的候选进入100股模拟记录；不连接券商。",
         "run_id": auction["run_id"],
     })
     return {
@@ -1628,6 +1678,7 @@ def assemble_workbench(
         "action_label": {"execute": "执行", "caution": "谨慎", "observe": "观察", "no_trade": "不交易"}.get(final_action, "不交易"),
         "method": "事实→主要矛盾→矛盾主要方面→阶段→量变/质变→实践假设；解释层不直接生成买卖指令",
     }
+    _apply_adaptive_weight_gate(strategy_selector, adaptive_weights, candidates)
     _apply_market_action_gate(strategy_selector, candidates, final_action)
     risk_warnings = _unique([
         str(item)

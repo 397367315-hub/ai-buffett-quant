@@ -131,6 +131,24 @@ async def refresh_topic_intraday_evidence():
         return None
 
 
+async def refresh_market_decision_execution_gate():
+    """Pre-warm the shared market decision before simulated entry windows."""
+    from services.market_decision_workbench import market_decision_workbench_service
+
+    try:
+        payload = await market_decision_workbench_service.get(force=True)
+        meta = payload.get("meta") or {}
+        cognition = payload.get("market_cognition") or {}
+        print(
+            "[Scheduler] 市场执行闸门已更新: "
+            f"{meta.get('decision_date')} / {cognition.get('final_action')}"
+        )
+        return payload
+    except Exception as exc:
+        print(f"[Scheduler] 市场执行闸门预热失败: {type(exc).__name__}")
+        return None
+
+
 async def refresh_dragon_board_cache():
     from services.dragon_board import dragon_board_service
 
@@ -403,10 +421,22 @@ async def start_scheduler(data_collector=None, db_session=None):
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
+        refresh_market_decision_execution_gate,
+        CronTrigger(hour=14, minute=53, day_of_week="mon-fri"),
+        id="market_execution_gate_tail", name="14:55前市场执行闸门预热", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=120,
+    )
+    scheduler.add_job(
         run_overnight_entry_scan,
         CronTrigger(hour=14, minute=55, day_of_week="mon-fri"),
         id="overnight_entry_scan", name="一夜持股14:55入场复核", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        refresh_market_decision_execution_gate,
+        CronTrigger(hour=9, minute=23, day_of_week="mon-fri"),
+        id="market_execution_gate_auction", name="09:25前市场执行闸门预热", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=60,
     )
     scheduler.add_job(
         run_overnight_auction_watch,
