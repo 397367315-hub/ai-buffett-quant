@@ -26,6 +26,7 @@ from models import (
     StockFundFlowDaily,
 )
 from services.a_stock_data import calculate_indicators
+from services.cyclical_valuation import build_cyclical_valuation
 from services.data_collector import (
     EASTMONEY_UT,
     collector,
@@ -40,7 +41,7 @@ from services.macro_policy_news import macro_policy_news_collector
 from services.market_decision_workbench import market_decision_workbench_service
 
 
-CONTRACT_VERSION = "stock-essence-decision-v2.3.0"
+CONTRACT_VERSION = "stock-essence-decision-v2.4.0"
 F10_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 QUOTE_DETAIL_URL = "https://push2.eastmoney.com/api/qt/stock/get"
 DECISION_STATES = ("EXECUTE", "CAUTION", "OBSERVE", "AVOID", "NO_TRADE")
@@ -785,6 +786,18 @@ class StockEssenceDecisionService:
             else "低" if earnings_state == "恶化" or quality == "低" or adverse_working_capital >= 2
             else "中"
         )
+        cycle_history = []
+        for history_period in sorted(selected)[-20:]:
+            history_row = selected[history_period]
+            cycle_history.append({
+                "period": history_period.isoformat(),
+                "net_profit": _round(_number(history_row.get("PARENTNETPROFIT")), 0),
+                "net_profit_ttm": _round(_ttm(series, history_period, "net_profit"), 0),
+                "operating_cashflow_ttm": _round(_ttm(series, history_period, "operating_cashflow"), 0),
+                "gross_margin_pct": _round(_number(history_row.get("XSMLL"))),
+                "roe_pct": _round(_number(history_row.get("ROEJQ"))),
+                "net_profit_growth_pct": _round(_number(history_row.get("PARENTNETPROFITTZ"))),
+            })
         return {
             "available": True,
             "report_date": period.isoformat(),
@@ -813,6 +826,7 @@ class StockEssenceDecisionService:
             "earnings_quality": quality,
             "earnings_quality_score": _round(quality_score, 1),
             "earnings_sustainability": sustainability,
+            "cycle_history": cycle_history,
             "operating_vs_non_recurring": (
                 "利润主要来自扣非经营成果" if deducted_ratio is not None and deducted_ratio >= 0.85
                 else "非经常性损益占比较高，需核对利润来源"
@@ -1213,6 +1227,7 @@ class StockEssenceDecisionService:
         members: list[dict],
         fundamentals: dict,
         consensus: dict,
+        sector_names: tuple[Any, ...] = (),
     ) -> dict:
         history_rows = history.get("history") or []
         history_values = [_number(row.get("pe_ttm")) for row in history_rows]
@@ -1237,7 +1252,17 @@ class StockEssenceDecisionService:
         peg = current_pe / growth if pe_applicable and growth is not None and growth > 0 else None
         change_20 = (current_pe / positive_history[-21] - 1) * 100 if pe_applicable and len(positive_history) >= 21 and positive_history[-21] else None
         earnings_state = fundamentals.get("earnings_state")
-        if not pe_applicable:
+        current_pb = _number(quote.get("pb"))
+        cycle = build_cyclical_valuation(
+            sector_names=sector_names,
+            current_pe=current_pe,
+            current_pb=current_pb,
+            market_cap=_number(quote.get("market_cap")),
+            fundamentals=fundamentals,
+        )
+        if cycle.get("is_cyclical"):
+            state = str(cycle.get("cycle_state"))
+        elif not pe_applicable:
             state = "亏损期：PE不作为估值依据"
         elif historical_percentile is not None and historical_percentile <= 35 and earnings_state == "改善":
             state = "低估 + 盈利改善"
@@ -1251,9 +1276,14 @@ class StockEssenceDecisionService:
             state = "合理 + 盈利改善/稳定"
         return {
             "current_pe_ttm": _round(current_pe),
-            "current_pb": _round(_number(quote.get("pb"))),
+            "current_pb": _round(current_pb),
             "pe_applicable": pe_applicable,
-            "pe_resolution": "使用正PE历史与行业样本" if pe_applicable else "当前净利润为负，保留原始PE并改看PB、现金流与资产质量",
+            "pe_resolution": (
+                "周期行业不把低TTM PE直接视为低估，使用标准化盈利、PB/ROE、现金流与阶段复核"
+                if cycle.get("is_cyclical")
+                else "使用正PE历史与行业样本" if pe_applicable
+                else "当前净利润为负，保留原始PE并改看PB、现金流与资产质量"
+            ),
             "pe_percentile_3y": historical_percentile,
             "industry_pe_percentile": industry_percentile,
             "industry_positive_pe_samples": len(industry_pes),
@@ -1264,6 +1294,7 @@ class StockEssenceDecisionService:
             "state": state,
             "source": f"{history.get('source') or 'eastmoney'}+行业成分股实时估值",
             "data_date": history.get("history_end"),
+            **cycle,
         }
 
     @staticmethod
@@ -1299,6 +1330,16 @@ class StockEssenceDecisionService:
                 peak = max(peak, close)
                 drawdowns.append((close / peak - 1) * 100 if peak else 0)
             max_drawdown = min(drawdowns)
+        valuation_percentile = _number(valuation.get("pe_percentile_3y")) or 0
+        if valuation.get("pe_inversion_risk"):
+            valuation_risk = "高"
+            valuation_risk_reason = "周期盈利高位触发PE反向风险"
+        elif valuation.get("is_cyclical") and valuation.get("cycle_phase") in {"peak", "contraction"}:
+            valuation_risk = "中"
+            valuation_risk_reason = f"周期阶段为{valuation.get('cycle_phase_label')}，低PE不作为安全边际"
+        else:
+            valuation_risk = "高" if valuation_percentile >= 80 else "中" if valuation_percentile >= 55 else "低"
+            valuation_risk_reason = "按三年正PE历史分位"
         return {
             "current_price": _round(current),
             "support": _round(support),
@@ -1308,7 +1349,8 @@ class StockEssenceDecisionService:
             "potential_downside_pct": _round(potential_down),
             "risk_reward_ratio": _round(ratio, 2),
             "max_drawdown_60d_pct": _round(max_drawdown),
-            "valuation_risk": "高" if (valuation.get("pe_percentile_3y") or 0) >= 80 else "中" if (valuation.get("pe_percentile_3y") or 0) >= 55 else "低",
+            "valuation_risk": valuation_risk,
+            "valuation_risk_reason": valuation_risk_reason,
             "crowding_risk": "高" if emotion.get("level") == "过热" else "中" if emotion.get("level") == "偏热" else "低",
             "scenarios": {
                 "bull": _round(current * (1 + potential_up / 100)) if current else None,
@@ -1362,9 +1404,12 @@ class StockEssenceDecisionService:
         ]
         passed = sum(item["passed"] for item in tail_conditions)
         tail_score = passed / len(tail_conditions) * 100
+        valuation_score = _number(valuation.get("long_term_value_score"))
+        if valuation_score is None and _number(valuation.get("pe_percentile_3y")) is not None:
+            valuation_score = 100 - _number(valuation.get("pe_percentile_3y"))
         long_score = _average([
             fundamentals.get("earnings_quality_score"),
-            100 - _number(valuation.get("pe_percentile_3y")) if _number(valuation.get("pe_percentile_3y")) is not None else None,
+            valuation_score,
             _clamp((risk_reward.get("risk_reward_ratio") or 0) / 3 * 100),
         ])
         alpha_score = _number(relative.get("individual_alpha_score"))
@@ -1414,12 +1459,14 @@ class StockEssenceDecisionService:
             reasons.append("盈利质量处于低档")
         if valuation.get("state") == "高估 + 盈利恶化":
             reasons.append("估值处于高位且盈利恶化")
+        if valuation.get("pe_inversion_risk"):
+            reasons.append("周期盈利处于高位，低TTM PE存在反向陷阱")
         if emotion.get("level") == "过热":
             reasons.append("个股情绪过热，拥挤风险较高")
         if rr is not None and rr < 1.2:
             reasons.append(f"风险收益比仅 {rr:.2f}")
 
-        if quality == "低" or valuation.get("state") == "高估 + 盈利恶化":
+        if quality == "低" or valuation.get("state") == "高估 + 盈利恶化" or valuation.get("pe_inversion_risk"):
             state = "AVOID"
         elif market_action == "no_trade":
             state = "NO_TRADE"
@@ -1763,7 +1810,19 @@ class StockEssenceDecisionService:
                 {"_coverage_status": "historical_excluded"}
                 if historical_mode else consensus
             )
-            valuation = self._build_valuation(quote, valuation_history, members, financials, consensus_for_analysis)
+            valuation = self._build_valuation(
+                {**quote, "market_cap": total_cap},
+                valuation_history,
+                members,
+                financials,
+                consensus_for_analysis,
+                (
+                    sector_name,
+                    quote.get("sector"),
+                    company_raw.get("BOARD_NAME_LEVEL"),
+                    company_raw.get("EM2016"),
+                ),
+            )
             announcement_payload = raw["announcements"]["value"] or {}
             announcements = (announcement_payload.get("announcements") or {}).get(code, [])
             macro = raw["macro"]["value"] or {}
@@ -1834,7 +1893,11 @@ class StockEssenceDecisionService:
                 "label": (
                     "高质量趋势型" if financials.get("earnings_quality") == "高" and (relative.get("individual_alpha_score") or 0) >= 60 and emotion.get("level") != "过热"
                     else "高度板块依赖型" if sector_dependency.get("dependency_level") == "高"
-                    else "早期观察型" if financials.get("earnings_state") == "改善" and (valuation.get("pe_percentile_3y") or 100) <= 40
+                    else "早期观察型" if (
+                        financials.get("earnings_state") == "改善"
+                        and not valuation.get("pe_inversion_risk")
+                        and (valuation.get("pe_percentile_3y") or 100) <= 40
+                    )
                     else "条件验证型"
                 ),
                 "dimensions": {
@@ -1899,7 +1962,18 @@ class StockEssenceDecisionService:
             evidence = [
                 {"nature": "fact", "category": "company", "statement": f"{stock_name}主营：{company.get('main_business') or '公司公开简介'}", "source": company["source"], "data_date": company.get("equity_data_date")},
                 {"nature": "fact", "category": "earnings", "statement": f"盈利状态{financials.get('earnings_state')}，质量{financials.get('earnings_quality')}，持续性{financials.get('earnings_sustainability')}", "source": financials.get("source"), "data_date": financials.get("report_date")},
-                {"nature": "calculation", "category": "valuation", "statement": f"PE三年分位{valuation.get('pe_percentile_3y')}%，行业分位{valuation.get('industry_pe_percentile')}%", "source": valuation.get("source"), "data_date": valuation.get("data_date")},
+                {
+                    "nature": "calculation",
+                    "category": "valuation",
+                    "statement": (
+                        f"周期阶段{valuation.get('cycle_phase_label')}，标准化PE {valuation.get('normalized_pe')}，"
+                        f"PE反向风险{'是' if valuation.get('pe_inversion_risk') else '否'}"
+                        if valuation.get("is_cyclical")
+                        else f"PE三年分位{valuation.get('pe_percentile_3y')}%，行业分位{valuation.get('industry_pe_percentile')}%"
+                    ),
+                    "source": valuation.get("source"),
+                    "data_date": valuation.get("data_date"),
+                },
                 {"nature": "calculation", "category": "capital", "statement": f"5日资金状态：{capital_impact.get('persistence')}", "source": capital_impact.get("source"), "data_date": capital_impact.get("latest_data_date")},
                 {"nature": "calculation", "category": "alpha", "statement": f"个股Alpha评分{relative.get('individual_alpha_score')}，板块依赖{sector_dependency.get('dependency_level')}", "source": "个股/板块/上证日收益OLS", "data_date": decision_date.isoformat()},
                 {"nature": "scenario", "category": "risk", "statement": f"潜在上行{risk_reward.get('potential_upside_pct')}%，下行{risk_reward.get('potential_downside_pct')}%，RR={risk_reward.get('risk_reward_ratio')}", "source": "20日高低点+ATR情景", "data_date": decision_date.isoformat()},

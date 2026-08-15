@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   BarChart3,
@@ -10,12 +10,14 @@ import {
   Clock3,
   Database,
   Gauge,
+  History,
   Layers3,
   RefreshCw,
   Search,
   ShieldAlert,
   Sparkles,
   Target,
+  Trash2,
   TriangleAlert,
 } from 'lucide-react';
 import KlineChart, { KlineRow } from '@/components/KlineChart';
@@ -36,6 +38,41 @@ interface KlineData {
   data_date: string | null;
   is_realtime: boolean;
   warning: string | null;
+}
+
+interface QueryHistoryItem {
+  code: string;
+  name: string;
+  asOf: string;
+  dataDate: string | null;
+  savedAt: string;
+  profile: AnyMap;
+  flowData: AnyMap[];
+  kline: KlineData | null;
+}
+
+const QUERY_HISTORY_KEY = 'stock-decision-query-history-v1';
+const QUERY_HISTORY_LIMIT = 8;
+
+function readQueryHistory(): QueryHistoryItem[] {
+  try {
+    const raw = window.localStorage.getItem(QUERY_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is QueryHistoryItem => Boolean(
+      item && typeof item.code === 'string' && item.profile && typeof item.profile === 'object',
+    )).slice(0, QUERY_HISTORY_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function writeQueryHistory(items: QueryHistoryItem[]): void {
+  try {
+    window.localStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(items.slice(0, QUERY_HISTORY_LIMIT)));
+  } catch {
+    // A private browsing session or a full quota must not break stock queries.
+  }
 }
 
 const CATEGORY_OPTIONS: Array<{ value: KlineCategory; label: string }> = [
@@ -136,63 +173,199 @@ export default function StockPage() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiNarrative, setAiNarrative] = useState('');
   const [error, setError] = useState('');
+  const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>([]);
+  const [loadedFromHistory, setLoadedFromHistory] = useState(false);
+  const requestIdRef = useRef(0);
+  const activeControllerRef = useRef<AbortController | null>(null);
+
+  const isCurrentRequest = useCallback((requestId: number) => requestIdRef.current === requestId, []);
+
+  const saveQuerySnapshot = useCallback((
+    nextProfile: AnyMap,
+    nextFlowData: AnyMap[],
+    nextKline: KlineData | null,
+    code: string,
+    requestedAsOf: string,
+  ) => {
+    setQueryHistory((current) => {
+      const previous = current.find((entry) => entry.code === code && entry.asOf === requestedAsOf);
+      const item: QueryHistoryItem = {
+        code,
+        name: String(nextProfile.company?.stock_name || code),
+        asOf: requestedAsOf,
+        dataDate: nextProfile.meta?.data_date || null,
+        savedAt: new Date().toISOString(),
+        profile: nextProfile,
+        flowData: nextFlowData.length ? nextFlowData.slice(-30) : previous?.flowData || [],
+        kline: nextKline
+          ? { ...nextKline, rows: nextKline.rows.slice(-120) }
+          : previous?.kline || null,
+      };
+      const next = [item, ...current.filter((entry) => !(entry.code === code && entry.asOf === requestedAsOf))].slice(0, QUERY_HISTORY_LIMIT);
+      writeQueryHistory(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    setQueryHistory(readQueryHistory());
+  }, []);
+
+  useEffect(() => () => {
+    requestIdRef.current += 1;
+    activeControllerRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (!loading) return;
     const timer = window.setInterval(() => {
-      setProgress((current) => current >= 92 ? current : Math.min(92, current + (current < 45 ? 7 : current < 75 ? 4 : 1)));
+      setProgress((current) => current >= 94 ? current : Math.min(94, current + (current < 45 ? 7 : current < 75 ? 4 : 1)));
     }, 550);
     return () => window.clearInterval(timer);
   }, [loading]);
 
-  const loadKline = useCallback(async (code: string, nextCategory: KlineCategory) => {
+  const loadKline = useCallback(async (code: string, nextCategory: KlineCategory, requestedAsOf = asOf, signal?: AbortSignal) => {
     setKlineLoading(true);
     try {
       const offset = nextCategory === 6 ? 120 : nextCategory === 5 ? 160 : 120;
       const query = new URLSearchParams({ code, category: String(nextCategory), offset: String(offset) });
-      if (asOf) query.set('as_of', asOf);
-      const response = await apiFetch<{ data: KlineData }>(`/kline?${query}`);
+      if (requestedAsOf) query.set('as_of', requestedAsOf);
+      const response = await apiFetch<{ data: KlineData }>(`/kline?${query}`, {
+        signal,
+        timeoutMs: 20000,
+      });
       setKline(response.data);
     } catch {
-      setKline(null);
+      if (!signal?.aborted) setKline(null);
     } finally {
       setKlineLoading(false);
     }
   }, [asOf]);
 
-  const handleSearch = useCallback(async (codeInput?: string, force = false) => {
+  const handleSearch = useCallback(async (codeInput?: string, force = false, asOfInput?: string, fromHistory = false) => {
     const code = String(codeInput ?? stockCode).trim();
     if (!code) return;
+    const requestedAsOf = asOfInput ?? asOf;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
     setStockCode(code);
+    if (asOfInput !== undefined) setAsOf(asOfInput);
     setLoading(true);
     setProgress(8);
     setError('');
     setAiNarrative('');
+    setLoadedFromHistory(fromHistory);
     setCategory(4);
     const profileQuery = new URLSearchParams();
-    if (asOf) profileQuery.set('as_of', asOf);
+    if (requestedAsOf) profileQuery.set('as_of', requestedAsOf);
     if (force) profileQuery.set('refresh', 'true');
     const klineQuery = new URLSearchParams({ code, category: '4', offset: '120' });
-    if (asOf) klineQuery.set('as_of', asOf);
+    if (requestedAsOf) klineQuery.set('as_of', requestedAsOf);
+
+    const profileTask = apiFetch<{ data: AnyMap }>(
+      `/stocks/${encodeURIComponent(code)}/decision-profile${profileQuery.size ? `?${profileQuery}` : ''}`,
+      { signal: controller.signal, timeoutMs: 70000 },
+    );
+    const flowTask = apiFetch<AnyMap>(`/flow/stock/${encodeURIComponent(code)}`, {
+      signal: controller.signal,
+      timeoutMs: 20000,
+    });
+    const klineTask = apiFetch<{ data: KlineData }>(`/kline?${klineQuery}`, {
+      signal: controller.signal,
+      timeoutMs: 20000,
+    });
+
+    // The profile is the primary result. Auxiliary endpoints update as they
+    // finish and cannot hold the progress bar at an artificial 92% forever.
+    void flowTask.then((result) => {
+      if (!isCurrentRequest(requestId)) return;
+      const nextFlowData = result.data.flow_data || [];
+      setFlowData(nextFlowData);
+      setProgress((current) => Math.max(current, 58));
+    }).catch(() => {
+      if (isCurrentRequest(requestId) && !controller.signal.aborted && !fromHistory) setFlowData([]);
+    });
+    void klineTask.then((result) => {
+      if (!isCurrentRequest(requestId)) return;
+      setKline(result.data);
+      setProgress((current) => Math.max(current, 68));
+    }).catch(() => {
+      if (isCurrentRequest(requestId) && !controller.signal.aborted && !fromHistory) setKline(null);
+    });
+
     try {
-      const [profileResult, flowResult, klineResult] = await Promise.allSettled([
-        apiFetch<{ data: AnyMap }>(`/stocks/${encodeURIComponent(code)}/decision-profile${profileQuery.size ? `?${profileQuery}` : ''}`),
-        apiFetch<AnyMap>(`/flow/stock/${encodeURIComponent(code)}`),
-        apiFetch<{ data: KlineData }>(`/kline?${klineQuery}`),
-      ]);
-      if (profileResult.status === 'fulfilled') {
-        setProfile(profileResult.value.data);
-      } else {
-        setError(friendlyApiError(profileResult.reason, '个股决策画像生成失败'));
-      }
-      setFlowData(flowResult.status === 'fulfilled' ? flowResult.value.data.flow_data || [] : []);
-      setKline(klineResult.status === 'fulfilled' ? klineResult.value.data : null);
+      const result = await profileTask;
+      if (!isCurrentRequest(requestId)) return;
+      setProfile(result.data);
+      setHasSearched(true);
+      setProgress(100);
+      setError('');
+      saveQuerySnapshot(result.data, [], null, code, requestedAsOf);
+    } catch (caught) {
+      if (!isCurrentRequest(requestId) || controller.signal.aborted) return;
+      setError(friendlyApiError(caught, '个股决策画像生成失败'));
       setHasSearched(true);
       setProgress(100);
     } finally {
-      window.setTimeout(() => setLoading(false), 180);
+      if (isCurrentRequest(requestId)) {
+        setLoading(false);
+      }
     }
-  }, [asOf, stockCode]);
+
+    // Enrich the just-saved history item when the two lighter requests finish.
+    void Promise.allSettled([flowTask, klineTask]).then(([flowResult, klineResult]) => {
+      if (!isCurrentRequest(requestId)) return;
+      const currentProfile = profileTask;
+      void currentProfile.then((result) => {
+        if (!isCurrentRequest(requestId)) return;
+        const nextFlowData = flowResult.status === 'fulfilled' ? flowResult.value.data.flow_data || [] : [];
+        const nextKline = klineResult.status === 'fulfilled' ? klineResult.value.data : null;
+        saveQuerySnapshot(result.data, nextFlowData, nextKline, code, requestedAsOf);
+      }).catch(() => undefined);
+      if (isCurrentRequest(requestId)) activeControllerRef.current = null;
+    });
+  }, [asOf, isCurrentRequest, saveQuerySnapshot, stockCode]);
+
+  const openHistory = useCallback((item: QueryHistoryItem) => {
+    requestIdRef.current += 1;
+    activeControllerRef.current?.abort();
+    activeControllerRef.current = null;
+    setStockCode(item.code);
+    setAsOf(item.asOf);
+    setProfile(item.profile);
+    setFlowData(item.flowData || []);
+    setKline(item.kline || null);
+    setCategory(4);
+    setHasSearched(true);
+    setLoadedFromHistory(true);
+    setLoading(false);
+    setProgress(0);
+    setError('');
+  }, []);
+
+  const refreshHistoryItem = useCallback((item: QueryHistoryItem) => {
+    setProfile(item.profile);
+    setFlowData(item.flowData || []);
+    setKline(item.kline || null);
+    setAsOf('');
+    void handleSearch(item.code, true, '', true);
+  }, [handleSearch]);
+
+  const clearQueryHistory = useCallback(() => {
+    window.localStorage.removeItem(QUERY_HISTORY_KEY);
+    setQueryHistory([]);
+  }, []);
+
+  const deleteQueryHistoryItem = useCallback((code: string, requestedAsOf: string) => {
+    setQueryHistory((current) => {
+      const next = current.filter((item) => !(item.code === code && item.asOf === requestedAsOf));
+      writeQueryHistory(next);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const code = new URLSearchParams(window.location.search).get('code')?.trim();
@@ -242,7 +415,9 @@ export default function StockPage() {
   const market = profile?.market_context || {};
 
   const stateStyle = DECISION_STYLES[decision.state] || DECISION_STYLES.OBSERVE;
-  const loadingLabel = progress < 35 ? '核验公司、财务与行情' : progress < 65 ? '计算板块、Alpha与资金冲击' : progress < 90 ? '生成风险收益与策略适配' : '整理证据与决策状态';
+  const loadingLabel = loadedFromHistory
+    ? '历史快照已打开，后台核验最新数据'
+    : progress < 35 ? '核验公司、财务与行情' : progress < 65 ? '计算板块、Alpha与资金冲击' : progress < 90 ? '生成风险收益与策略适配' : '整理证据与决策状态';
   const auditSources = useMemo(() => audit.sources || [], [audit.sources]);
   const expectationCovered = expectation.availability === 'covered' && (expectation.analyst_count || 0) > 0;
   const maxDecisionDate = useMemo(() => new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10), []);
@@ -300,6 +475,49 @@ export default function StockPage() {
           </div>
         </div>
         {asOf && <div className="mt-2 text-[10px] text-text-secondary">历史模式会严格使用该日期之前已公告的财报与行情。</div>}
+        {queryHistory.length > 0 && (
+          <div className="mt-4 border-t border-border pt-3">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-1.5 text-[10px] font-medium text-text-secondary"><History size={13} />最近查询</div>
+              <button
+                type="button"
+                onClick={clearQueryHistory}
+                title="清空最近查询"
+                aria-label="清空最近查询"
+                className="grid h-7 w-7 place-items-center rounded border border-border text-text-secondary hover:text-text"
+              ><Trash2 size={13} /></button>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {queryHistory.map((item) => (
+                <div key={`${item.code}-${item.asOf || 'latest'}`} className="relative min-w-[190px] shrink-0 rounded border border-border bg-card hover:border-accent/60">
+                  <button
+                    type="button"
+                    onClick={() => openHistory(item)}
+                    className="block w-full px-3 py-2 pr-[70px] text-left"
+                    title="打开当时保存的查询画像"
+                  >
+                    <div className="flex items-center gap-2 text-xs"><span className="font-medium text-text">{item.name}</span><span className="font-mono text-text-secondary">{item.code}</span></div>
+                    <div className="mt-1 text-[10px] text-text-secondary">数据日 {item.dataDate || '最近交易日'} · {item.asOf || '最新'}</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => refreshHistoryItem(item)}
+                    title={`刷新 ${item.name} 最新分析`}
+                    aria-label={`刷新 ${item.name} 最新分析`}
+                    className="absolute right-9 top-1.5 grid h-7 w-7 place-items-center rounded text-text-secondary hover:bg-bg hover:text-accent"
+                  ><RefreshCw size={12} /></button>
+                  <button
+                    type="button"
+                    onClick={() => deleteQueryHistoryItem(item.code, item.asOf)}
+                    title={`删除 ${item.name} 查询记录`}
+                    aria-label={`删除 ${item.name} 查询记录`}
+                    className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded text-text-secondary hover:bg-bg hover:text-down"
+                  ><Trash2 size={12} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {loading && (
           <div className="mt-4">
             <div className="mb-1.5 flex justify-between text-[10px] text-text-secondary"><span>{loadingLabel}</span><span>{progress}%</span></div>
@@ -411,8 +629,21 @@ export default function StockPage() {
                   {finite(valuation.industry_pe_percentile) && <Metric label="行业PE分位" value={number(valuation.industry_pe_percentile, 1, '%')} />}
                   {finite(valuation.peg_proxy) && <Metric label="PEG代理" value={number(valuation.peg_proxy, 3)} />}
                   <Metric label="估值状态" value={text(valuation.state, '按历史区间核验')} />
+                  {valuation.is_cyclical && <Metric label="周期属性" value={text(valuation.cyclical_sector_label)} detail={`阶段置信度 ${number(valuation.cycle_confidence, 1, '%')}`} />}
+                  {valuation.is_cyclical && <Metric label="周期阶段" value={text(valuation.cycle_phase_label)} />}
+                  {valuation.is_cyclical && finite(valuation.normalized_pe) && <Metric label="标准化PE" value={number(valuation.normalized_pe)} detail="历史正利润中位数口径" />}
+                  {valuation.is_cyclical && finite(valuation.profit_cycle_percentile) && <Metric label="利润周期分位" value={number(valuation.profit_cycle_percentile, 1, '%')} />}
+                  {valuation.is_cyclical && finite(valuation.margin_cycle_percentile) && <Metric label="毛利率周期分位" value={number(valuation.margin_cycle_percentile, 1, '%')} />}
+                  {valuation.is_cyclical && <Metric label="PE反向风险" value={valuation.pe_inversion_risk ? '已触发' : '未触发'} valueClass={valuation.pe_inversion_risk ? 'text-down' : 'text-up'} />}
                 </MetricGrid>
                 <div className="mt-3 text-[10px] text-text-secondary">{valuation.pe_resolution} · 三年正PE样本 {valuation.pe_history_samples || 0} 条 · 行业样本 {valuation.industry_positive_pe_samples || 0} 只</div>
+                {valuation.is_cyclical && (
+                  <div className={`mt-3 border-l-2 px-3 py-2 text-[10px] leading-4 ${valuation.pe_inversion_risk ? 'border-down bg-down/10 text-down' : 'border-accent bg-accent/10 text-text-secondary'}`}>
+                    <div>{valuation.valuation_method} · {valuation.pb_roe_signal}</div>
+                    {(valuation.cycle_evidence || []).length > 0 && <div className="mt-1">依据：{valuation.cycle_evidence.join('；')}</div>}
+                    {(valuation.cycle_warnings || []).length > 0 && <div className="mt-1">提示：{valuation.cycle_warnings.join('；')}</div>}
+                  </div>
+                )}
               </div>
               <div className="lg:pl-7">
                 <SectionTitle icon={ShieldAlert} title="风险收益" meta="20日边界 + ATR情景" />
@@ -424,7 +655,7 @@ export default function StockPage() {
                   <Metric label="阻力" value={number(risk.resistance)} />
                   <Metric label="60日最大回撤" value={number(risk.max_drawdown_60d_pct, 2, '%')} />
                 </MetricGrid>
-                <div className="mt-3 text-[10px] text-text-secondary">估值风险 {risk.valuation_risk} · 拥挤风险 {risk.crowding_risk} · 牛/基准/熊 {number(risk.scenarios?.bull)} / {number(risk.scenarios?.base)} / {number(risk.scenarios?.bear)}</div>
+                <div className="mt-3 text-[10px] text-text-secondary">估值风险 {risk.valuation_risk}（{risk.valuation_risk_reason || '历史分位口径'}） · 拥挤风险 {risk.crowding_risk} · 牛/基准/熊 {number(risk.scenarios?.bull)} / {number(risk.scenarios?.base)} / {number(risk.scenarios?.bear)}</div>
               </div>
             </div>
           </section>

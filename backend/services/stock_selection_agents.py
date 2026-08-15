@@ -24,6 +24,7 @@ from services.quant_scorer import MarketRegime
 from services.research_protocol import research_protocol
 from services.data_collector import collector
 from services.a_stock_data import A_STOCK_DATA_SKILL, calculate_indicators
+from services.cyclical_valuation import cycle_guard_from_stock
 from services.history_cache import history_cache
 from services.horizon_analysis import (
     HORIZON_CONFIG,
@@ -600,13 +601,34 @@ class StockSelectionAgentService:
         debt_ratio = _optional_number(stock.get("debt_ratio"))
         receivable_ratio = _optional_number(stock.get("receivable_to_revenue"))
         sector = _normalise_sector(stock.get("sector"))
+        cycle = cycle_guard_from_stock({**stock, "sector": sector})
         is_financial_sector = any(term in sector for term in ("银行", "证券", "保险", "金融"))
         score = 50.0
         evidence: list[str] = []
         risks: list[str] = []
         data_gaps: list[str] = []
 
-        if pe is None:
+        if cycle.get("is_cyclical"):
+            normalized_pe = _optional_number(cycle.get("normalized_pe"))
+            evidence.append(f"{cycle.get('cyclical_sector_label')}按周期口径估值，TTM PE不单独作为低估加分")
+            if cycle.get("pe_inversion_risk"):
+                score -= 22
+                risks.append("周期盈利高位触发PE反向风险")
+            elif cycle.get("cycle_phase") in {"peak", "contraction"}:
+                score -= 12
+                risks.append(f"周期处于{cycle.get('cycle_phase_label')}阶段，低PE不构成安全边际")
+            elif normalized_pe is not None:
+                if normalized_pe <= 20:
+                    score += 10
+                    evidence.append(f"标准化PE {normalized_pe:.1f}")
+                elif normalized_pe > 40:
+                    score -= 10
+                    risks.append(f"标准化PE {normalized_pe:.1f}，中枢估值偏高")
+            elif not cycle.get("cycle_data_available"):
+                data_gaps.append("周期阶段/标准化PE")
+            if pe is not None and pe <= 0 and cycle.get("cycle_phase") in {"trough", "recovery"}:
+                evidence.append("周期底部PE失真，转看PB/ROE与现金流")
+        elif pe is None:
             data_gaps.append("PE(TTM)")
         elif pe <= 0:
             score -= 20
@@ -713,7 +735,7 @@ class StockSelectionAgentService:
         signal = "看多" if score >= 64 else "看空" if score <= 38 else "中性"
         return {
             "agent": "基本面与财务排雷 Agent",
-            "skill": "估值、盈利质量、现金流真实性、负债与应收排雷",
+            "skill": "周期/非周期估值、盈利质量、现金流真实性、负债与应收排雷",
             "score": score,
             "signal": signal,
             "summary": evidence[0] if evidence else "基本面指标未形成明显优势",
@@ -724,6 +746,11 @@ class StockSelectionAgentService:
                 "revenue_growth": revenue_growth, "deducted_profit_growth": deducted_growth,
                 "ocf_to_profit": ocf_to_profit, "debt_ratio": debt_ratio,
                 "receivable_to_revenue": receivable_ratio,
+                "is_cyclical": cycle.get("is_cyclical"),
+                "cycle_phase": cycle.get("cycle_phase"),
+                "cycle_phase_label": cycle.get("cycle_phase_label"),
+                "normalized_pe": cycle.get("normalized_pe"),
+                "pe_inversion_risk": cycle.get("pe_inversion_risk"),
             },
             "data_gaps": data_gaps,
             "source": financial_meta,

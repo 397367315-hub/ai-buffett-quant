@@ -27,6 +27,7 @@ from quant.jobs import create_job, get_job, latest_running_job, spawn, update_jo
 from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
 from quant.storage import quant_store
 from services.data_collector import collector, shanghai_now
+from services.cyclical_valuation import cycle_guard_from_stock
 from services.fqe_reference_data import fqe_reference_data
 from services.stock_features import stock_feature_service
 
@@ -320,12 +321,16 @@ class FundamentalQuantEngine:
                 warnings.append("使用最新披露期现金流比，未形成完整TTM")
         debt_ratio = _percentage(stock.get("debt_ratio"))
         pe = _pe(stock)
+        cycle = cycle_guard_from_stock(stock)
+        valuation_pe = cycle.get("normalized_pe") if cycle.get("is_cyclical") else pe
+        if valuation_pe is None:
+            valuation_pe = pe if not cycle.get("is_cyclical") or mode != "strict" else None
         growth = _percentage(
             stock.get("deducted_profit_ttm_yoy")
             if stock.get("deducted_profit_ttm_yoy") is not None
             else stock.get("deducted_profit_growth")
         )
-        peg = pe / growth if pe is not None and growth and growth > 0 else None
+        peg = valuation_pe / growth if valuation_pe is not None and growth and growth > 0 else None
 
         if _is_special(stock):
             reasons.append("ST/退市风险标记")
@@ -349,6 +354,16 @@ class FundamentalQuantEngine:
             reasons.append("资产负债率高于60%")
         if pe is None or pe <= 0:
             reasons.append("PE(TTM)缺失或非正")
+        if cycle.get("is_cyclical"):
+            if cycle.get("pe_inversion_risk"):
+                reasons.append("周期股盈利峰值/PE反向风险")
+            elif cycle.get("cycle_phase") in {"peak", "contraction"}:
+                reasons.append(f"周期阶段为{cycle.get('cycle_phase_label')}，低PE不构成安全边际")
+            elif not cycle.get("cycle_data_available"):
+                if mode == "strict":
+                    reasons.append("周期股缺少标准化盈利与周期阶段（严格模式不通过）")
+                else:
+                    warnings.append("周期股缺少标准化盈利，宽松模式不奖励低PE")
         if peg is None or not 0 < peg <= 1:
             reasons.append("PEG不在(0,1]内")
 
@@ -366,6 +381,8 @@ class FundamentalQuantEngine:
         if reasons:
             return None, reasons, warnings
         peg_score = max(0.0, min(1.0, 1.0 - float(peg)))
+        if cycle.get("is_cyclical") and not cycle.get("cycle_data_available"):
+            peg_score = min(peg_score, 0.25)
         roe_score = max(0.0, min(1.0, float(roe) / 30.0))
         return {
             "code": str(stock.get("code") or ""),
@@ -373,6 +390,10 @@ class FundamentalQuantEngine:
             "industry": _sector(stock),
             "score": round(roe_score * 0.6 + peg_score * 0.4, 6),
             "peg": round(float(peg), 6),
+            "valuation_pe": round(float(valuation_pe), 6),
+            "is_cyclical": cycle.get("is_cyclical"),
+            "cycle_phase": cycle.get("cycle_phase"),
+            "pe_inversion_risk": cycle.get("pe_inversion_risk"),
             "roe_ttm": round(float(roe), 4),
             "ocf_to_profit_ttm": round(float(cashflow_ratio), 4),
             "debt_ratio": round(float(debt_ratio), 4),
@@ -489,9 +510,12 @@ class FundamentalQuantEngine:
             market_cap = _market_cap_yi(stock)
             pe = _pe(stock)
             roe = _roe_ttm(stock)
+            cycle = cycle_guard_from_stock(stock)
             if _is_special(stock) or stock.get("is_suspended") is True:
                 continue
             if market_cap is None or market_cap < cls.MIN_MARKET_CAP_YI or pe is None or pe <= 0 or roe is None:
+                continue
+            if cycle.get("pe_inversion_risk") or cycle.get("cycle_phase") in {"peak", "contraction"}:
                 continue
             cashflow = _number(stock.get("ocf_to_profit_ttm"))
             if cashflow is None:
@@ -501,10 +525,16 @@ class FundamentalQuantEngine:
                 "stock": stock,
                 "market_cap": market_cap,
                 "pe": pe,
+                "value_pe": (
+                    cycle.get("normalized_pe")
+                    if cycle.get("is_cyclical")
+                    else pe
+                ),
                 "roe": roe,
                 "cashflow": cashflow,
                 "growth": growth,
                 "industry": _sector(stock),
+                "cycle": cycle,
             })
         if not eligible:
             return {
@@ -524,7 +554,10 @@ class FundamentalQuantEngine:
             }
 
         roe_z = _zscore([item["roe"] for item in eligible])
-        value_z = _zscore([-math.log(max(item["pe"], 0.1)) for item in eligible])
+        value_z = _zscore([
+            -math.log(max(item["value_pe"], 0.1)) if item.get("value_pe") is not None else None
+            for item in eligible
+        ])
         cash_z = _zscore([item["cashflow"] for item in eligible])
         growth_z = _zscore([item["growth"] for item in eligible])
         raw_values: list[float] = []
@@ -604,6 +637,10 @@ class FundamentalQuantEngine:
                 "alpha_neutral": round(item["alpha_neutral"], 6),
                 "roe_ttm": round(item["roe"], 4),
                 "pe_ttm": round(item["pe"], 4),
+                "valuation_pe": round(item["value_pe"], 4) if item.get("value_pe") is not None else None,
+                "is_cyclical": item["cycle"].get("is_cyclical"),
+                "cycle_phase": item["cycle"].get("cycle_phase"),
+                "pe_inversion_risk": item["cycle"].get("pe_inversion_risk"),
                 "weight": round(weight, 8),
                 "weight_pct": round(weight * 100, 4),
                 "engine_type": "Institutional_Heavy",
