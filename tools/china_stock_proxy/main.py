@@ -53,6 +53,7 @@ FTSHARE_ALLOWED_TOOLS = frozenset({
     "capital_flow",
     "daily_ohlc",
     "ft_eastmoney_board_daily_kline",
+    "ft_get_eastmoney_stock_flow",
     "ft_get_eastmoney_stock_valuation",
     "ft_get_eastmoney_sector_flow",
     "ft_get_stk_status_change",

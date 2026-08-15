@@ -12,6 +12,7 @@ import main as proxy  # noqa: E402
 class ProxyRequestTests(unittest.IsolatedAsyncioTestCase):
     async def test_capital_flow_is_an_allowlisted_read_only_ftshare_tool(self):
         self.assertIn("capital_flow", proxy.FTSHARE_ALLOWED_TOOLS)
+        self.assertIn("ft_get_eastmoney_stock_flow", proxy.FTSHARE_ALLOWED_TOOLS)
 
     async def test_historical_eastmoney_request_falls_back_to_delay_host(self):
         requested_urls = []
