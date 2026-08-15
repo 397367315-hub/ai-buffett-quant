@@ -1329,6 +1329,8 @@ def _daily_history_features(rows: list[StockDailyBar]) -> dict[str, float | int 
             volume_ratio = valid_volumes[-1] / (sum(baseline) / len(baseline))
     return {
         "history_sessions": len(closes),
+        "last_close": round(closes[-1], 4) if closes else None,
+        "change_1d_pct": round((closes[-1] / closes[-2] - 1) * 100, 2) if len(closes) >= 2 and closes[-2] > 0 else None,
         "return_5d_pct": round((closes[-1] / closes[-6] - 1) * 100, 2) if len(closes) >= 6 else None,
         "return_20d_pct": round((closes[-1] / closes[-21] - 1) * 100, 2) if len(closes) >= 21 else None,
         "volatility_20d_pct": round(volatility, 2) if volatility is not None else None,
@@ -1391,6 +1393,14 @@ def _build_daily_short_term_recommendations(
 
     sector_by_name = {_sector_key(item.get("name")): item for item in main_lines}
     top_sector_by_name = {_sector_key(item.get("name")): item for item in market.get("top_sectors") or []}
+    sector_returns: dict[str, list[float]] = defaultdict(list)
+    for code, stock in universe.items():
+        sector_key = _sector_key(stock.get("sector") or "未分类")
+        observed_change = _number(stock.get("change_pct"))
+        if observed_change is None:
+            observed_change = _number((history_by_code.get(code) or {}).get("change_1d_pct"))
+        if observed_change is not None:
+            sector_returns[sector_key].append(observed_change)
     all_inflows = [
         _number(item.get("main_net_inflow"))
         for item in universe.values()
@@ -1478,8 +1488,17 @@ def _build_daily_short_term_recommendations(
     skipped = defaultdict(int)
     for code, stock in universe.items():
         name = str(stock.get("name") or code)
+        history = history_by_code.get(code) or {}
         price = _number(stock.get("price"))
+        price_source = "market_snapshot"
+        if price is None or price <= 0:
+            price = _number(history.get("last_close"))
+            price_source = "stock_daily_bars"
         change = _number(stock.get("change_pct"))
+        change_source = "market_snapshot"
+        if change is None:
+            change = _number(history.get("change_1d_pct"))
+            change_source = "stock_daily_bars"
         if not price or price <= 0:
             skipped["价格缺失"] += 1
             continue
@@ -1508,6 +1527,8 @@ def _build_daily_short_term_recommendations(
         sector_strength = _number(line.get("strength_score"))
         if sector_strength is None:
             sector_strength = scale(_number(stock.get("sector_change_pct") or top_sector.get("change_pct")), -3, 6)
+        if sector_strength is None and sector_returns.get(sector_key):
+            sector_strength = scale(sum(sector_returns[sector_key]) / len(sector_returns[sector_key]), -3, 6)
         if sector_strength is None:
             skipped["板块强度缺失"] += 1
             continue
@@ -1518,7 +1539,6 @@ def _build_daily_short_term_recommendations(
         if capital_score is None:
             skipped["资金流字段缺失"] += 1
             continue
-        history = history_by_code.get(code) or {}
         financial_score, financial_view, quality_evidence, quality_risks = quality_for(stock, financial_by_code.get(code) or {})
         if financial_score is None:
             skipped["盈利字段缺失"] += 1
@@ -1583,6 +1603,8 @@ def _build_daily_short_term_recommendations(
         ]
         reasons.extend(quality_evidence[:2] or ["盈利字段已通过可用性检查"])
         source_parts = [str(stock.get("source") or "market_snapshot")]
+        if price_source != "market_snapshot" or change_source != "market_snapshot":
+            source_parts.append("stock_daily_bars")
         if volume_ratio_source != "market_snapshot":
             source_parts.append(volume_ratio_source)
         if financial_view.get("status") == "financial_pit_cache":

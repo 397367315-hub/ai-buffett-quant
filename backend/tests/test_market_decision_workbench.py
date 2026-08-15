@@ -168,6 +168,35 @@ class MarketDecisionWorkbenchTests(unittest.TestCase):
         self.assertEqual(candidate["volume_ratio"], 1.45)
         self.assertIn("stock_daily_bars_5d_average", candidate["source"])
 
+    def test_daily_recommendations_fall_back_to_cached_price_and_change(self):
+        snapshot = {
+            "data_date": "2026-08-12",
+            "market": {
+                "short_term_candidates": [{
+                    "code": "600001", "name": "缓存行情样本", "sector": "通信",
+                    "volume_ratio": 1.4, "turnover": 8, "main_net_inflow": 100_000_000,
+                    "roe": 12, "pe": 18,
+                }],
+            },
+            "topics": [],
+        }
+        result = _build_daily_short_term_recommendations(
+            snapshot,
+            {"score": 70, "dimensions": [{"id": "breadth", "score": 65}, {"id": "emotion", "score": 66}, {"id": "risk", "score": 72}]},
+            [{"name": "通信", "strength_score": 84}],
+            None,
+            {},
+            {"600001": {"last_close": 12.34, "change_1d_pct": 2.1}},
+            "observe",
+            "2026-08-12",
+        )
+
+        self.assertTrue(result["available"])
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["price"], 12.34)
+        self.assertEqual(candidate["change_pct"], 2.1)
+        self.assertIn("stock_daily_bars", candidate["source"])
+
     def test_daily_recommendations_keep_low_volume_as_risk_not_as_fake_pass(self):
         snapshot = {
             "data_date": "2026-08-12",
