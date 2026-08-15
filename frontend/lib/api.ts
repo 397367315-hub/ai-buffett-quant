@@ -7,10 +7,45 @@ const TRANSIENT_NETWORK_ERRORS = new Set([
   'Failed to fetch',
   'NetworkError when attempting to fetch resource.',
 ]);
+const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
+const READ_RETRY_DELAYS_MS = [400, 900];
+
+function errorMessage(caught: unknown): string {
+  return caught instanceof Error ? caught.message : String(caught || '');
+}
+
+function isAbortError(caught: unknown, signal?: AbortSignal | null): boolean {
+  return Boolean(signal?.aborted) || (caught instanceof Error && caught.name === 'AbortError');
+}
+
+function isRetryableNetworkError(caught: unknown): boolean {
+  const message = errorMessage(caught);
+  return TRANSIENT_NETWORK_ERRORS.has(message)
+    || (caught instanceof TypeError && /load failed|failed to fetch|networkerror|fetch/i.test(message));
+}
+
+function abortReason(signal?: AbortSignal | null): unknown {
+  return signal?.reason || new DOMException('The operation was aborted.', 'AbortError');
+}
+
+async function waitForRetry(delayMs: number, signal?: AbortSignal | null): Promise<void> {
+  if (signal?.aborted) throw abortReason(signal);
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(abortReason(signal));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 /** Keep browser-specific fetch errors out of user-facing module messages. */
 export function friendlyApiError(caught: unknown, fallback = '请求失败，请稍后重试'): string {
-  const message = caught instanceof Error ? caught.message : String(caught || '');
+  const message = errorMessage(caught);
   if (!message || TRANSIENT_NETWORK_ERRORS.has(message)) {
     return '后端连接暂时中断，请稍后重试。';
   }
@@ -18,27 +53,43 @@ export function friendlyApiError(caught: unknown, fallback = '请求失败，请
 }
 
 export function isTransientApiError(caught: unknown): boolean {
-  const message = caught instanceof Error ? caught.message : String(caught || '');
+  const message = errorMessage(caught);
   return TRANSIENT_NETWORK_ERRORS.has(message) || /连接暂时中断|网络|超时/i.test(message);
 }
 
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE}/api/v1${path}`;
+  const method = String(options?.method || 'GET').toUpperCase();
+  const canRetry = method === 'GET' || method === 'HEAD';
   const headers = new Headers(options?.headers);
-  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  if (options?.body != null && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const session = readAuthSession();
   if (session && !headers.has('Authorization')) {
     headers.set('Authorization', `Bearer ${session.token}`);
   }
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      ...options,
-      headers,
-    });
-  } catch (caught) {
-    throw new Error(friendlyApiError(caught));
+  let res: Response | null = null;
+  for (let attempt = 0; attempt <= READ_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      res = await fetch(url, {
+        ...options,
+        method,
+        headers,
+      });
+    } catch (caught) {
+      if (isAbortError(caught, options?.signal)) throw caught;
+      if (!canRetry || !isRetryableNetworkError(caught) || attempt >= READ_RETRY_DELAYS_MS.length) {
+        throw new Error(friendlyApiError(caught));
+      }
+      await waitForRetry(READ_RETRY_DELAYS_MS[attempt], options?.signal);
+      continue;
+    }
+    if (!canRetry || !RETRYABLE_STATUS_CODES.has(res.status) || attempt >= READ_RETRY_DELAYS_MS.length) {
+      break;
+    }
+    await res.body?.cancel().catch(() => undefined);
+    await waitForRetry(READ_RETRY_DELAYS_MS[attempt], options?.signal);
   }
+  if (!res) throw new Error('后端连接暂时中断，请稍后重试。');
   let payload: any = null;
   try {
     payload = await res.json();

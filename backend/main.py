@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from api.routes import router
@@ -39,24 +39,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS - both middleware + manual header injection
+# Safari rejects credentialed cross-origin requests when the preflight response
+# combines wildcard origins/headers. Keep one authoritative CORS layer and
+# return the requesting trusted origin plus an explicit header allow-list.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://ai-buffett-quant.netlify.app",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_origin_regex=r"^https://[a-z0-9-]+--ai-buffett-quant\.netlify\.app$",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Cache-Control",
+        "Pragma",
+        "X-Requested-With",
+    ],
 )
-
-
-@app.middleware("http")
-async def add_cors_header(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-    return response
 
 
 app.include_router(router)
@@ -100,8 +104,3 @@ async def data_source_health():
                 "error": type(exc).__name__,
             },
         )
-
-
-@app.options("/{full_path:path}")
-async def options_handler(full_path: str):
-    return Response(status_code=200)

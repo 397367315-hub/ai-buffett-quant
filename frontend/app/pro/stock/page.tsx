@@ -183,7 +183,6 @@ export default function StockPage() {
       if (profileResult.status === 'fulfilled') {
         setProfile(profileResult.value.data);
       } else {
-        setProfile(null);
         setError(friendlyApiError(profileResult.reason, '个股决策画像生成失败'));
       }
       setFlowData(flowResult.status === 'fulfilled' ? flowResult.value.data.flow_data || [] : []);
