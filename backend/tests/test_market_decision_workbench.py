@@ -1,5 +1,6 @@
 import unittest
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 from services.market_decision_workbench import (
     MarketDecisionWorkbenchService,
@@ -7,6 +8,7 @@ from services.market_decision_workbench import (
     SCORE_VERSION,
     _adaptive_strategy_weights,
     _build_daily_short_term_recommendations,
+    _daily_history_features,
     assemble_workbench,
     calculate_market_state,
 )
@@ -127,6 +129,45 @@ def topic_snapshot() -> dict:
 
 
 class MarketDecisionWorkbenchTests(unittest.TestCase):
+    def test_daily_history_features_derives_volume_ratio_from_cached_bars(self):
+        rows = [
+            SimpleNamespace(trade_date=date(2026, 8, 3) + timedelta(days=index), close_price=10 + index * 0.1, volume=100 + index * 10)
+            for index in range(6)
+        ]
+
+        result = _daily_history_features(rows)
+
+        self.assertEqual(result["volume_ratio"], 1.25)
+        self.assertEqual(result["volume_ratio_source"], "stock_daily_bars_5d_average")
+
+    def test_daily_recommendations_fall_back_to_cached_volume_ratio(self):
+        snapshot = {
+            "data_date": "2026-08-12",
+            "market": {
+                "short_term_candidates": [{
+                    "code": "600001", "name": "缓存量比样本", "sector": "通信",
+                    "price": 10, "change_pct": 3.0, "turnover": 8,
+                    "main_net_inflow": 100_000_000, "roe": 12, "pe": 18,
+                }],
+            },
+            "topics": [],
+        }
+        result = _build_daily_short_term_recommendations(
+            snapshot,
+            {"score": 70, "dimensions": [{"id": "breadth", "score": 65}, {"id": "emotion", "score": 66}, {"id": "risk", "score": 72}]},
+            [{"name": "通信", "strength_score": 84}],
+            None,
+            {},
+            {"600001": {"volume_ratio": 1.45, "volume_ratio_source": "stock_daily_bars_5d_average"}},
+            "observe",
+            "2026-08-12",
+        )
+
+        self.assertTrue(result["available"])
+        candidate = result["candidates"][0]
+        self.assertEqual(candidate["volume_ratio"], 1.45)
+        self.assertIn("stock_daily_bars_5d_average", candidate["source"])
+
     def test_daily_recommendations_keep_low_volume_as_risk_not_as_fake_pass(self):
         snapshot = {
             "data_date": "2026-08-12",

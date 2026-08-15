@@ -1303,6 +1303,7 @@ def _daily_history_features(rows: list[StockDailyBar]) -> dict[str, float | int 
     ordered = sorted(rows, key=lambda row: row.trade_date)
     closes = [_number(row.close_price) for row in ordered]
     closes = [value for value in closes if value is not None and value > 0]
+    volumes = [_number(row.volume) for row in ordered]
     returns = [
         (closes[index] / closes[index - 1] - 1) * 100
         for index in range(1, len(closes))
@@ -1320,12 +1321,20 @@ def _daily_history_features(rows: list[StockDailyBar]) -> dict[str, float | int 
         for close in closes[-20:]:
             peak = max(peak, close)
             drawdown = max(drawdown, (peak - close) / peak * 100 if peak else 0.0)
+    volume_ratio = None
+    valid_volumes = [value for value in volumes if value is not None and value > 0]
+    if len(valid_volumes) >= 6:
+        baseline = valid_volumes[-6:-1]
+        if baseline and sum(baseline) > 0:
+            volume_ratio = valid_volumes[-1] / (sum(baseline) / len(baseline))
     return {
         "history_sessions": len(closes),
         "return_5d_pct": round((closes[-1] / closes[-6] - 1) * 100, 2) if len(closes) >= 6 else None,
         "return_20d_pct": round((closes[-1] / closes[-21] - 1) * 100, 2) if len(closes) >= 21 else None,
         "volatility_20d_pct": round(volatility, 2) if volatility is not None else None,
         "max_drawdown_20d_pct": round(drawdown, 2) if drawdown is not None else None,
+        "volume_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
+        "volume_ratio_source": "stock_daily_bars_5d_average" if volume_ratio is not None else None,
         "data_date": ordered[-1].trade_date.isoformat() if ordered else None,
     }
 
@@ -1478,6 +1487,10 @@ def _build_daily_short_term_recommendations(
             skipped["ST/退市"] += 1
             continue
         volume_ratio = _number(stock.get("volume_ratio"))
+        volume_ratio_source = "market_snapshot"
+        if volume_ratio is None or volume_ratio <= 0:
+            volume_ratio = _number(history_by_code.get(code, {}).get("volume_ratio"))
+            volume_ratio_source = str(history_by_code.get(code, {}).get("volume_ratio_source") or "stock_daily_bars_5d_average")
         if volume_ratio is None or volume_ratio <= 0:
             skipped["量比缺失"] += 1
             continue
@@ -1570,6 +1583,8 @@ def _build_daily_short_term_recommendations(
         ]
         reasons.extend(quality_evidence[:2] or ["盈利字段已通过可用性检查"])
         source_parts = [str(stock.get("source") or "market_snapshot")]
+        if volume_ratio_source != "market_snapshot":
+            source_parts.append(volume_ratio_source)
         if financial_view.get("status") == "financial_pit_cache":
             source_parts.append("financial_pit_cache")
         if history:
@@ -1581,6 +1596,7 @@ def _build_daily_short_term_recommendations(
             "price": round(price, 2),
             "change_pct": round(change, 2),
             "volume_ratio": round(volume_ratio, 2),
+            "volume_ratio_source": volume_ratio_source,
             "turnover": round(turnover, 2) if turnover is not None else None,
             "main_net_inflow": round(capital_value, 0) if capital_value is not None else None,
             "market_cap": round(_number(stock.get("market_cap")), 0) if _number(stock.get("market_cap")) is not None else None,
