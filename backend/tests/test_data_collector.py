@@ -77,6 +77,32 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         collector._fetch_direct.assert_not_awaited()
 
+    async def test_minute_history_uses_tencent_when_eastmoney_window_is_empty(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_json = AsyncMock(side_effect=[
+            {"data": {"name": "贵州茅台", "dktotal": 0, "klines": []}},
+            {"data": {"sh600519": {
+                "m60": [
+                    ["202608141030", "1355.00", "1351.00", "1359.00", "1350.05", "11153.00"],
+                    ["202608141130", "1351.00", "1348.91", "1353.50", "1347.00", "5247.00"],
+                ],
+                "qt": {"sh600519": ["", "贵州茅台"]},
+            }}},
+        ])
+
+        result = await collector.fetch_stock_minute_history(
+            "600519",
+            interval_minutes=60,
+            limit=120,
+        )
+
+        self.assertEqual(result["source"], "tencent_minute")
+        self.assertEqual(result["stock_name"], "贵州茅台")
+        self.assertEqual(result["bar_count"], 2)
+        self.assertEqual(result["bars"][0]["bar_time"], "2026-08-14T10:30")
+        self.assertEqual(result["bars"][0]["volume"], 1_115_300)
+        self.assertIsNone(result["bars"][0]["amount"])
+
     async def test_stock_universe_fetches_every_page_and_new_prefixes(self):
         collector = EastMoneyDataCollector()
         rows = [
@@ -535,7 +561,7 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "f2": 25.6, "f3": 3.2, "f5": 1_000_000, "f6": 20_000_000,
                             "f8": 4.1, "f9": 18.5, "f10": 2.4, "f12": "600519",
-                            "f14": "贵州茅台", "f20": 100_000_000, "f23": 6.0,
+                            "f14": "贵州茅台", "f20": 100_000_000, "f21": 80_000_000, "f23": 6.0,
                             "f37": 22.1, "f62": 300_000_000, "f66": 120_000_000,
                             "f69": 2.1, "f72": 80_000_000, "f75": 1.4,
                             "f100": "白酒", "f184": 5.5,
@@ -555,7 +581,7 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["fid"], "f10")
         self.assertEqual(
             captured["fields"],
-            "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184",
+            "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184",
         )
         self.assertEqual(result["total"], 1)
         self.assertEqual(result["stocks"][0]["code"], "600519")
@@ -564,6 +590,7 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["stocks"][0]["amount"], 20_000_000)
         self.assertEqual(result["stocks"][0]["large_net_inflow"], 80_000_000)
         self.assertEqual(result["stocks"][0]["large_order_inflow_pct"], 1.4)
+        self.assertEqual(result["stocks"][0]["circulating_market_cap"], 80_000_000)
 
     async def test_stock_history_uses_ftshare_only_after_primary_source_fails(self):
         collector = EastMoneyDataCollector()

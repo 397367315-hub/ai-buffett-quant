@@ -196,6 +196,59 @@ class FTShareMCPClientTests(unittest.TestCase):
             },
         )
 
+    def test_stock_flow_history_maps_interval_rows_without_unit_conversion(self):
+        client = FTShareMCPClient()
+        client.call_paginated_tool = AsyncMock(return_value={
+            "data": [{
+                "code": "600519", "trade_date": "2026-08-14",
+                "main_net": "217130144", "super_large_net": "317141136",
+                "large_net": "-100010992", "medium_net": "-216881904",
+                "small_net": "-248228", "close_price": "1341.99",
+                "change_pct": "-0.98",
+            }],
+            "metadata": {},
+        })
+
+        rows = asyncio.run(client.get_stock_flow_history(
+            "600519", "2026-01-01", "2026-08-14",
+        ))
+
+        self.assertEqual(rows[0]["main_net_inflow"], 217130144)
+        self.assertEqual(rows[0]["change_pct"], -0.98)
+        self.assertEqual(rows[0]["source"], "ftshare_mcp")
+        client.call_paginated_tool.assert_awaited_once_with(
+            "ft_get_eastmoney_stock_flow",
+            {
+                "symbol": "600519",
+                "start_date": "2026-01-01",
+                "end_date": "2026-08-14",
+            },
+            page_size=30,
+            concurrency=4,
+            max_pages=20,
+        )
+
+    def test_sector_history_can_filter_one_board_without_changing_default_contract(self):
+        client = FTShareMCPClient()
+        client.call_paginated_tool = AsyncMock(return_value={
+            "data": [{"sector_code": "BK1277"}], "metadata": {},
+        })
+
+        rows = asyncio.run(client.get_sector_flow_history(
+            "industry", "2026-07-01", "2026-08-14", "BK1277",
+        ))
+
+        self.assertEqual(rows, [{"sector_code": "BK1277"}])
+        client.call_paginated_tool.assert_awaited_once_with(
+            "ft_get_eastmoney_sector_flow",
+            {
+                "sector_type": "industry",
+                "start_date": "2026-07-01",
+                "end_date": "2026-08-14",
+                "sector_code": "BK1277",
+            },
+        )
+
     def test_valuation_history_uses_exchange_symbol_and_compact_dates(self):
         client = FTShareMCPClient()
         client.call_paginated_tool = AsyncMock(return_value={"data": [{"PE_TTM": 20}], "metadata": {}})

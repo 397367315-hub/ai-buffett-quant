@@ -388,15 +388,33 @@ class StockFeatureService:
             complete_ttm = len(available_ttm) == len(TTM_VALUE_FIELDS)
             ttm_profit = ttm_values.get("net_profit_ttm")
             ttm_cashflow = ttm_values.get("operating_cf_ttm")
+            ttm_revenue = ttm_values.get("revenue_ttm")
             ttm_ratio = (
                 ttm_cashflow / ttm_profit
                 if ttm_cashflow is not None and ttm_profit not in (None, 0)
+                else None
+            )
+            prior_same_period = rows_by_period.get(
+                date(current_period.year - 1, current_period.month, current_period.day)
+            )
+            prior_net_profit = _number((prior_same_period or {}).get("net_profit"))
+            current_net_profit = _number(latest.get("net_profit"))
+            net_profit_growth = (
+                (current_net_profit / prior_net_profit - 1) * 100
+                if current_net_profit is not None and prior_net_profit not in (None, 0)
+                else None
+            )
+            net_margin_ttm = (
+                ttm_profit / ttm_revenue * 100
+                if ttm_profit is not None and ttm_revenue not in (None, 0)
                 else None
             )
             output[code] = {
                 **{key: value for key, value in latest.items() if key not in {"report_date", "disclosed_at", "stock_name"}},
                 **ttm_values,
                 "ocf_to_profit_ttm": ttm_ratio,
+                "net_profit_growth": net_profit_growth,
+                "net_margin_ttm": net_margin_ttm,
                 "ttm_available": complete_ttm,
                 "ttm_partial": bool(available_ttm) and not complete_ttm,
                 "ttm_available_fields": available_ttm,

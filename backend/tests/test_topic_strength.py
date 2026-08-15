@@ -1,5 +1,5 @@
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 
 from services.topic_strength import (
@@ -158,9 +158,79 @@ class TopicStrengthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["source"], "database_cache")
         self.assertFalse(result["is_realtime"])
 
+    async def test_closed_session_resolves_latest_index_date_before_stale_cache(self):
+        fixed_now = datetime.fromisoformat("2026-08-15T12:00:00+08:00")
+        with (
+            patch("services.topic_strength.shanghai_now", return_value=fixed_now),
+            patch("services.topic_strength.is_a_share_market_session", return_value=False),
+            patch(
+                "services.topic_strength.collector.fetch_shanghai_index_history",
+                new=AsyncMock(return_value=[
+                    {"date": "2026-08-13", "close": 3800},
+                    {"date": "2026-08-14", "close": 3810},
+                ]),
+            ),
+            patch.object(
+                self.service,
+                "_latest_cached_date",
+                new=AsyncMock(return_value=date(2026, 8, 10)),
+            ) as cached_date,
+        ):
+            resolved = await self.service._resolve_date(None)
+
+        self.assertEqual(resolved, date(2026, 8, 14))
+        cached_date.assert_not_awaited()
+
     async def test_kline_rejects_unknown_category_without_network(self):
         with self.assertRaisesRegex(ValueError, "category"):
             await self.service.kline("600519", category=9, offset=60)
+
+    async def test_minute_kline_calculates_change_from_previous_bar(self):
+        payload = {
+            "stock_name": "贵州茅台",
+            "source": "tencent_minute",
+            "warning": "有限分钟窗口",
+            "bars": [
+                {"bar_time": "2026-08-14T10:30", "open": 10, "close": 10, "high": 11, "low": 9, "volume": 100},
+                {"bar_time": "2026-08-14T11:30", "open": 10, "close": 11, "high": 11.2, "low": 9.8, "volume": 120},
+                {"bar_time": "2026-08-15T10:30", "open": 11, "close": 12, "high": 12.2, "low": 10.8, "volume": 140},
+            ],
+        }
+        with patch(
+            "services.topic_strength.collector.fetch_stock_minute_history",
+            new=AsyncMock(return_value=payload),
+        ):
+            result = await self.service.kline(
+                "600519", category=11, offset=120, as_of=date(2026, 8, 14),
+            )
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["source"], "tencent_minute")
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["data_date"], "2026-08-14")
+        self.assertIsNone(result["rows"][0]["change_pct"])
+        self.assertEqual(result["rows"][1]["change_pct"], 10.0)
+
+    async def test_daily_kline_is_cut_off_before_period_aggregation(self):
+        payload = {
+            "name": "贵州茅台",
+            "source": "tencent",
+            "history": [
+                {"trade_date": "2026-08-07", "open": 10, "close": 10, "high": 10, "low": 10, "volume": 100},
+                {"trade_date": "2026-08-10", "open": 10, "close": 11, "high": 11, "low": 10, "volume": 110},
+                {"trade_date": "2026-08-14", "open": 11, "close": 12, "high": 12, "low": 11, "volume": 120},
+            ],
+        }
+        with patch(
+            "services.topic_strength.collector.fetch_stock_price_history",
+            new=AsyncMock(return_value=payload),
+        ):
+            result = await self.service.kline(
+                "600519", category=5, offset=120, as_of=date(2026, 8, 10),
+            )
+
+        self.assertEqual(result["data_date"], "2026-08-10")
+        self.assertEqual(result["rows"][-1]["close"], 11)
 
 
 if __name__ == "__main__":

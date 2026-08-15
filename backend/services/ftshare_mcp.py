@@ -386,6 +386,70 @@ class FTShareMCPClient:
             "small_net_inflow": amount("net_inflow_small"),
         }
 
+    async def get_stock_flow_history(
+        self,
+        stock_code: str,
+        start_date: str,
+        end_date: str,
+    ) -> list[dict[str, Any]]:
+        """Return dated EastMoney stock-flow rows through FTShare.
+
+        This interval endpoint is substantially cheaper and more complete than
+        opening one MCP session per trade date.
+        """
+        code = str(stock_code or "").strip()
+        self.stock_symbol(code)
+        result = await self.call_paginated_tool(
+            "ft_get_eastmoney_stock_flow",
+            {
+                "symbol": code,
+                "start_date": str(start_date),
+                "end_date": str(end_date),
+            },
+            # Stock-flow rows are wide enough that larger pages trip the MCP
+            # response-size guard before pagination metadata can be trusted.
+            page_size=30,
+            concurrency=4,
+            max_pages=20,
+        )
+
+        def amount(item: dict[str, Any], key: str) -> int | None:
+            try:
+                value = item.get(key)
+                return round(float(value)) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        rows = []
+        for item in result.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            returned_code = str(item.get("code") or item.get("symbol") or "").split(".", 1)[0]
+            if returned_code and returned_code != code:
+                continue
+            trade_date = str(item.get("trade_date") or "")[:10]
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", trade_date):
+                continue
+            rows.append({
+                "date": trade_date,
+                "main_net_inflow": amount(item, "main_net"),
+                "super_large_net_inflow": amount(item, "super_large_net"),
+                "large_net_inflow": amount(item, "large_net"),
+                "medium_net_inflow": amount(item, "medium_net"),
+                "small_net_inflow": amount(item, "small_net"),
+                "close_price": self._optional_number(item.get("close_price")),
+                "change_pct": self._optional_number(item.get("change_pct")),
+                "source": "ftshare_mcp",
+            })
+        return sorted(rows, key=lambda item: item["date"])
+
+    @staticmethod
+    def _optional_number(value: Any) -> float | None:
+        try:
+            return float(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
     async def get_full_stock_filter(self) -> list[dict[str, Any]]:
         """Read the complete current A-share directory with listing dates."""
         result = await self.call_paginated_tool(
@@ -434,22 +498,104 @@ class FTShareMCPClient:
         sector_type: str,
         start_date: str,
         end_date: str,
+        sector_code: str | None = None,
     ) -> list[dict[str, Any]]:
         normalized_type = str(sector_type or "").strip().lower()
         if normalized_type not in {"industry", "concept"}:
             raise FTShareMCPError("FTShare sector flow requires industry or concept")
+        arguments = {
+            "sector_type": normalized_type,
+            # The live service accepts ISO dates even though an older
+            # public document still describes compact YYYYMMDD values.
+            "start_date": str(start_date),
+            "end_date": str(end_date),
+        }
+        if sector_code:
+            code = str(sector_code).strip().upper()
+            if not re.fullmatch(r"BK\d{4}", code):
+                raise FTShareMCPError("FTShare sector flow requires a BK board code")
+            arguments["sector_code"] = code
         result = await self.call_paginated_tool(
             "ft_get_eastmoney_sector_flow",
-            {
-                "sector_type": normalized_type,
-                # The live service accepts ISO dates even though an older
-                # public document still describes compact YYYYMMDD values.
-                "start_date": str(start_date),
-                "end_date": str(end_date),
-            },
+            arguments,
         )
         data = result.get("data")
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+    async def get_eastmoney_board_directory(self) -> list[dict[str, Any]]:
+        result = await self.call_tool(
+            "daily_ohlc",
+            {"type": "eastmoney_board_latest", "page": 1, "page_size": 500},
+        )
+        rows = []
+        for item in result.get("data") or []:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("board_code") or "").strip().upper()
+            name = str(item.get("board_name") or "").strip()
+            if re.fullmatch(r"BK\d{4}", code) and name:
+                rows.append({
+                    "code": code,
+                    "name": name,
+                    "change_pct": self._optional_number(item.get("change_rate")),
+                    "close_price": self._optional_number(item.get("close")),
+                    "data_date": str(item.get("date") or "")[:10] or None,
+                    "source": "ftshare_mcp",
+                })
+        return rows
+
+    async def get_eastmoney_board_price_history(
+        self,
+        board_code: str,
+        limit: int = 160,
+    ) -> list[dict[str, Any]]:
+        """Read the latest board OHLC pages without downloading its full history."""
+        code = str(board_code or "").strip().upper()
+        if not re.fullmatch(r"BK\d{4}", code):
+            raise FTShareMCPError("FTShare board history requires a BK board code")
+        bounded_limit = min(max(int(limit), 20), 500)
+        page_size = 100
+        first = await self.call_tool(
+            "ft_eastmoney_board_daily_kline",
+            {"board_code": code, "page": 1, "page_size": page_size},
+        )
+        metadata = first.get("metadata") if isinstance(first, dict) else {}
+        pagination = metadata.get("pagination") if isinstance(metadata, dict) else {}
+        try:
+            pages = max(1, int(pagination.get("pages") or 1))
+        except (TypeError, ValueError):
+            pages = 1
+        page_count = max(1, (bounded_limit + page_size - 1) // page_size + 1)
+        page_numbers = list(range(max(1, pages - page_count + 1), pages + 1))
+        results = []
+        if 1 in page_numbers:
+            results.append(first)
+            page_numbers.remove(1)
+        if page_numbers:
+            fetched = await asyncio.gather(*(
+                self.call_tool(
+                    "ft_eastmoney_board_daily_kline",
+                    {"board_code": code, "page": page, "page_size": page_size},
+                )
+                for page in page_numbers
+            ), return_exceptions=True)
+            results.extend(item for item in fetched if isinstance(item, dict))
+
+        by_date: dict[str, dict[str, Any]] = {}
+        for result in results:
+            for item in result.get("data") or []:
+                if not isinstance(item, dict):
+                    continue
+                trade_date = str(item.get("date") or "")[:10]
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", trade_date):
+                    continue
+                by_date[trade_date] = {
+                    "trade_date": trade_date,
+                    "close_price": self._optional_number(item.get("close")),
+                    "change_pct": self._optional_number(item.get("change_rate")),
+                    "source": "ftshare_mcp_board_ohlc",
+                }
+        return [by_date[key] for key in sorted(by_date)][-bounded_limit:]
 
     @classmethod
     def announcement_document_url(cls, url_hash: object) -> str | None:

@@ -42,6 +42,7 @@ from services.sector_flow_network import build_inferred_transfers
 from services.topic_strength import topic_strength_service
 from services.market_decision_workbench import market_decision_workbench_service
 from services.block_trade_analysis import block_trade_analysis_service
+from services.stock_essence_decision import stock_essence_decision_service
 from quant.market_cache import load_quant_market_snapshot
 
 router = APIRouter(prefix="/api/v1")
@@ -659,6 +660,274 @@ async def get_stock_flow(stock_code: str):
     return {"code": 0, "data": {"stock_code": code, "flow_data": data, **_market_metadata(available=bool(data), data_date=latest_date, is_realtime=is_realtime)}}
 
 
+def _stock_profile_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="日期必须使用 YYYY-MM-DD 格式") from exc
+
+
+async def _load_stock_decision_profile(
+    symbol: str,
+    as_of: str | None,
+    refresh: bool,
+) -> dict:
+    try:
+        return await stock_essence_decision_service.get(
+            symbol,
+            as_of=_stock_profile_date(as_of),
+            force=refresh,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        print(f"Stock decision profile failed for {symbol}: {type(exc).__name__}")
+        raise HTTPException(status_code=503, detail="个股公开数据核验暂时失败，请稍后重试") from exc
+
+
+async def _stock_component_response(
+    symbol: str,
+    component: str,
+    as_of: str | None,
+    refresh: bool,
+) -> dict:
+    profile = await _load_stock_decision_profile(symbol, as_of, refresh)
+    if component == "earnings_quality":
+        fundamentals = profile.get("fundamentals") or {}
+        data = {
+            "available": fundamentals.get("available"),
+            "report_date": fundamentals.get("report_date"),
+            "disclosed_at": fundamentals.get("disclosed_at"),
+            "earnings_state": fundamentals.get("earnings_state"),
+            "earnings_quality": fundamentals.get("earnings_quality"),
+            "earnings_quality_score": fundamentals.get("earnings_quality_score"),
+            "earnings_sustainability": fundamentals.get("earnings_sustainability"),
+            "operating_vs_non_recurring": fundamentals.get("operating_vs_non_recurring"),
+            "metrics": fundamentals.get("metrics") or {},
+            "formula": fundamentals.get("formula"),
+            "source": fundamentals.get("source"),
+        }
+    else:
+        data = profile.get(component)
+    return {
+        "code": 0,
+        "data": data,
+        "meta": profile.get("meta") or {},
+        "decision": profile.get("decision") or {},
+    }
+
+
+@router.get("/stocks/{symbol}/profile")
+async def get_stock_company_profile(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "company", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/fundamentals")
+async def get_stock_fundamentals(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "fundamentals", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/earnings-quality")
+async def get_stock_earnings_quality(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "earnings_quality", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/valuation")
+async def get_stock_valuation(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "valuation", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/capital-impact")
+async def get_stock_capital_impact(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "capital_impact", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/attribution")
+async def get_stock_attribution(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "attribution", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/alpha")
+async def get_stock_alpha(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "alpha", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/sector-role")
+async def get_stock_sector_role(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "sector_role", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/sector-dependency")
+async def get_stock_sector_dependency(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "sector_dependency", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/emotion")
+async def get_stock_emotion(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "emotion", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/catalysts")
+async def get_stock_catalysts(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "catalysts", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/expectation-gap")
+async def get_stock_expectation_gap(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "expectation_gap", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/risk-reward")
+async def get_stock_risk_reward(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "risk_reward", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/strategy-fit")
+async def get_stock_strategy_fit(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return await _stock_component_response(symbol, "strategy_fit", as_of, refresh)
+
+
+@router.get("/stocks/{symbol}/decision-profile/history")
+async def get_stock_decision_profile_history(
+    symbol: str,
+    limit: int = Query(30, ge=1, le=120),
+):
+    try:
+        rows = await stock_essence_decision_service.history(symbol, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": {"history": rows, "count": len(rows)}}
+
+
+@router.get("/stocks/{symbol}/decision-profile")
+async def get_stock_decision_profile(
+    symbol: str,
+    as_of: str | None = Query(None),
+    refresh: bool = Query(False),
+):
+    return {"code": 0, "data": await _load_stock_decision_profile(symbol, as_of, refresh)}
+
+
+@router.post("/ai/stocks/{symbol}/decision")
+async def explain_stock_decision(symbol: str, request: dict):
+    as_of = str(request.get("as_of") or "").strip() or None
+    refresh = bool(request.get("refresh"))
+    profile = await _load_stock_decision_profile(symbol, as_of, refresh)
+    decision = profile.get("decision") or {}
+    company = profile.get("company") or {}
+    fundamentals = profile.get("fundamentals") or {}
+    attribution = profile.get("attribution") or {}
+    sector_role = profile.get("sector_role") or {}
+    risk_reward = profile.get("risk_reward") or {}
+    structured = {
+        "facts": profile.get("evidence") or [],
+        "rise_attribution": attribution,
+        "company": company,
+        "earnings": fundamentals,
+        "valuation": profile.get("valuation") or {},
+        "sector": {
+            "role": sector_role,
+            "dependency": profile.get("sector_dependency") or {},
+        },
+        "emotion": profile.get("emotion") or {},
+        "expectation_gap": profile.get("expectation_gap") or {},
+        "catalysts": profile.get("catalysts") or {},
+        "risk_reward": risk_reward,
+        "strategy_fit": profile.get("strategy_fit") or {},
+        "decision": decision,
+    }
+    system_prompt = (
+        "你是A股个股本质决策解释器。只能解释输入中的已核验事实、计算和情景，"
+        "不得修改decision.state，不得虚构客户、财务、资金或实时数据，不得把评分说成必涨。"
+        "禁止直接说可以买；按事实、上涨归因、公司本体、盈利、估值、板块、情绪、预期差、"
+        "催化剂、风险收益、策略适配、当前状态、失效条件的顺序，用简洁中文输出。"
+    )
+    prompt = json.dumps({
+        "contract": (profile.get("meta") or {}).get("contract_version"),
+        "data_date": (profile.get("meta") or {}).get("data_date"),
+        "structured_decision": structured,
+    }, ensure_ascii=False, default=str)[:28000]
+    narrative = await ai_service.generate(prompt, system_prompt=system_prompt)
+    if not narrative or narrative.startswith("[AI服务"):
+        narrative = (
+            f"{company.get('stock_name') or symbol}当前结构化状态为“{decision.get('label') or '观察'}”。"
+            f"盈利质量为{fundamentals.get('earnings_quality') or '以已披露财报核验'}，"
+            f"板块角色为{sector_role.get('role') or '按板块成分核验'}，"
+            f"风险收益比为{risk_reward.get('risk_reward_ratio') if risk_reward.get('risk_reward_ratio') is not None else '按情景边界观察'}。"
+            "最终状态由结构化规则锁定，AI说明不构成交易指令。"
+        )
+    return {
+        "code": 0,
+        "data": {
+            "stock_code": company.get("stock_code"),
+            "stock_name": company.get("stock_name"),
+            "meta": profile.get("meta") or {},
+            "decision": decision,
+            "analysis": structured,
+            "narrative": narrative,
+            "guard": "AI解释不得修改结构化决策状态",
+        },
+    }
+
+
 @router.get("/flow/north/today")
 async def get_north_today():
     data = await collector.fetch_north_fund_flow()
@@ -1159,9 +1428,16 @@ async def get_kline(
     code: str = Query(..., min_length=6, max_length=16),
     category: int = Query(4),
     offset: int = Query(60, ge=1, le=800),
+    as_of: str | None = Query(None),
 ):
     try:
-        data = await topic_strength_service.kline(code, category=category, offset=offset)
+        parsed_as_of = date.fromisoformat(as_of) if as_of else None
+        data = await topic_strength_service.kline(
+            code,
+            category=category,
+            offset=offset,
+            as_of=parsed_as_of,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"code": 0, "data": data}

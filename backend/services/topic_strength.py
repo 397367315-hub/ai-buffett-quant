@@ -250,6 +250,18 @@ class TopicStrengthService:
             return requested
         if is_a_share_market_session(shanghai_now()):
             return today
+        index_history = await self._safe(
+            collector.fetch_shanghai_index_history(10),
+            [],
+            8.0,
+        )
+        index_dates = [
+            parsed for item in index_history
+            if (parsed := _date(item.get("date") or item.get("trade_date"))) is not None
+            and parsed <= today
+        ]
+        if index_dates:
+            return max(index_dates)
         cached = await self._latest_cached_date()
         if cached:
             return cached
@@ -1100,15 +1112,16 @@ class TopicStrengthService:
         snapshot = await load_quant_market_snapshot()
         if _date(snapshot.get("data_date")) != effective:
             snapshot = {}
-        if live_requested and (force or not snapshot.get("is_realtime")):
+        latest_requested = target_date is None
+        if (live_requested or latest_requested) and (force or not snapshot.get("stocks")):
             fetched = await self._safe(collector.fetch_quant_market_snapshot(include_special=True), {}, 15.0)
-            if fetched.get("stocks"):
+            if fetched.get("stocks") and _date(fetched.get("data_date")) == effective:
                 snapshot = fetched
                 await save_quant_market_snapshot(fetched)
         snapshot_stocks = list(snapshot.get("stocks") or [])
 
         sentiment_task = self._cached_sentiment(effective)
-        if live_requested:
+        if live_requested or latest_requested:
             industry_task = self._safe(collector.fetch_industry_flow(page_size=100), [], 10.0)
         else:
             industry_task = self._cached_industry_flow(effective)
@@ -1337,7 +1350,13 @@ class TopicStrengthService:
             "change_pct": row.change_pct,
         } for row in reversed(rows)]
 
-    async def kline(self, stock_code: str, category: int = 4, offset: int = 60) -> dict:
+    async def kline(
+        self,
+        stock_code: str,
+        category: int = 4,
+        offset: int = 60,
+        as_of: date | None = None,
+    ) -> dict:
         code = normalize_stock_code(stock_code)
         if category not in {4, 5, 6, 11}:
             raise ValueError("category 仅支持 4(日)、5(周)、6(月)、11(60分钟)")
@@ -1351,16 +1370,27 @@ class TopicStrengthService:
                 )
             except Exception:
                 payload = {}
-            rows = [{
-                "date": item.get("bar_time"),
-                "open": item.get("open"),
-                "close": item.get("close"),
-                "high": item.get("high"),
-                "low": item.get("low"),
-                "volume": item.get("volume"),
-                "amount": item.get("amount"),
-                "change_pct": None,
-            } for item in payload.get("bars") or []]
+            rows = []
+            previous_close = None
+            for item in payload.get("bars") or []:
+                close_price = _number(item.get("close"))
+                change_pct = (
+                    (close_price / previous_close - 1) * 100
+                    if close_price is not None and previous_close not in (None, 0)
+                    else None
+                )
+                rows.append({
+                    "date": item.get("bar_time"),
+                    "open": item.get("open"),
+                    "close": close_price,
+                    "high": item.get("high"),
+                    "low": item.get("low"),
+                    "volume": item.get("volume"),
+                    "amount": item.get("amount"),
+                    "change_pct": round(change_pct, 4) if change_pct is not None else None,
+                })
+                if close_price is not None:
+                    previous_close = close_price
             source = payload.get("source") or "unavailable"
             name = payload.get("stock_name") or ""
             warning = payload.get("warning")
@@ -1392,9 +1422,14 @@ class TopicStrengthService:
                     name = str(rows[-1].get("stock_name") or "")
                 for row in rows:
                     row.pop("stock_name", None)
-            if category in {5, 6}:
-                rows = _aggregate_daily_rows(rows, category)
-                source = f"{source}+daily_aggregation" if rows else source
+        if as_of is not None:
+            rows = [
+                row for row in rows
+                if (_date(row.get("date")) or date.max) <= as_of
+            ]
+        if category in {5, 6}:
+            rows = _aggregate_daily_rows(rows, category)
+            source = f"{source}+daily_aggregation" if rows else source
         rows = rows[-limit:]
         data_date = str(rows[-1].get("date") or "")[:10] if rows else None
         return {

@@ -20,6 +20,7 @@ ALLOWED_HOSTS = {
     "datacenter.eastmoney.com",
     "datacenter-web.eastmoney.com",
     "np-anotice-stock.eastmoney.com",
+    "ifzq.gtimg.cn",
     "web.ifzq.gtimg.cn",
 }
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
@@ -51,6 +52,7 @@ FTSHARE_ALLOWED_METHODS = frozenset({
 FTSHARE_ALLOWED_TOOLS = frozenset({
     "capital_flow",
     "daily_ohlc",
+    "ft_eastmoney_board_daily_kline",
     "ft_get_eastmoney_stock_valuation",
     "ft_get_eastmoney_sector_flow",
     "ft_get_stk_status_change",

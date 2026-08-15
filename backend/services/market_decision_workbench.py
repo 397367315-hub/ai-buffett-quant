@@ -1997,7 +1997,7 @@ class MarketDecisionWorkbenchService:
             return result
 
         topic, index_history, overnight, selection, sentiment_history = await asyncio.gather(
-            self._safe(topic_strength_service.get(force=force and active_window), {}, 18),
+            self._safe(topic_strength_service.get(force=force), {}, 18),
             self._safe(collector.fetch_shanghai_index_history(120), [], 12),
             self._safe(overnight_strategy_service.dashboard(), {}, 15),
             self._load_selection(),

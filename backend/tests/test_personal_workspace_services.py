@@ -166,6 +166,11 @@ class PersonalWorkspaceDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("api.routes.async_session", self.session_factory),
+            patch(
+                "api.routes.load_quant_market_snapshot",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
             patch.object(
                 routes.collector,
                 "fetch_intelligent_selection_sectors",

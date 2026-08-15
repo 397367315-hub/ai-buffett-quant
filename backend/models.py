@@ -600,6 +600,34 @@ class StockSelectionRun(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class StockDecisionProfile(Base):
+    """Versioned, evidence-bound individual-stock decision snapshot."""
+
+    __tablename__ = "stock_decision_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "stock_code", "decision_date", "contract_version",
+            name="uq_stock_decision_profile_code_date_version",
+        ),
+        Index("idx_stock_decision_profiles_code_date", "stock_code", "decision_date"),
+        Index("idx_stock_decision_profiles_state_date", "decision_state", "decision_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    decision_date = Column(Date, nullable=False)
+    data_date = Column(Date)
+    contract_version = Column(String(40), nullable=False)
+    decision_state = Column(String(20), nullable=False)
+    source = Column(String(300), nullable=False, default="unavailable")
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    payload = Column(JSON, nullable=False)
+    evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class KnowledgeTerm(Base):
     __tablename__ = "knowledge_terms"
 

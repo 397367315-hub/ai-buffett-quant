@@ -10,6 +10,7 @@ import asyncio
 import re
 import time
 from datetime import date, datetime, timedelta
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -115,8 +116,10 @@ def normalize_board_code(value: object) -> str:
 class EastMoneyDataCollector:
     BASE_URL = "https://push2.eastmoney.com/api/qt/clist/get"
     HISTORY_BASE_URL = "https://push2his.eastmoney.com"
+    DELAY_BASE_URL = "https://push2delay.eastmoney.com"
     DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
     TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    TENCENT_MINUTE_URL = "https://ifzq.gtimg.cn/appstock/app/kline/mkline"
     TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
     MAX_LIST_PAGE_SIZE = 100
     PAGE_FETCH_CONCURRENCY = 8
@@ -133,7 +136,7 @@ class EastMoneyDataCollector:
     STOCK_SCREENER_FILTER = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
     STOCK_SCREENER_FIELDS = (
         "f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,"
-        "f20,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184"
+        "f20,f21,f23,f37,f62,f66,f69,f72,f75,f100,f124,f184"
     )
     SECTOR_COUNTS_CACHE_SECONDS = 3600
     BLOCK_TRADE_CACHE_SECONDS = 60
@@ -186,10 +189,26 @@ class EastMoneyDataCollector:
         return await self._fetch_direct(url, params, request_headers)
 
     async def _fetch_direct(self, url: str, params: dict, headers: dict) -> dict:
+        parsed = urlparse(url)
+        candidates = [url]
+        if parsed.hostname in {"push2.eastmoney.com", "push2his.eastmoney.com"}:
+            candidates.append(parsed._replace(netloc="push2delay.eastmoney.com").geturl())
+
+        last_error: Exception | None = None
         async with httpx.AsyncClient(timeout=self._request_timeout()) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            for candidate in dict.fromkeys(candidates):
+                try:
+                    response = await client.get(candidate, params=params, headers=headers)
+                    response.raise_for_status()
+                    payload = response.json()
+                    if isinstance(payload, dict) and str(payload.get("rc", "0")) == "0":
+                        return payload
+                    raise RuntimeError(f"EastMoney returned rc={payload.get('rc') if isinstance(payload, dict) else 'invalid'}")
+                except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+                    last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("No EastMoney direct candidate was attempted")
 
     async def _fetch_via_proxy(self, url: str, params: dict, headers: dict) -> dict:
         proxy_headers: dict[str, str] = {}
@@ -1713,19 +1732,22 @@ class EastMoneyDataCollector:
         if interval not in {1, 5, 15, 30, 60}:
             raise ValueError("分钟周期仅支持 1、5、15、30、60")
         requested_limit = min(max(int(limit), 1), 1536)
-        data = await self.fetch_json(
-            f"{self.HISTORY_BASE_URL}/api/qt/stock/kline/get",
-            {
-                "secid": stock_secid(code),
-                "klt": str(interval),
-                "fqt": "1",
-                "lmt": str(requested_limit),
-                "end": "20500101",
-                "fields1": "f1,f2,f3,f4,f5,f6",
-                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-                "ut": EASTMONEY_UT,
-            },
-        )
+        try:
+            data = await self.fetch_json(
+                f"{self.HISTORY_BASE_URL}/api/qt/stock/kline/get",
+                {
+                    "secid": stock_secid(code),
+                    "klt": str(interval),
+                    "fqt": "1",
+                    "lmt": str(requested_limit),
+                    "end": "20500101",
+                    "fields1": "f1,f2,f3,f4,f5,f6",
+                    "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                    "ut": EASTMONEY_UT,
+                },
+            )
+        except Exception:
+            data = {}
         payload = data.get("data") or {}
         bars = []
         for line in payload.get("klines") or []:
@@ -1750,6 +1772,8 @@ class EastMoneyDataCollector:
                 "average": None,
             })
         bars.sort(key=lambda item: item["bar_time"])
+        if not bars:
+            return await self._fetch_tencent_minute_history(code, interval, requested_limit)
         upstream_total = as_int(payload.get("dktotal"))
         return {
             "stock_code": code,
@@ -1766,6 +1790,63 @@ class EastMoneyDataCollector:
                 if bars and (not upstream_total or len(bars) >= upstream_total)
                 else "公开源只返回有限分钟窗口，不能据此宣称全历史精确回测"
             ),
+            "fetched_at": shanghai_now().isoformat(),
+        }
+
+    async def _fetch_tencent_minute_history(
+        self,
+        stock_code: str,
+        interval_minutes: int,
+        limit: int,
+    ) -> dict:
+        symbol = self._tencent_symbol(stock_code)
+        requested_limit = min(max(int(limit), 1), 320)
+        data = await self.fetch_json(
+            self.TENCENT_MINUTE_URL,
+            {"param": f"{symbol},m{interval_minutes},,{requested_limit}"},
+            self.TENCENT_HEADERS,
+        )
+        payload = ((data.get("data") or {}).get(symbol) or {})
+        bars = []
+        for values in payload.get(f"m{interval_minutes}") or []:
+            if not isinstance(values, list) or len(values) < 6:
+                continue
+            try:
+                bar_time = datetime.strptime(str(values[0]), "%Y%m%d%H%M")
+            except ValueError:
+                continue
+            bars.append({
+                "stock_code": stock_code,
+                "stock_name": "",
+                "bar_time": bar_time.isoformat(timespec="minutes"),
+                "interval_minutes": interval_minutes,
+                "open": as_optional_float(values[1]),
+                "close": as_optional_float(values[2]),
+                "high": as_optional_float(values[3]),
+                "low": as_optional_float(values[4]),
+                "volume": self._tencent_volume_in_shares(
+                    stock_code,
+                    as_optional_float(values[5]),
+                ),
+                "amount": None,
+                "average": None,
+            })
+        quote_payload = payload.get("qt") or {}
+        quote = quote_payload.get(symbol, []) if isinstance(quote_payload, dict) else quote_payload
+        name = str(quote[1]) if isinstance(quote, list) and len(quote) > 1 else ""
+        for bar in bars:
+            bar["stock_name"] = name
+        return {
+            "stock_code": stock_code,
+            "stock_name": name,
+            "bars": bars,
+            "bar_count": len(bars),
+            "upstream_total": None,
+            "coverage_start": bars[0]["bar_time"] if bars else None,
+            "coverage_end": bars[-1]["bar_time"] if bars else None,
+            "source": "tencent_minute",
+            "complete_history": False,
+            "warning": "腾讯公开源仅提供最近分钟窗口，不能据此宣称全历史精确回测",
             "fetched_at": shanghai_now().isoformat(),
         }
 
@@ -1804,6 +1885,7 @@ class EastMoneyDataCollector:
             "roe": item.get("f37") if item.get("f37") not in (None, "-") else "",
             "volume_ratio": as_optional_float(item.get("f10")),
             "market_cap": as_int(item.get("f20")),
+            "circulating_market_cap": as_int(item.get("f21")),
             "sector": str(item.get("f100") or "").strip(),
             "main_net_inflow": as_int(item.get("f62")),
             "main_net_inflow_pct": as_float(item.get("f184")),

@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/AuthContext';
 
 const proSubItems = [
   { href: '/market', label: 'AI决策工作台', icon: BrainCircuit },
+  { href: '/pro/stock', label: '个股决策画像', icon: BarChart3 },
   { href: '/pro', label: '资金排名', icon: TrendingUp },
   { href: '/pro/sentiment', label: '市场情绪', icon: TrendingUp },
   { href: '/pro/topic-strength', label: '题材强弱', icon: Flame },

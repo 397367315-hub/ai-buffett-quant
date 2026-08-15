@@ -146,6 +146,7 @@ class RiskAndFeatureTests(unittest.IsolatedAsyncioTestCase):
             "dataset_status": {"financial": "available"},
         })
         service._financial_snapshot = AsyncMock(side_effect=RuntimeError("offline"))
+        service._financial_snapshot_from_pit = AsyncMock(return_value={})
 
         payload, warnings = await service._datasets(
             {"600519"}, {"gross_margin"}, date(2026, 7, 1),
