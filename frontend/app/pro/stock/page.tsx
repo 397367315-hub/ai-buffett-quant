@@ -5,6 +5,7 @@ import {
   Activity,
   BarChart3,
   BrainCircuit,
+  ArrowRight,
   Building2,
   CheckCircle2,
   Clock3,
@@ -20,6 +21,7 @@ import {
   Trash2,
   TriangleAlert,
 } from 'lucide-react';
+import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import KlineChart, { KlineRow } from '@/components/KlineChart';
 import { apiFetch, formatYi, friendlyApiError } from '@/lib/api';
 
@@ -49,6 +51,42 @@ interface QueryHistoryItem {
   profile: AnyMap;
   flowData: AnyMap[];
   kline: KlineData | null;
+}
+
+interface SectorRecommendation {
+  code: string;
+  name: string;
+  sector?: string;
+  price: number | null;
+  change_pct: number | null;
+  market_cap: number | null;
+  main_net_inflow: number | null;
+  volume_ratio: number | null;
+  turnover: number | null;
+  roe: number | null;
+  pe: number | null;
+  score: number | null;
+  confidence_pct: number | null;
+  rank: number;
+  reasons: string[];
+  risk: string;
+  quality_note: string;
+  data_date: string | null;
+  source: string;
+  is_realtime: boolean;
+}
+
+interface SectorRecommendations {
+  available: boolean;
+  sector: { code?: string | null; name?: string; member_count?: number };
+  leader: SectorRecommendation[];
+  excellent: SectorRecommendation[];
+  potential: SectorRecommendation[];
+  data_date: string | null;
+  source: string;
+  is_realtime: boolean;
+  warnings: string[];
+  method: string;
 }
 
 const QUERY_HISTORY_KEY = 'stock-decision-query-history-v1';
@@ -413,6 +451,7 @@ export default function StockPage() {
   const meta = profile?.meta || {};
   const audit = profile?.data_audit || {};
   const market = profile?.market_context || {};
+  const sectorRecommendations = (profile?.sector_recommendations || {}) as Partial<SectorRecommendations>;
 
   const stateStyle = DECISION_STYLES[decision.state] || DECISION_STYLES.OBSERVE;
   const loadingLabel = loadedFromHistory
@@ -421,6 +460,11 @@ export default function StockPage() {
   const auditSources = useMemo(() => audit.sources || [], [audit.sources]);
   const expectationCovered = expectation.availability === 'covered' && (expectation.analyst_count || 0) > 0;
   const maxDecisionDate = useMemo(() => new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10), []);
+  const recommendationGroups: Array<{ key: 'leader' | 'excellent' | 'potential'; label: string; tone: string; items: SectorRecommendation[] }> = [
+    { key: 'leader', label: '板块龙头', tone: 'text-accent', items: sectorRecommendations.leader || [] },
+    { key: 'excellent', label: '优秀标的', tone: 'text-up', items: sectorRecommendations.excellent || [] },
+    { key: 'potential', label: '潜力观察', tone: 'text-warn', items: sectorRecommendations.potential || [] },
+  ];
 
   return (
     <main className="mx-auto max-w-7xl px-3 py-5 sm:px-4 sm:py-6">
@@ -696,6 +740,60 @@ export default function StockPage() {
                 <div className="mt-3 space-y-1.5 text-xs text-text-secondary"><div>情绪分：{number(emotion.score, 1)}</div><div>速度：{signed(emotion.velocity, 1, '')}</div><div>加速度：{signed(emotion.acceleration, 1, '')}</div><div>量比：{number(emotion.observations?.volume_ratio)}</div><div>距20日高点：{signed(emotion.observations?.drawdown_from_20d_high_pct)}</div></div>
               </div>
             </div>
+          </section>
+
+          <section className="border-b border-border py-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <SectionTitle icon={Target} title={`${text(sectorRecommendations.sector?.name, sectorRole.sector || '所属板块')} · 研究推荐`} meta={`${sectorRecommendations.data_date || meta.data_date || '--'} · ${sectorRecommendations.is_realtime ? '实时' : '历史/缓存'}`} />
+                <p className="-mt-2 text-[10px] leading-4 text-text-secondary">按板块内资金、相对强度、市值、盈利代理和活跃度分组；推荐用于研究观察，不替代个股决策。</p>
+              </div>
+              <span className="text-[10px] text-text-secondary">可核验成分 {sectorRecommendations.sector?.member_count || 0} 只</span>
+            </div>
+            {sectorRecommendations.warnings?.length ? <div className="mb-3 border-l-2 border-warn bg-warn/5 px-3 py-2 text-[10px] leading-5 text-warn">{sectorRecommendations.warnings.join('；')}</div> : null}
+            {!sectorRecommendations.available ? (
+              <EmptyVerified>当前板块没有达到数据覆盖阈值的分组推荐。</EmptyVerified>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-3">
+                {recommendationGroups.map((group) => (
+                  <div key={group.key} className="min-w-0 border border-border bg-card">
+                    <div className={`flex items-center justify-between border-b border-border px-3 py-2 text-xs font-medium ${group.tone}`}>
+                      <span>{group.label}</span><span className="font-mono text-[10px] text-text-secondary">{group.items.length}只</span>
+                    </div>
+                    {group.items.length === 0 ? (
+                      <div className="px-3 py-5 text-[10px] text-text-secondary">覆盖不足，暂不伪造推荐</div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {group.items.map((item) => (
+                          <div key={item.code} className="p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <button type="button" onClick={() => void handleSearch(item.code, false, asOf)} className="min-w-0 text-left hover:text-accent" title={`查询${item.name}个股画像`}>
+                                <span className="block truncate text-xs font-medium text-text">{item.name}</span>
+                                <span className="mt-0.5 block font-mono text-[10px] text-text-secondary">{item.code}</span>
+                              </button>
+                              <div className="shrink-0 text-right"><div className="font-mono text-base font-semibold text-text">{number(item.score, 1, '')}</div><div className="text-[10px] text-text-secondary">置信 {number(item.confidence_pct, 0, '%')}</div></div>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[10px]">
+                              <div><span className="text-text-secondary">现价</span> <span className="font-mono text-text">{number(item.price)}</span> <span className={tone(item.change_pct)}>{signed(item.change_pct)}</span></div>
+                              <div><span className="text-text-secondary">量比</span> <span className="font-mono text-text">{number(item.volume_ratio)}</span></div>
+                              <div><span className="text-text-secondary">资金</span> <span className={`font-mono ${tone(item.main_net_inflow)}`}>{finite(item.main_net_inflow) ? formatYi(item.main_net_inflow) : '未覆盖'}</span></div>
+                              <div><span className="text-text-secondary">ROE/PE</span> <span className="font-mono text-text">{number(item.roe, 1, '%', '--')} / {number(item.pe, 1, '', '--')}</span></div>
+                            </div>
+                            <div className="mt-2 space-y-1 text-[10px] leading-4 text-text-secondary">{item.reasons.map((reason) => <div key={reason}><span className="text-up">·</span> {reason}</div>)}<div className="text-warn">风险：{item.risk}</div><div>{item.quality_note}</div></div>
+                            <div className="mt-3 flex items-center justify-between gap-2">
+                              <button type="button" onClick={() => void handleSearch(item.code, false, asOf)} className="inline-flex min-w-0 items-center gap-1 text-[10px] text-accent hover:text-text"><span>查看完整画像</span><ArrowRight size={12} /></button>
+                              <AddToPersonalPoolButton code={item.code} name={item.name} industry={item.sector || sectorRecommendations.sector?.name || sectorRole.sector} thesis={`${group.label}：${item.reasons.join('；')}；风险：${item.risk}`} source="sector_recommendation" compact />
+                            </div>
+                            <div className="mt-2 text-[10px] text-text-secondary">数据日 {item.data_date || '--'} · {item.source}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 text-[10px] leading-4 text-text-secondary">{sectorRecommendations.method || '缺失因子不填默认分；周期板块的低PE不直接视为安全边际。'}</div>
           </section>
 
           <section className="border-b border-border py-5">

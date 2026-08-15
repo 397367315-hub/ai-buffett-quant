@@ -781,11 +781,18 @@ class TopicStrengthService:
                 "boards_verified": boards_verified,
                 "price": _number(raw.get("price")) if _number(raw.get("price")) is not None else _number(quote.get("price")),
                 "pct": _number(raw.get("change_pct")) if _number(raw.get("change_pct")) is not None else _number(quote.get("change_pct")),
+                "change_pct": _number(raw.get("change_pct")) if _number(raw.get("change_pct")) is not None else _number(quote.get("change_pct")),
                 "amount": _integer(raw.get("amount")) if _integer(raw.get("amount")) is not None else _integer(quote.get("amount")),
+                "market_cap": _integer(quote.get("market_cap")),
                 "turnover": turnover,
+                "volume_ratio": _number(quote.get("volume_ratio")),
+                "pe": _number(quote.get("pe")),
+                "pb": _number(quote.get("pb")),
+                "roe": _number(quote.get("roe")),
                 "industry": sector,
                 "first_limit_time": raw.get("first_limit_time"),
                 "main_net_inflow": _integer(quote.get("main_net_inflow")),
+                "main_net_inflow_pct": _number(quote.get("main_net_inflow_pct")),
                 "seal_amount": _integer(raw.get("seal_amount")),
                 "return_5d_pct": return_5d,
                 "heat_status": heat_status,
@@ -887,6 +894,96 @@ class TopicStrengthService:
         for rank, topic in enumerate(topics[:MAX_TOPICS], start=1):
             topic["rank"] = rank
         return topics[:MAX_TOPICS]
+
+    @staticmethod
+    def _short_term_candidates(
+        snapshot_stocks: list[dict],
+        industry_flow: list[dict],
+        limit: int = 80,
+    ) -> list[dict]:
+        """Keep a bounded, quote-backed universe for the workbench ranking.
+
+        The complete market snapshot is intentionally not embedded in the topic
+        payload.  These rows are only a prefilter; the workbench applies the
+        auditable factor and risk rules before displaying recommendations.
+        """
+        flow_by_sector = {
+            _sector_key(item.get("name")): item
+            for item in industry_flow or []
+            if item.get("name")
+        }
+        ranked_flow = {
+            _sector_key(item.get("name")): rank
+            for rank, item in enumerate(
+                sorted(
+                    industry_flow or [],
+                    key=lambda row: _number(row.get("main_net_inflow")) or -math.inf,
+                    reverse=True,
+                ),
+                start=1,
+            )
+        }
+
+        def scale(value: float | None, low: float, high: float) -> float | None:
+            if value is None or high <= low:
+                return None
+            return min(100.0, max(0.0, (value - low) / (high - low) * 100))
+
+        output = []
+        for stock in snapshot_stocks or []:
+            code = str(stock.get("code") or "")
+            name = str(stock.get("name") or "")
+            price = _number(stock.get("price"))
+            change = _number(stock.get("change_pct"))
+            if not code or price is None or price <= 0 or change is None or "ST" in name.upper() or "退" in name:
+                continue
+            sector = str(stock.get("sector") or "").strip()
+            sector_row = flow_by_sector.get(_sector_key(sector), {})
+            sector_change = _number(sector_row.get("change_pct"))
+            volume_ratio = _number(stock.get("volume_ratio"))
+            inflow_pct = _number(stock.get("main_net_inflow_pct"))
+            roe = _number(stock.get("roe"))
+            parts = [
+                scale(change, -3, 8),
+                scale(volume_ratio, 1.2, 5),
+                scale(inflow_pct, -2, 4),
+                scale(sector_change, -3, 6),
+                scale(roe, 0, 25),
+            ]
+            observed = [value for value in parts if value is not None]
+            if len(observed) < 2:
+                continue
+            pre_score = sum(observed) / len(observed)
+            output.append({
+                "code": code,
+                "name": name or code,
+                "sector": sector or "未分类",
+                "price": price,
+                "change_pct": change,
+                "market_cap": _integer(stock.get("market_cap")),
+                "amount": _integer(stock.get("amount")),
+                "turnover": _number(stock.get("turnover")),
+                "volume_ratio": volume_ratio,
+                "pe": _number(stock.get("pe")),
+                "pb": _number(stock.get("pb")),
+                "roe": roe,
+                "main_net_inflow": _integer(stock.get("main_net_inflow")),
+                "main_net_inflow_pct": inflow_pct,
+                "sector_change_pct": sector_change,
+                "sector_flow_rank": ranked_flow.get(_sector_key(sector)),
+                "quote_timestamp": stock.get("quote_timestamp"),
+                "preliminary_score": round(pre_score, 1),
+                "source": "complete_market_snapshot",
+            })
+        output.sort(
+            key=lambda row: (
+                row["preliminary_score"],
+                row["amount"] if row["amount"] is not None else -1,
+                row["code"],
+            ),
+            reverse=True,
+        )
+        return output[:max(1, limit)]
 
     @staticmethod
     def _market_payload(
@@ -1018,6 +1115,7 @@ class TopicStrengthService:
             "northbound": northbound,
             "intraday": intraday_coverage,
             "top_sectors": top_sectors,
+            "short_term_candidates": TopicStrengthService._short_term_candidates(snapshot_stocks, industry_flow),
             "note": "交易时段优先实时源；闭市、周末和上游不可用时读取最近核验缓存。",
         }
 

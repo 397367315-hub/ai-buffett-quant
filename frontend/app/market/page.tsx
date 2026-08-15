@@ -18,6 +18,7 @@ import {
   Loader2,
   RefreshCw,
   ShieldAlert,
+  Sparkles,
   Target,
   XCircle,
 } from 'lucide-react';
@@ -228,6 +229,61 @@ interface Candidate {
   source: string;
 }
 
+interface DailyShortTermRecommendation {
+  rank: number;
+  code: string;
+  name: string;
+  sector: string;
+  price: number | null;
+  change_pct: number | null;
+  volume_ratio: number | null;
+  turnover: number | null;
+  main_net_inflow: number | null;
+  market_cap: number | null;
+  score: number | null;
+  confidence_pct: number | null;
+  score_breakdown: {
+    market_sentiment?: number | null;
+    market_fit?: number | null;
+    sector_strength?: number | null;
+    capital?: number | null;
+    profitability?: number | null;
+    risk_safety?: number | null;
+    volume_ratio?: number | null;
+    trend?: number | null;
+  };
+  profitability: {
+    status?: string;
+    roe?: number | null;
+    pe?: number | null;
+    revenue_growth?: number | null;
+    deducted_profit_growth?: number | null;
+    disclosed_at?: string | null;
+  };
+  risk: string;
+  reasons: string[];
+  invalidation_conditions: string[];
+  status: string;
+  data_date: string | null;
+  source: string;
+  is_realtime: boolean;
+}
+
+interface DailyShortTermRecommendations {
+  available: boolean;
+  horizon: string;
+  data_date: string | null;
+  market_action: string;
+  candidates: DailyShortTermRecommendation[];
+  universe_count: number;
+  eligible_count: number;
+  financial_cache_count: number;
+  warnings: string[];
+  method: string;
+  rule: string;
+  source: string;
+}
+
 interface ExecutionPhase {
   id: string;
   label: string;
@@ -267,6 +323,7 @@ interface WorkbenchData {
   ai_judgement: AIJudgement;
   strategy_selector: StrategySelector;
   main_lines: MainLine[];
+  daily_short_term_recommendations: DailyShortTermRecommendations;
   candidates: Candidate[];
   candidate_summary: {
     total: number;
@@ -302,8 +359,8 @@ interface WorkbenchData {
   quick_links: Array<{ label: string; href: string }>;
 }
 
-const WORKBENCH_CONTRACT_VERSION = 'market-workbench-v2.0.2';
-const LOCAL_CACHE_KEY = 'market_decision_workbench_v2_0_2';
+const WORKBENCH_CONTRACT_VERSION = 'market-workbench-v2.1.0';
+const LOCAL_CACHE_KEY = 'market_decision_workbench_v2_1_0';
 
 function finite(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -370,6 +427,12 @@ function actionTone(action: string): string {
   if (action === 'caution') return 'text-warn border-warn/40 bg-warn/10';
   if (action === 'observe') return 'text-accent border-accent/40 bg-accent/10';
   return 'text-down border-down/40 bg-down/10';
+}
+
+function recommendationStatusTone(status: string): string {
+  if (status.includes('仅观察')) return 'border-accent/40 bg-accent/10 text-accent';
+  if (status.includes('研究候选')) return 'border-up/40 bg-up/10 text-up';
+  return 'border-warn/40 bg-warn/10 text-warn';
 }
 
 function healthTone(state: string): string {
@@ -444,6 +507,19 @@ function CandidateActions({ candidate }: { candidate: Candidate }) {
       industry={candidate.sector}
       thesis={`${candidate.strategy}：综合分${value(candidate.score)}；${candidate.why_selected[0] || '结构候选'}`}
       source="ai_decision_workbench"
+      compact
+    />
+  );
+}
+
+function DailyRecommendationActions({ item }: { item: DailyShortTermRecommendation }) {
+  return (
+    <AddToPersonalPoolButton
+      code={item.code}
+      name={item.name}
+      industry={item.sector}
+      thesis={`每日短期研究候选：综合分${value(item.score)}；${item.reasons[0] || '多因子覆盖'}`}
+      source="daily_short_term_workbench"
       compact
     />
   );
@@ -752,6 +828,82 @@ export default function MarketDecisionWorkbenchPage() {
       <section className="mb-4 overflow-hidden rounded-md border border-border bg-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Target size={15} className="text-accent" />策略有效性</h2><span className="text-[10px] text-text-secondary">只统计真实前向模拟样本</span></div>
         <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-xs"><thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary"><tr><th className="px-4 py-2.5 text-left">策略</th><th className="px-3 text-left">状态</th><th className="px-3 text-right">样本</th><th className="px-3 text-right">胜率</th><th className="px-3 text-right">期望值</th><th className="px-3 text-right">盈亏比</th><th className="px-3 text-right">最大回撤</th><th className="px-4 text-left">结论</th></tr></thead><tbody className="divide-y divide-border/70">{data.strategy_health.length ? data.strategy_health.map((item) => <tr key={item.id}><td className="px-4 py-3 text-text">{item.name}<div className="mt-1 font-mono text-[10px] text-text-secondary">{item.id}</div></td><td className={`px-3 py-3 font-mono ${healthTone(item.state)}`}>{item.state}</td><td className="px-3 py-3 text-right font-mono text-text">{item.metrics.sample_count}</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.win_rate_pct)}%</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.expectancy, 2)}</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.profit_factor, 2)}</td><td className="px-3 py-3 text-right font-mono text-text">{amount(item.metrics.max_drawdown_amount)}</td><td className="max-w-[300px] px-4 py-3 text-[10px] leading-4 text-text-secondary">{item.reason}</td></tr>) : <tr><td colSpan={8} className="px-4 py-8 text-center text-xs text-text-secondary">暂无策略前向样本，不能判定有效性</td></tr>}</tbody></table></div>
+      </section>
+
+      <section className="mb-4 overflow-hidden rounded-md border border-border bg-card">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Sparkles size={15} className="text-accent" />每日短期推荐</h2>
+            <p className="mt-1 text-[10px] leading-4 text-text-secondary">{data.daily_short_term_recommendations.horizon}</p>
+          </div>
+          <div className="text-right text-[10px] leading-4 text-text-secondary">
+            <div>数据日 <span className="font-mono text-text">{data.daily_short_term_recommendations.data_date || '--'}</span> · {data.daily_short_term_recommendations.source}</div>
+            <div>候选池 {data.daily_short_term_recommendations.universe_count} 只 · 通过 {data.daily_short_term_recommendations.eligible_count} 只 · PIT财务 {data.daily_short_term_recommendations.financial_cache_count} 只</div>
+          </div>
+        </div>
+
+        <div className="border-b border-border px-4 py-3 text-[10px] leading-5 text-text-secondary">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className={`rounded border px-1.5 py-0.5 ${actionTone(data.daily_short_term_recommendations.market_action)}`}>市场闸门：{data.daily_short_term_recommendations.market_action}</span>
+            <span>{data.daily_short_term_recommendations.method}</span>
+          </div>
+          {data.daily_short_term_recommendations.warnings.length > 0 && <div className="mt-1 text-warn">{data.daily_short_term_recommendations.warnings.join('；')}</div>}
+        </div>
+
+        {!data.daily_short_term_recommendations.available ? (
+          <div className="px-4 py-10 text-center text-xs text-text-secondary">当前没有同时满足数据时效、板块强度、资金、盈利和量比规则的短期候选，不伪造推荐。</div>
+        ) : (
+          <div className="grid gap-3 p-3 sm:grid-cols-2 xl:grid-cols-4">
+            {data.daily_short_term_recommendations.candidates.map((item) => (
+              <article key={item.code} className="min-w-0 border border-border bg-bg p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <StockKlineButton code={item.code} name={item.name} className="max-w-full text-left font-medium text-text">
+                      <span className="truncate">{item.name}</span><span className="ml-1 font-mono text-[10px] text-text-secondary">{item.code}</span>
+                    </StockKlineButton>
+                    <div className="mt-1 truncate text-[10px] text-text-secondary">{item.sector} · 数据日 {item.data_date || '--'}</div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="font-mono text-xl font-semibold text-text">{value(item.score)}</div>
+                    <div className="text-[10px] text-text-secondary">置信 {value(item.confidence_pct, 0)}%</div>
+                  </div>
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-2 border-y border-border py-2">
+                  <span className="font-mono text-sm text-text">{value(item.price, 2)}</span>
+                  <span className={`font-mono text-xs ${finite(item.change_pct) && item.change_pct >= 0 ? 'text-up' : 'text-down'}`}>{signed(item.change_pct)}</span>
+                  <span className={`rounded border px-1.5 py-0.5 text-[10px] ${recommendationStatusTone(item.status)}`}>{item.status}</span>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-[10px]">
+                  <div><span className="text-text-secondary">板块</span><div className="mt-0.5 font-mono text-text">{value(item.score_breakdown.sector_strength)}</div></div>
+                  <div><span className="text-text-secondary">资金</span><div className="mt-0.5 font-mono text-text">{value(item.score_breakdown.capital)}</div></div>
+                  <div><span className="text-text-secondary">盈利</span><div className="mt-0.5 font-mono text-text">{value(item.score_breakdown.profitability)}</div></div>
+                  <div><span className="text-text-secondary">风险安全</span><div className="mt-0.5 font-mono text-text">{value(item.score_breakdown.risk_safety)}</div></div>
+                  <div><span className="text-text-secondary">量比</span><div className="mt-0.5 font-mono text-text">{value(item.volume_ratio, 2)}</div></div>
+                  <div><span className="text-text-secondary">市场情绪</span><div className="mt-0.5 font-mono text-text">{value(item.score_breakdown.market_sentiment)}</div></div>
+                </div>
+                <div className="mt-3 space-y-1 text-[10px] leading-4">
+                  {item.reasons.slice(0, 3).map((reason) => <div key={reason} className="text-text-secondary"><span className="text-up">·</span> {reason}</div>)}
+                  <div className="text-warn">风险：{item.risk}</div>
+                </div>
+                <details className="mt-3 border-t border-border pt-2 text-[10px]">
+                  <summary className="cursor-pointer text-accent">失效条件与数据来源</summary>
+                  <div className="mt-2 space-y-1 leading-4 text-text-secondary">
+                    <div>失效：{item.invalidation_conditions.join('；')}</div>
+                    <div>盈利数据：{item.profitability.status === 'financial_pit_cache' ? `公告日 ${item.profitability.disclosed_at || '--'} PIT缓存` : '行情端ROE/PE代理，需个股页复核'}</div>
+                    <div>来源：{item.source} · {item.is_realtime ? '实时' : '历史/缓存'}</div>
+                  </div>
+                </details>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <button type="button" onClick={() => { window.location.href = `/pro/stock?code=${encodeURIComponent(item.code)}`; }} className="inline-flex min-w-0 items-center gap-1 text-[10px] text-accent hover:text-text" title="打开个股决策画像">
+                    查看个股画像<ArrowRight size={12} />
+                  </button>
+                  <DailyRecommendationActions item={item} />
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+        <div className="border-t border-border px-4 py-2.5 text-[10px] leading-5 text-text-secondary">{data.daily_short_term_recommendations.rule}</div>
       </section>
 
       <div className="mb-4 grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">

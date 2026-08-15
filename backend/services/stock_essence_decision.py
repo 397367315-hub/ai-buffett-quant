@@ -26,7 +26,7 @@ from models import (
     StockFundFlowDaily,
 )
 from services.a_stock_data import calculate_indicators
-from services.cyclical_valuation import build_cyclical_valuation
+from services.cyclical_valuation import build_cyclical_valuation, cycle_guard_from_stock
 from services.data_collector import (
     EASTMONEY_UT,
     collector,
@@ -41,7 +41,7 @@ from services.macro_policy_news import macro_policy_news_collector
 from services.market_decision_workbench import market_decision_workbench_service
 
 
-CONTRACT_VERSION = "stock-essence-decision-v2.4.0"
+CONTRACT_VERSION = "stock-essence-decision-v2.5.0"
 F10_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 QUOTE_DETAIL_URL = "https://push2.eastmoney.com/api/qt/stock/get"
 DECISION_STATES = ("EXECUTE", "CAUTION", "OBSERVE", "AVOID", "NO_TRADE")
@@ -1042,6 +1042,282 @@ class StockEssenceDecisionService:
         }
 
     @staticmethod
+    def _build_sector_recommendations(
+        code: str,
+        quote: dict,
+        members: list[dict],
+        sector_name: str,
+        sector_code: str,
+        decision_date: date,
+        *,
+        historical_mode: bool = False,
+    ) -> dict:
+        """Rank a bounded sector snapshot into research groups.
+
+        The constituent endpoint is a current quote snapshot.  It is therefore
+        deliberately excluded from historical profiles to avoid putting today's
+        constituents or prices into a past decision.  Scores use only observed
+        fields and expose their coverage and evidence alongside the result.
+        """
+
+        empty = {
+            "available": False,
+            "sector": {
+                "code": sector_code or None,
+                "name": sector_name,
+                "member_count": 0,
+            },
+            "leader": [],
+            "excellent": [],
+            "potential": [],
+            "data_date": decision_date.isoformat(),
+            "source": "东方财富行业成分快照",
+            "is_realtime": False,
+            "warnings": [],
+            "method": "板块内市值/资金/相对强度/盈利代理/活跃度分组；缺失因子不填默认分",
+        }
+        if historical_mode:
+            empty["warnings"] = ["历史查询不使用当前板块成分快照，避免前视偏差；请查询最近交易日实时/缓存画像"]
+            return empty
+
+        def number(value: Any) -> float | None:
+            return _number(value)
+
+        def scale(value: float | None, low: float, high: float) -> float | None:
+            if value is None or high <= low:
+                return None
+            return min(100.0, max(0.0, (value - low) / (high - low) * 100))
+
+        def percentile(value: float | None, values: list[float], *, high_is_better: bool = True) -> float | None:
+            clean = sorted(item for item in values if math.isfinite(item))
+            if value is None or not clean:
+                return None
+            below = sum(item < value for item in clean)
+            equal = sum(math.isclose(item, value, rel_tol=1e-9, abs_tol=1e-9) for item in clean)
+            rank = (below + equal * 0.5) / len(clean) * 100
+            return round(rank if high_is_better else 100 - rank, 1)
+
+        def average(parts: list[tuple[float | None, float]]) -> tuple[float | None, float]:
+            observed = [(value, weight) for value, weight in parts if value is not None]
+            if not observed:
+                return None, 0.0
+            total_weight = sum(weight for _, weight in observed)
+            return round(sum(value * weight for value, weight in observed) / total_weight, 1), total_weight
+
+        valid: list[dict] = []
+        seen: set[str] = set()
+        for raw in members or []:
+            try:
+                member_code = normalize_stock_code(str(raw.get("code") or ""))
+            except ValueError:
+                continue
+            name = str(raw.get("name") or member_code).strip()
+            if member_code in seen or member_code == code or "ST" in name.upper() or "退" in name:
+                continue
+            price = number(raw.get("price"))
+            if price is None or price <= 0:
+                continue
+            seen.add(member_code)
+            valid.append({
+                **raw,
+                "code": member_code,
+                "name": name,
+                "price": price,
+                "change_pct": number(raw.get("change_pct")),
+                "main_net_inflow": number(raw.get("main_net_inflow")),
+                "market_cap": number(raw.get("market_cap") or raw.get("total_market_cap")),
+                "turnover": number(raw.get("turnover")),
+                "volume_ratio": number(raw.get("volume_ratio")),
+                "pe": number(raw.get("pe")),
+                "pb": number(raw.get("pb")),
+                "roe": number(raw.get("roe")),
+            })
+
+        empty["sector"]["member_count"] = len(valid)
+        if not valid:
+            empty["warnings"] = ["板块成分快照为空或没有可核验的正常交易股票，不生成伪推荐"]
+            return empty
+
+        changes = [row["change_pct"] for row in valid if row["change_pct"] is not None]
+        inflows = [row["main_net_inflow"] for row in valid if row["main_net_inflow"] is not None]
+        caps = [row["market_cap"] for row in valid if row["market_cap"] is not None]
+        cyclical = cycle_guard_from_stock({"industry": sector_name, "sector": sector_name}).get("is_cyclical")
+        scored: list[dict] = []
+        for row in valid:
+            change_score = percentile(row["change_pct"], changes)
+            flow_score = percentile(row["main_net_inflow"], inflows)
+            cap_score = percentile(row["market_cap"], caps)
+            volume_score = scale(row["volume_ratio"], 1.2, 5.0)
+            turnover_score = scale(row["turnover"], 1.0, 15.0)
+            activity_score = average([(volume_score, 0.6), (turnover_score, 0.4)])[0]
+
+            roe_score = scale(row["roe"], 0.0, 25.0)
+            pe_score = None
+            if row["pe"] is not None and not cyclical:
+                pe_score = 85.0 if 0 < row["pe"] <= 20 else 68.0 if row["pe"] <= 40 else 42.0 if row["pe"] <= 80 else 18.0 if row["pe"] > 80 else 12.0
+            quality_score, quality_weight = average([(roe_score, 0.7), (pe_score, 0.3)])
+
+            risk_penalty = 0.0
+            risk_reasons: list[str] = []
+            if row["change_pct"] is not None and row["change_pct"] > 8:
+                risk_penalty += 6
+                risk_reasons.append("当日涨幅偏高，短线追高风险增加")
+            if row["turnover"] is not None and row["turnover"] > 25:
+                risk_penalty += 7
+                risk_reasons.append("换手率过高，波动风险增加")
+            if row["volume_ratio"] is not None and row["volume_ratio"] > 6:
+                risk_penalty += 5
+                risk_reasons.append("量比过高，成交可能过热")
+            if row["pe"] is not None and row["pe"] <= 0:
+                risk_penalty += 8
+                risk_reasons.append("PE为负或亏损期，盈利质量需核验")
+            if row["roe"] is not None and row["roe"] < 0:
+                risk_penalty += 7
+                risk_reasons.append("ROE为负")
+            if cyclical:
+                risk_reasons.append("周期板块：低PE不直接视为低估，需结合盈利周期")
+
+            leader_score, leader_weight = average([
+                (cap_score, 0.32), (flow_score, 0.25), (change_score, 0.18),
+                (activity_score, 0.15), (quality_score, 0.10),
+            ])
+            excellent_score, excellent_weight = average([
+                (quality_score, 0.30), (change_score, 0.25), (flow_score, 0.20),
+                (activity_score, 0.15), (cap_score, 0.10),
+            ])
+            potential_score, potential_weight = average([
+                (change_score, 0.30), (flow_score, 0.30), (activity_score, 0.20),
+                (quality_score, 0.10), (cap_score, 0.10),
+            ])
+            row.update({
+                "scores": {
+                    "leader": round(max(0.0, (leader_score or 0) - risk_penalty), 1),
+                    "excellent": round(max(0.0, (excellent_score or 0) - risk_penalty), 1),
+                    "potential": round(max(0.0, (potential_score or 0) - risk_penalty), 1),
+                },
+                "coverage": {
+                    "leader": leader_weight,
+                    "excellent": excellent_weight,
+                    "potential": potential_weight,
+                },
+                "factor_scores": {
+                    "change": change_score,
+                    "capital": flow_score,
+                    "market_cap": cap_score,
+                    "activity": activity_score,
+                    "quality": quality_score,
+                    "risk_penalty": round(risk_penalty, 1),
+                },
+                "quality_weight": quality_weight,
+                "risk_reasons": risk_reasons,
+                "ranks": {
+                    "change": next((index for index, item in enumerate(sorted(valid, key=lambda item: item["change_pct"] if item["change_pct"] is not None else -math.inf, reverse=True), 1) if item["code"] == row["code"]), None),
+                    "capital": next((index for index, item in enumerate(sorted(valid, key=lambda item: item["main_net_inflow"] if item["main_net_inflow"] is not None else -math.inf, reverse=True), 1) if item["code"] == row["code"]), None),
+                    "market_cap": next((index for index, item in enumerate(sorted(valid, key=lambda item: item["market_cap"] if item["market_cap"] is not None else -math.inf, reverse=True), 1) if item["code"] == row["code"]), None),
+                },
+            })
+            scored.append(row)
+
+        def present(value: float | None, suffix: str = "") -> str:
+            return f"{value:.1f}{suffix}" if value is not None else "待补"
+
+        def render(row: dict, group: str, rank: int) -> dict:
+            factors = row["factor_scores"]
+            reasons = []
+            if factors.get("change") is not None:
+                reasons.append(f"板块内涨幅强度 {present(factors['change'])} 分（排名 {row['ranks']['change'] or '--'}）")
+            if factors.get("capital") is not None:
+                reasons.append(f"主力资金强度 {present(factors['capital'])} 分（排名 {row['ranks']['capital'] or '--'}）")
+            if group == "leader" and factors.get("market_cap") is not None:
+                reasons.append(f"板块市值排名 {row['ranks']['market_cap'] or '--'}")
+            elif factors.get("quality") is not None:
+                reasons.append(f"盈利代理分 {present(factors['quality'])}；ROE {present(row['roe'], '%')}")
+            if row["volume_ratio"] is not None:
+                reasons.append(f"量比 {row['volume_ratio']:.2f}")
+            if not reasons:
+                reasons.append("板块成分存在可核验行情字段")
+            quality_note = (
+                "周期板块，PE仅作辅助" if cyclical
+                else "ROE/PE行情字段代理，未覆盖完整财务PIT" if row["quality_weight"] < 0.7
+                else "ROE与PE字段可用"
+            )
+            risk = row["risk_reasons"][:3] or ["未触发已观测的明显短线风险阈值"]
+            return {
+                "code": row["code"],
+                "name": row["name"],
+                "sector": sector_name,
+                "price": round(row["price"], 2),
+                "change_pct": round(row["change_pct"], 2) if row["change_pct"] is not None else None,
+                "market_cap": round(row["market_cap"], 0) if row["market_cap"] is not None else None,
+                "main_net_inflow": round(row["main_net_inflow"], 0) if row["main_net_inflow"] is not None else None,
+                "volume_ratio": round(row["volume_ratio"], 2) if row["volume_ratio"] is not None else None,
+                "turnover": round(row["turnover"], 2) if row["turnover"] is not None else None,
+                "roe": round(row["roe"], 2) if row["roe"] is not None else None,
+                "pe": round(row["pe"], 2) if row["pe"] is not None else None,
+                "score": row["scores"][group],
+                "confidence_pct": round(row["coverage"][group] / 1.0 * 100, 1),
+                "rank": rank,
+                "reasons": reasons[:3],
+                "risk": "；".join(risk),
+                "quality_note": quality_note,
+                "data_date": decision_date.isoformat(),
+                "source": "东方财富行业成分快照",
+                "is_realtime": bool(quote.get("is_realtime") and decision_date == shanghai_now().date() and is_a_share_market_session(shanghai_now())),
+            }
+
+        warnings: list[str] = []
+        if len(valid) < 5:
+            warnings.append(f"板块仅核验到 {len(valid)} 只可用成分，排名稳定性有限")
+        if sum(row["quality_weight"] > 0 for row in scored) < max(1, len(scored) // 2):
+            warnings.append("多数成分缺少ROE/PE盈利代理，优秀分组仅作行情研究参考")
+        if cyclical:
+            warnings.append("该板块具有周期属性；推荐排序不把低PE直接解释为安全边际")
+
+        used: set[str] = set()
+
+        def select_group(group: str, *, require_quality: bool = False) -> list[dict]:
+            ordered = sorted(
+                scored,
+                key=lambda item: (item["scores"][group], item["coverage"][group], item["code"]),
+                reverse=True,
+            )
+            selected = []
+            for row in ordered:
+                if row["code"] in used or row["coverage"][group] < 0.45:
+                    continue
+                if require_quality and row["factor_scores"].get("quality") is None:
+                    continue
+                used.add(row["code"])
+                selected.append(render(row, group, len(selected) + 1))
+                if len(selected) >= 3:
+                    break
+            return selected
+
+        leader = select_group("leader")
+        excellent = select_group("excellent", require_quality=True)
+        potential = select_group("potential")
+        if not any((leader, excellent, potential)):
+            warnings.append("可用因子覆盖不足，未生成分组推荐")
+        return {
+            **empty,
+            "available": bool(leader or excellent or potential),
+            "sector": {**empty["sector"], "member_count": len(valid)},
+            "leader": leader,
+            "excellent": excellent,
+            "potential": potential,
+            "is_realtime": bool(quote.get("is_realtime") and decision_date == shanghai_now().date() and is_a_share_market_session(shanghai_now())),
+            "warnings": warnings,
+            "coverage": {
+                "members": len(valid),
+                "change_pct": sum(row["change_pct"] is not None for row in valid),
+                "capital": sum(row["main_net_inflow"] is not None for row in valid),
+                "market_cap": sum(row["market_cap"] is not None for row in valid),
+                "volume_ratio": sum(row["volume_ratio"] is not None for row in valid),
+                "roe_or_pe": sum(row["roe"] is not None or row["pe"] is not None for row in valid),
+            },
+        }
+
+    @staticmethod
     def _build_dependency(stock_rows: list[dict], sector_rows: list[dict], relative: dict) -> dict:
         stock_returns = _daily_returns(stock_rows, "trade_date", "close")
         sector_returns = {
@@ -1802,6 +2078,15 @@ class StockEssenceDecisionService:
             indicators = calculate_indicators(stock_rows)
             sector_change = _number((sector_row or {}).get("change_pct"))
             sector_role = self._build_sector_role(code, quote, members, relative, sector_name, sector_change)
+            sector_recommendations = self._build_sector_recommendations(
+                code,
+                quote,
+                members,
+                sector_name,
+                sector_code,
+                decision_date,
+                historical_mode=historical_mode,
+            )
             sector_dependency = self._build_dependency(stock_rows, sector_history, relative)
             sector_dependency["benchmark"] = relative["sector_benchmark"]
             emotion = self._build_emotion(stock_rows, fund_rows, quote, relative)
@@ -1931,6 +2216,7 @@ class StockEssenceDecisionService:
                 ("fund_flow", "资金流", len(fund_rows) >= 5, capital_impact.get("source") or "东方财富/FTShare/数据库缓存", capital_impact.get("latest_data_date"), f"{len(fund_rows)}条核验记录"),
                 ("sector_history", "板块历史", len(sector_history) >= 15, sector_history_payload.get("source") or "东方财富行业板块/FTShare", str(sector_history[-1].get("trade_date"))[:10] if sector_history else None, f"{len(sector_history)}条，基准{benchmark_name}({sector_history_payload.get('benchmark_code') or benchmark_code or '--'})"),
                 ("sector_members", "板块成分", bool(members), "东方财富行业成分", decision_date.isoformat(), f"{len(members)}只"),
+                ("sector_recommendations", "板块推荐", bool(sector_recommendations.get("available")), "板块成分多因子排序", sector_recommendations.get("data_date"), f"龙头{len(sector_recommendations.get('leader') or [])}只、优秀{len(sector_recommendations.get('excellent') or [])}只、潜力{len(sector_recommendations.get('potential') or [])}只"),
                 ("valuation_history", "三年估值", bool(valuation_history.get("history")), valuation_history.get("source") or "东方财富", valuation_history.get("history_end"), f"{valuation.get('pe_history_samples')}条正PE样本"),
                 ("consensus", "一致预期", raw["consensus"].get("error") is None, "东方财富分析师一致预期/PIT约束", now.date().isoformat(), consensus_detail),
                 ("announcements", "公司公告", bool((announcement_payload.get("status") or {}).get(code, {}).get("available")), "东方财富公告/FTShare", decision_date.isoformat(), f"{len(announcements)}条最新公告"),
@@ -1999,6 +2285,7 @@ class StockEssenceDecisionService:
                 "attribution": relative,
                 "alpha": {"score": relative.get("individual_alpha_score"), "windows": [{"days": item["days"], "alpha_pct": item["individual_alpha_pct"]} for item in relative.get("windows", [])], "model": relative.get("formula")},
                 "sector_role": sector_role,
+                "sector_recommendations": sector_recommendations,
                 "sector_dependency": sector_dependency,
                 "emotion": emotion,
                 "catalysts": catalysts,

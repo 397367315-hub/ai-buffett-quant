@@ -9,7 +9,7 @@ from typing import Any
 
 WORKBENCH_CACHE_KEY = "market_decision_workbench_latest_v2"
 WORKBENCH_CACHE_PREFIX = "market_decision_workbench_v2:"
-WORKBENCH_CONTRACT_VERSION = "market-workbench-v2.0.2"
+WORKBENCH_CONTRACT_VERSION = "market-workbench-v2.1.0"
 SCORE_VERSION = "market-state-v2.0.0"
 CANDIDATE_SCORE_VERSION = "workbench-candidate-v2.0.0"
 FINAL_ACTIONS = ("execute", "caution", "observe", "no_trade")

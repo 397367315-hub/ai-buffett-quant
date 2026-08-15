@@ -6,6 +6,7 @@ from services.market_decision_workbench import (
     WORKBENCH_CONTRACT_VERSION,
     SCORE_VERSION,
     _adaptive_strategy_weights,
+    _build_daily_short_term_recommendations,
     assemble_workbench,
     calculate_market_state,
 )
@@ -126,6 +127,71 @@ def topic_snapshot() -> dict:
 
 
 class MarketDecisionWorkbenchTests(unittest.TestCase):
+    def test_daily_recommendations_keep_low_volume_as_risk_not_as_fake_pass(self):
+        snapshot = {
+            "data_date": "2026-08-12",
+            "is_realtime": False,
+            "market": {
+                "short_term_candidates": [
+                    {
+                        "code": "600001", "name": "样本A", "sector": "通信",
+                        "price": 10, "change_pct": 3.0, "volume_ratio": 1.1,
+                        "turnover": 8, "main_net_inflow": 100_000_000, "roe": 12, "pe": 18,
+                    },
+                    {
+                        "code": "600002", "name": "样本B", "sector": "通信",
+                        "price": 11, "change_pct": 2.5, "volume_ratio": 1.3,
+                        "turnover": 7, "main_net_inflow": 80_000_000, "roe": 10, "pe": 22,
+                    },
+                ],
+                "top_sectors": [{"name": "通信", "change_pct": 3.2}],
+            },
+            "topics": [],
+        }
+        result = _build_daily_short_term_recommendations(
+            snapshot,
+            {"score": 70, "dimensions": [{"id": "breadth", "score": 65}, {"id": "emotion", "score": 66}, {"id": "risk", "score": 72}]},
+            [{"name": "通信", "strength_score": 84, "rank": 1}],
+            None,
+            {},
+            {},
+            "observe",
+            "2026-08-12",
+        )
+
+        self.assertTrue(result["available"])
+        self.assertEqual({item["code"] for item in result["candidates"]}, {"600001", "600002"})
+        low_volume = next(item for item in result["candidates"] if item["code"] == "600001")
+        self.assertIn("主动性承接偏弱", low_volume["risk"])
+        self.assertTrue(all(item["status"].startswith("仅观察") for item in result["candidates"]))
+
+    def test_daily_recommendations_do_not_score_without_profitability_fields(self):
+        snapshot = {
+            "data_date": "2026-08-12",
+            "market": {
+                "short_term_candidates": [{
+                    "code": "600001", "name": "无财务样本", "sector": "通信",
+                    "price": 10, "change_pct": 3.0, "volume_ratio": 1.5,
+                    "main_net_inflow": 100_000_000,
+                }],
+            },
+            "topics": [],
+        }
+        result = _build_daily_short_term_recommendations(
+            snapshot,
+            {"score": 70, "dimensions": [{"id": "breadth", "score": 65}, {"id": "emotion", "score": 66}, {"id": "risk", "score": 72}]},
+            [{"name": "通信", "strength_score": 84}],
+            None,
+            {},
+            {},
+            "caution",
+            "2026-08-12",
+        )
+
+        self.assertFalse(result["available"])
+        self.assertEqual(result["eligible_count"], 0)
+        self.assertIn("盈利字段缺失", " ".join(result["warnings"]))
+
     def test_market_state_uses_all_observed_dimensions(self):
         state = calculate_market_state(
             topic_snapshot(),

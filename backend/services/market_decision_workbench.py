@@ -8,14 +8,22 @@ from __future__ import annotations
 
 import asyncio
 import math
-from datetime import date, datetime
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 from typing import Any, Awaitable
 
 from sqlalchemy import desc, select
 
 from database import async_session
-from models import MarketDataCache, MarketSentimentDaily, StockSelectionRun
+from models import (
+    FinancialPITSnapshot,
+    MarketDataCache,
+    MarketSentimentDaily,
+    StockDailyBar,
+    StockSelectionRun,
+)
 from services.data_collector import collector, is_a_share_market_session, shanghai_now
+from services.cyclical_valuation import cycle_guard_from_stock
 from services.market_decision_contract import (
     CANDIDATE_SCORE_VERSION,
     FINAL_ACTIONS,
@@ -1278,6 +1286,355 @@ def _merge_candidates(groups: list[tuple[int, list[dict]]]) -> list[dict]:
     return output[:12]
 
 
+def _sector_key(value: object) -> str:
+    return "".join(str(value or "").split()).replace("行业", "")
+
+
+def _percentile_score(value: float | None, values: list[float]) -> float | None:
+    clean = sorted(item for item in values if math.isfinite(item))
+    if value is None or not clean:
+        return None
+    below = sum(item < value for item in clean)
+    equal = sum(math.isclose(item, value, rel_tol=1e-9, abs_tol=1e-9) for item in clean)
+    return round((below + equal * 0.5) / len(clean) * 100, 1)
+
+
+def _daily_history_features(rows: list[StockDailyBar]) -> dict[str, float | int | None]:
+    ordered = sorted(rows, key=lambda row: row.trade_date)
+    closes = [_number(row.close_price) for row in ordered]
+    closes = [value for value in closes if value is not None and value > 0]
+    returns = [
+        (closes[index] / closes[index - 1] - 1) * 100
+        for index in range(1, len(closes))
+        if closes[index - 1] > 0
+    ]
+    volatility = None
+    if len(returns) >= 5:
+        sample = returns[-20:]
+        average = sum(sample) / len(sample)
+        volatility = math.sqrt(sum((value - average) ** 2 for value in sample) / len(sample))
+    drawdown = None
+    if closes:
+        peak = closes[0]
+        drawdown = 0.0
+        for close in closes[-20:]:
+            peak = max(peak, close)
+            drawdown = max(drawdown, (peak - close) / peak * 100 if peak else 0.0)
+    return {
+        "history_sessions": len(closes),
+        "return_5d_pct": round((closes[-1] / closes[-6] - 1) * 100, 2) if len(closes) >= 6 else None,
+        "return_20d_pct": round((closes[-1] / closes[-21] - 1) * 100, 2) if len(closes) >= 21 else None,
+        "volatility_20d_pct": round(volatility, 2) if volatility is not None else None,
+        "max_drawdown_20d_pct": round(drawdown, 2) if drawdown is not None else None,
+        "data_date": ordered[-1].trade_date.isoformat() if ordered else None,
+    }
+
+
+def _build_daily_short_term_recommendations(
+    topic_snapshot: dict,
+    market_state: dict,
+    main_lines: list[dict],
+    selection: dict | None,
+    financial_features: dict[str, dict] | None,
+    history_features: dict[str, dict] | None,
+    final_action: str,
+    decision_date: str,
+) -> dict:
+    """Produce a short-term research list from same-date observable factors."""
+    market = topic_snapshot.get("market") or {}
+    universe: dict[str, dict] = {}
+    financial_by_code = {str(key): dict(value) for key, value in (financial_features or {}).items()}
+    history_by_code = {str(key): dict(value) for key, value in (history_features or {}).items()}
+
+    def add_stock(raw: dict, source: str) -> None:
+        code = str(raw.get("code") or raw.get("stock_code") or "")
+        if not code:
+            return
+        current = universe.get(code, {})
+        merged = {**current, **{key: value for key, value in raw.items() if value not in (None, "", "-")}}
+        merged["source"] = "+".join(dict.fromkeys(filter(None, [str(current.get("source") or ""), source])))
+        universe[code] = merged
+
+    for item in market.get("short_term_candidates") or []:
+        add_stock(item, str(item.get("source") or "market_snapshot"))
+    for topic in topic_snapshot.get("topics") or []:
+        for item in topic.get("members") or []:
+            add_stock(item, "topic_strength_cache")
+    for item in ((selection or {}).get("result") or {}).get("recommendations") or []:
+        agents = item.get("agents") or {}
+        fundamental = (agents.get("fundamental") or {}).get("metrics") or {}
+        technical = (agents.get("technical") or {}).get("metrics") or {}
+        risk = (agents.get("risk") or {}).get("plan") or {}
+        code = str(item.get("code") or "")
+        if code:
+            financial_by_code.setdefault(code, {}).update(fundamental)
+            add_stock({
+                "code": code,
+                "name": item.get("name"),
+                "sector": item.get("sector"),
+                "price": item.get("price"),
+                "change_pct": item.get("change_pct"),
+                "volume_ratio": technical.get("volume_ratio"),
+                "turnover": technical.get("turnover"),
+                "main_net_inflow": (agents.get("capital") or {}).get("metrics", {}).get("main_net_inflow"),
+                "risk_position_cap": risk.get("max_research_position_pct"),
+            }, "stock_selection_cache")
+
+    sector_by_name = {_sector_key(item.get("name")): item for item in main_lines}
+    top_sector_by_name = {_sector_key(item.get("name")): item for item in market.get("top_sectors") or []}
+    all_inflows = [
+        _number(item.get("main_net_inflow"))
+        for item in universe.values()
+        if _number(item.get("main_net_inflow")) is not None
+    ]
+    all_inflows = [value for value in all_inflows if value is not None]
+    market_score = _number(market_state.get("score"))
+    dimension_by_id = {str(item.get("id")): item for item in market_state.get("dimensions") or []}
+    sentiment_score = _average([
+        _number((dimension_by_id.get("breadth") or {}).get("score")),
+        _number((dimension_by_id.get("emotion") or {}).get("score")),
+    ])
+    market_risk_score = _number((dimension_by_id.get("risk") or {}).get("score"))
+
+    def scale(value: float | None, low: float, high: float) -> float | None:
+        if value is None or high <= low:
+            return None
+        return _clamp((value - low) / (high - low) * 100)
+
+    def quality_for(stock: dict, financial: dict) -> tuple[float | None, dict, list[str], list[str]]:
+        merged = {**stock, **financial}
+        roe = _number(merged.get("roe"))
+        pe = _number(merged.get("pe"))
+        net_profit = _number(merged.get("net_profit"))
+        revenue_growth = _number(merged.get("revenue_growth"))
+        deducted_growth = _number(merged.get("deducted_profit_growth"))
+        cash_ratio = _number(merged.get("ocf_to_profit_ttm") or merged.get("ocf_to_profit"))
+        debt_ratio = _number(merged.get("debt_ratio"))
+        cycle = cycle_guard_from_stock(merged)
+        parts: list[float] = []
+        evidence: list[str] = []
+        risks: list[str] = []
+        if net_profit is not None:
+            parts.append(90.0 if net_profit > 0 else 15.0)
+            evidence.append("公告日财务缓存显示净利润为正" if net_profit > 0 else "公告日财务缓存显示净利润为负")
+            if net_profit <= 0:
+                risks.append("净利润为负")
+        if roe is not None:
+            parts.append(scale(roe, 0, 25) or 0.0)
+            evidence.append(f"ROE {roe:.1f}%")
+            if roe < 0:
+                risks.append("ROE为负")
+        if revenue_growth is not None:
+            parts.append(scale(revenue_growth, -20, 30) or 0.0)
+            if revenue_growth < 0:
+                risks.append(f"营收同比 {revenue_growth:+.1f}%")
+            else:
+                evidence.append(f"营收同比 {revenue_growth:+.1f}%")
+        if deducted_growth is not None:
+            parts.append(scale(deducted_growth, -30, 40) or 0.0)
+            if deducted_growth < 0:
+                risks.append(f"扣非净利润同比 {deducted_growth:+.1f}%")
+        if cash_ratio is not None:
+            parts.append(scale(cash_ratio, 0, 1.5) or 0.0)
+            if cash_ratio < 0.8:
+                risks.append(f"经营现金流/净利润 {cash_ratio:.2f}")
+        if debt_ratio is not None and not any(term in str(stock.get("sector") or "") for term in ("银行", "证券", "保险", "金融")):
+            parts.append(_clamp(100 - scale(debt_ratio, 40, 85) if scale(debt_ratio, 40, 85) is not None else 50))
+            if debt_ratio > 70:
+                risks.append(f"资产负债率 {debt_ratio:.1f}%")
+        if pe is not None:
+            if pe <= 0:
+                risks.append("PE为负，不能按普通低PE解释")
+            elif cycle.get("is_cyclical"):
+                evidence.append("周期板块，PE只作辅助，不因低PE直接加分")
+            else:
+                parts.append(85.0 if pe <= 20 else 68.0 if pe <= 40 else 40.0 if pe <= 80 else 18.0)
+                evidence.append(f"PE {pe:.1f}")
+        if not parts:
+            return None, {"status": "unavailable", "roe": roe, "pe": pe}, evidence, ["完整盈利字段未覆盖"]
+        source_status = "financial_pit_cache" if financial.get("financial_disclosed_at") else "quote_proxy"
+        return round(sum(parts) / len(parts), 1), {
+            "status": source_status,
+            "roe": roe,
+            "pe": pe,
+            "net_profit": net_profit,
+            "revenue_growth": revenue_growth,
+            "deducted_profit_growth": deducted_growth,
+            "ocf_to_profit": cash_ratio,
+            "debt_ratio": debt_ratio,
+            "disclosed_at": financial.get("financial_disclosed_at"),
+        }, evidence, risks
+
+    rows = []
+    skipped = defaultdict(int)
+    for code, stock in universe.items():
+        name = str(stock.get("name") or code)
+        price = _number(stock.get("price"))
+        change = _number(stock.get("change_pct"))
+        if not price or price <= 0:
+            skipped["价格缺失"] += 1
+            continue
+        if "ST" in name.upper() or "退" in name:
+            skipped["ST/退市"] += 1
+            continue
+        volume_ratio = _number(stock.get("volume_ratio"))
+        if volume_ratio is None or volume_ratio <= 0:
+            skipped["量比缺失"] += 1
+            continue
+        if change is None:
+            skipped["涨跌幅缺失"] += 1
+            continue
+        if change < -5 or change > 9.8:
+            skipped["涨幅/跌幅超短线观察区间"] += 1
+            continue
+
+        sector = str(stock.get("sector") or "未分类")
+        sector_key = _sector_key(sector)
+        line = sector_by_name.get(sector_key) or {}
+        top_sector = top_sector_by_name.get(sector_key) or {}
+        sector_strength = _number(line.get("strength_score"))
+        if sector_strength is None:
+            sector_strength = scale(_number(stock.get("sector_change_pct") or top_sector.get("change_pct")), -3, 6)
+        if sector_strength is None:
+            skipped["板块强度缺失"] += 1
+            continue
+        capital_value = _number(stock.get("main_net_inflow"))
+        capital_score = _percentile_score(capital_value, all_inflows)
+        if capital_score is None:
+            capital_score = scale(_number(stock.get("main_net_inflow_pct")), -2, 4)
+        if capital_score is None:
+            skipped["资金流字段缺失"] += 1
+            continue
+        history = history_by_code.get(code) or {}
+        financial_score, financial_view, quality_evidence, quality_risks = quality_for(stock, financial_by_code.get(code) or {})
+        if financial_score is None:
+            skipped["盈利字段缺失"] += 1
+            continue
+
+        volume_score = (
+            _clamp(45 + (volume_ratio - 0.8) * 66.7) if volume_ratio <= 3.5
+            else _clamp(100 - (volume_ratio - 3.5) * 18) if volume_ratio <= 6
+            else 32.0
+        )
+        trend_score = _average([
+            scale(change, -2, 7),
+            scale(_number(history.get("return_5d_pct")), -5, 15),
+        ])
+        risk_parts: list[float] = []
+        risk_reasons = list(quality_risks)
+        if market_risk_score is not None:
+            risk_parts.append(market_risk_score)
+        if change is not None:
+            risk_parts.append(_clamp(100 - max(change - 5, 0) * 10 - max(-change - 3, 0) * 8))
+            if change > 7:
+                risk_reasons.append("当日涨幅偏高，避免追涨")
+        turnover = _number(stock.get("turnover"))
+        if turnover is not None:
+            risk_parts.append(_clamp(100 - max(turnover - 15, 0) * 3))
+            if turnover > 25:
+                risk_reasons.append("换手率过高")
+        if volume_ratio > 6:
+            risk_reasons.append("量比过高，短线过热")
+        elif volume_ratio <= 1.2:
+            risk_reasons.append("量比不超过1.2，主动性承接偏弱")
+        volatility = _number(history.get("volatility_20d_pct"))
+        drawdown = _number(history.get("max_drawdown_20d_pct"))
+        if volatility is not None:
+            risk_parts.append(_clamp(100 - volatility * 12))
+            if volatility > 4:
+                risk_reasons.append(f"20日波动率 {volatility:.1f}%")
+        if drawdown is not None:
+            risk_parts.append(_clamp(100 - drawdown * 4))
+            if drawdown > 18:
+                risk_reasons.append(f"20日最大回撤 {drawdown:.1f}%")
+        risk_score = round(sum(risk_parts) / len(risk_parts), 1) if risk_parts else None
+        if risk_score is None or risk_score < 42:
+            skipped["风险分低于42"] += 1
+            continue
+        market_fit = market_score
+        weighted = [
+            (market_fit, 0.15), (sector_strength, 0.20), (capital_score, 0.18),
+            (financial_score, 0.17), (risk_score, 0.15), (volume_score, 0.10),
+            (trend_score, 0.05),
+        ]
+        observed = [(value, weight) for value, weight in weighted if value is not None]
+        observed_weight = sum(weight for _, weight in observed)
+        if observed_weight < 0.75:
+            skipped["综合因子覆盖不足"] += 1
+            continue
+        score = round(sum(value * weight for value, weight in observed) / observed_weight, 1)
+        reasons = [
+            f"板块强度 {sector_strength:.1f} 分" + (f"，板块资金排名第{line.get('rank')}" if line.get("rank") else ""),
+            f"主力净流入 {capital_value / 1e8:+.2f} 亿" if capital_value is not None else "主力净流入占比已核验",
+            f"量比 {volume_ratio:.2f}" + ("（不超过1.2，主动性偏弱）" if volume_ratio <= 1.2 else "（活跃度已计入评分）"),
+        ]
+        reasons.extend(quality_evidence[:2] or ["盈利字段已通过可用性检查"])
+        source_parts = [str(stock.get("source") or "market_snapshot")]
+        if financial_view.get("status") == "financial_pit_cache":
+            source_parts.append("financial_pit_cache")
+        if history:
+            source_parts.append("stock_daily_bars")
+        rows.append({
+            "code": code,
+            "name": name,
+            "sector": sector,
+            "price": round(price, 2),
+            "change_pct": round(change, 2),
+            "volume_ratio": round(volume_ratio, 2),
+            "turnover": round(turnover, 2) if turnover is not None else None,
+            "main_net_inflow": round(capital_value, 0) if capital_value is not None else None,
+            "market_cap": round(_number(stock.get("market_cap")), 0) if _number(stock.get("market_cap")) is not None else None,
+            "score": score,
+            "confidence_pct": round(observed_weight * 100, 1),
+            "score_breakdown": {
+                "market_sentiment": round(sentiment_score, 1) if sentiment_score is not None else None,
+                "market_fit": round(market_fit, 1) if market_fit is not None else None,
+                "sector_strength": round(sector_strength, 1),
+                "capital": round(capital_score, 1),
+                "profitability": round(financial_score, 1),
+                "risk_safety": round(risk_score, 1),
+                "volume_ratio": round(volume_score, 1),
+                "trend": round(trend_score, 1) if trend_score is not None else None,
+            },
+            "profitability": financial_view,
+            "risk": "；".join(dict.fromkeys(risk_reasons)) or "未触发已观测的主要风险阈值",
+            "reasons": list(dict.fromkeys(reasons))[:5],
+            "invalidation_conditions": ["量比回落至1.2或以下", "板块资金转为持续流出", "跌破近20日结构支撑", "盈利/公告风险出现新证据"],
+            "status": "短期研究候选" if final_action in {"execute", "caution"} else "仅观察（市场闸门）",
+            "data_date": decision_date or None,
+            "source": "+".join(dict.fromkeys(source_parts)),
+            "is_realtime": bool(topic_snapshot.get("is_realtime")),
+        })
+
+    rows.sort(key=lambda item: (item["score"], item["confidence_pct"], item["code"]), reverse=True)
+    for rank, item in enumerate(rows[:8], start=1):
+        item["rank"] = rank
+    warnings = []
+    if not universe:
+        warnings.append("当前没有可用的短期候选快照")
+    if not financial_by_code:
+        warnings.append("未读取到公告日财务PIT缓存；盈利分使用行情端ROE/PE代理，需在个股画像中进一步核验")
+    if skipped:
+        top_skips = sorted(skipped.items(), key=lambda item: item[1], reverse=True)[:3]
+        warnings.append("候选过滤：" + "、".join(f"{label}{count}只" for label, count in top_skips))
+    if final_action in {"observe", "no_trade"} and rows:
+        warnings.append("市场认知层当前仅允许观察，推荐不进入模拟执行")
+    return {
+        "available": bool(rows),
+        "horizon": "未来1-5个交易日研究观察，不代表收益承诺",
+        "data_date": decision_date or None,
+        "market_action": final_action,
+        "candidates": rows[:8],
+        "universe_count": len(universe),
+        "eligible_count": len(rows),
+        "financial_cache_count": sum(bool((financial_by_code.get(code) or {}).get("financial_disclosed_at")) for code in universe),
+        "warnings": warnings,
+        "method": "市场情绪15%、板块强度20%、资金18%、盈利质量17%、风险安全15%、量比10%、趋势5%；缺失因子不填默认分",
+        "rule": "严格排除ST/退市、价格/量比缺失、极端涨跌和风险分<42的标的；量比作为活跃度与风险因子，≤1.2会扣分并标注承接偏弱；仅生成研究观察，不自动下单",
+        "source": "工作台同日/最近核验快照+公告日财务PIT缓存+日线缓存",
+    }
+
+
 def _strategy_selector(market_state: dict, overnight: dict) -> dict:
     score = _number(market_state.get("score"))
     loss_alert = overnight.get("loss_alert") or {}
@@ -1486,6 +1843,8 @@ def assemble_workbench(
     overnight: dict,
     *,
     calculated_at: str | None = None,
+    financial_features: dict[str, dict] | None = None,
+    history_features: dict[str, dict] | None = None,
 ) -> dict:
     decision_date = str(topic_snapshot.get("data_date") or "")[:10]
     market_state = calculate_market_state(
@@ -1575,6 +1934,16 @@ def assemble_workbench(
             for item in adaptive_weights.get("weights") or []
         ]
         adaptive_weights.setdefault("health_adjustments", {})["market_gate"] = "no_trade"
+    daily_short_term_recommendations = _build_daily_short_term_recommendations(
+        topic_snapshot,
+        market_state,
+        main_lines,
+        selection,
+        financial_features,
+        history_features,
+        final_action,
+        decision_date,
+    )
     market = topic_snapshot.get("market") or {}
     sentiment = market.get("sentiment") or {}
     emotion = market.get("emotion") or {}
@@ -1780,6 +2149,7 @@ def assemble_workbench(
         },
         "strategy_selector": strategy_selector,
         "main_lines": main_lines,
+        "daily_short_term_recommendations": daily_short_term_recommendations,
         "candidates": candidates,
         "candidate_summary": {
             "total": len(candidates),
@@ -1979,6 +2349,97 @@ class MarketDecisionWorkbenchService:
             print(f"Workbench sentiment history load failed: {type(exc).__name__}")
             return []
 
+    @staticmethod
+    async def _load_cached_financial_features(codes: list[str], target: date) -> dict[str, dict]:
+        """Load only already-captured PIT rows; never fan out F10 calls here."""
+        unique_codes = list(dict.fromkeys(str(code) for code in codes if code))[:180]
+        if not unique_codes:
+            return {}
+        try:
+            statement = select(
+                FinancialPITSnapshot.stock_code,
+                FinancialPITSnapshot.roe,
+                FinancialPITSnapshot.gross_margin,
+                FinancialPITSnapshot.revenue_growth,
+                FinancialPITSnapshot.deducted_profit_growth,
+                FinancialPITSnapshot.ocf_to_profit,
+                FinancialPITSnapshot.debt_ratio,
+                FinancialPITSnapshot.receivable_to_revenue,
+                FinancialPITSnapshot.net_profit,
+                FinancialPITSnapshot.report_date,
+                FinancialPITSnapshot.disclosed_at,
+            ).where(
+                FinancialPITSnapshot.stock_code.in_(unique_codes),
+                FinancialPITSnapshot.disclosed_at <= target,
+            ).order_by(
+                FinancialPITSnapshot.stock_code,
+                desc(FinancialPITSnapshot.disclosed_at),
+                desc(FinancialPITSnapshot.report_date),
+            )
+            async with async_session() as session:
+                rows = list((await session.execute(statement)).all())
+        except Exception as exc:
+            print(f"Workbench financial cache load failed: {type(exc).__name__}")
+            return {}
+        output: dict[str, dict] = {}
+        for row in rows:
+            code = str(row.stock_code or "")
+            if not code or code in output:
+                continue
+            output[code] = {
+                "roe": row.roe,
+                "gross_margin": row.gross_margin,
+                "revenue_growth": row.revenue_growth,
+                "deducted_profit_growth": row.deducted_profit_growth,
+                "ocf_to_profit": row.ocf_to_profit,
+                "debt_ratio": row.debt_ratio,
+                "receivable_to_revenue": row.receivable_to_revenue,
+                "net_profit": row.net_profit,
+                "financial_report_date": row.report_date.isoformat() if row.report_date else None,
+                "financial_disclosed_at": row.disclosed_at.isoformat() if row.disclosed_at else None,
+                "source": "financial_pit_cache",
+            }
+        return output
+
+    @staticmethod
+    async def _load_cached_history_features(codes: list[str], target: date) -> dict[str, dict]:
+        unique_codes = list(dict.fromkeys(str(code) for code in codes if code))[:180]
+        if not unique_codes:
+            return {}
+        try:
+            statement = select(StockDailyBar).where(
+                StockDailyBar.stock_code.in_(unique_codes),
+                StockDailyBar.trade_date <= target,
+                StockDailyBar.trade_date >= target - timedelta(days=45),
+            ).order_by(StockDailyBar.stock_code, StockDailyBar.trade_date)
+            async with async_session() as session:
+                rows = list((await session.execute(statement)).scalars().all())
+        except Exception as exc:
+            print(f"Workbench stock history cache load failed: {type(exc).__name__}")
+            return {}
+        grouped: dict[str, list[StockDailyBar]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row.stock_code)].append(row)
+        return {code: _daily_history_features(items) for code, items in grouped.items()}
+
+    @staticmethod
+    def _recommendation_codes(topic: dict, selection: dict | None) -> list[str]:
+        codes: list[str] = []
+        for item in ((topic.get("market") or {}).get("short_term_candidates") or []):
+            code = str(item.get("code") or "")
+            if code:
+                codes.append(code)
+        for topic_item in topic.get("topics") or []:
+            for item in topic_item.get("members") or []:
+                code = str(item.get("code") or "")
+                if code:
+                    codes.append(code)
+        for item in ((selection or {}).get("result") or {}).get("recommendations") or []:
+            code = str(item.get("code") or "")
+            if code:
+                codes.append(code)
+        return list(dict.fromkeys(codes))[:180]
+
     async def get(self, *, force: bool = False) -> dict:
         now = shanghai_now()
         cached = await self._read_cache()
@@ -2008,8 +2469,28 @@ class MarketDecisionWorkbenchService:
             return cached or assemble_workbench(
                 {}, index_history, sentiment_history, selection, overnight,
             )
+        target_date = _date(topic_date)
+        recommendation_codes = self._recommendation_codes(topic, selection)
+        financial_features, history_features = await asyncio.gather(
+            self._safe(
+                self._load_cached_financial_features(recommendation_codes, target_date) if target_date else asyncio.sleep(0, result={}),
+                {},
+                6,
+            ),
+            self._safe(
+                self._load_cached_history_features(recommendation_codes, target_date) if target_date else asyncio.sleep(0, result={}),
+                {},
+                6,
+            ),
+        )
         payload = assemble_workbench(
-            topic, index_history, sentiment_history, selection, overnight,
+            topic,
+            index_history,
+            sentiment_history,
+            selection,
+            overnight,
+            financial_features=financial_features if isinstance(financial_features, dict) else {},
+            history_features=history_features if isinstance(history_features, dict) else {},
         )
         if self._prefer_cached(payload, cached):
             return self._retained_cache(cached, payload)
