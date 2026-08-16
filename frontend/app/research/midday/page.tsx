@@ -1,6 +1,8 @@
 'use client';
 
 import Link from 'next/link';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   Activity,
   AlertTriangle,
@@ -465,6 +467,7 @@ export default function MiddayResearchPage() {
 
       <style jsx global>{`
         .command-button,.command-button-primary{display:inline-flex;min-height:34px;align-items:center;justify-content:center;gap:6px;border-radius:5px;padding:7px 11px;font-size:12px;transition:color .15s,background .15s,border-color .15s}.command-button{border:1px solid #30363D;color:#C9D1D9;background:#161B22}.command-button:hover{border-color:#58A6FF;color:#58A6FF}.command-button-primary{border:1px solid #1F6FEB;color:#fff;background:#1F6FEB}.command-button:disabled,.command-button-primary:disabled{cursor:not-allowed;opacity:.5}.icon-button{display:grid;width:34px;height:34px;place-items:center;border:1px solid #30363D;border-radius:5px;color:#8B949E}.icon-button:hover{border-color:#58A6FF;color:#58A6FF}
+        .midday-markdown p{margin-top:8px}.midday-markdown p:first-child{margin-top:0}.midday-markdown strong{color:#C9D1D9;font-weight:600}.midday-markdown ul{margin:6px 0 0 18px;list-style:disc}.midday-markdown li{margin-top:3px}
       `}</style>
     </main>
   );
@@ -538,7 +541,7 @@ function Overview({ report, onTrack, tracking, onValidate, validating }: { repor
       </div>
     </section>
 
-    {report.ai_synthesis?.available && report.ai_synthesis.narrative && <section className="rounded-md border border-accent/30 bg-accent/5 p-4"><div className="flex items-center gap-2 text-sm font-medium text-text"><Sparkles size={15} className="text-accent" />AI 战术解读</div><p className="mt-3 whitespace-pre-wrap text-xs leading-6 text-text-secondary">{report.ai_synthesis.narrative}</p><div className="mt-3 text-[10px] text-text-secondary">{report.ai_synthesis.guard}</div></section>}
+    {report.ai_synthesis?.available && report.ai_synthesis.narrative && <section className="rounded-md border border-accent/30 bg-accent/5 p-4"><div className="flex items-center gap-2 text-sm font-medium text-text"><Sparkles size={15} className="text-accent" />AI 战术解读</div><div className="midday-markdown mt-3 text-xs leading-6 text-text-secondary"><ReactMarkdown remarkPlugins={[remarkGfm]}>{report.ai_synthesis.narrative}</ReactMarkdown></div><div className="mt-3 text-[10px] text-text-secondary">{report.ai_synthesis.guard}</div></section>}
 
     <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
       <div className="rounded-md border border-border bg-card">
