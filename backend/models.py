@@ -628,6 +628,120 @@ class StockDecisionProfile(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ResearchSession(Base):
+    """One versioned AI weekend-research run and its compact report snapshot."""
+
+    __tablename__ = "research_sessions"
+    __table_args__ = (
+        Index("idx_research_sessions_created", "created_at"),
+        Index("idx_research_sessions_status", "status", "updated_at"),
+        Index("idx_research_sessions_data_date", "source_data_date"),
+    )
+
+    id = Column(String(40), primary_key=True)
+    mode = Column(String(20), nullable=False, default="quick")
+    topic = Column(String(300))
+    status = Column(String(20), nullable=False, default="DRAFT")
+    stage = Column(String(50), nullable=False, default="queued")
+    progress = Column(Integer, nullable=False, default=0)
+    as_of_date = Column(Date)
+    source_data_date = Column(Date)
+    market_data_version = Column(String(50), nullable=False)
+    fundamental_data_version = Column(String(50), nullable=False)
+    strategy_version = Column(String(50), nullable=False)
+    model_version = Column(String(80), nullable=False)
+    prompt_version = Column(String(50), nullable=False)
+    research_version = Column(String(50), nullable=False)
+    report = Column(JSON, nullable=False, default=dict)
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime)
+
+
+class ResearchJudgment(Base):
+    """User review kept separately from the original AI conclusion."""
+
+    __tablename__ = "research_judgments"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "target_type", "target_key",
+            name="uq_research_judgment_session_target",
+        ),
+        Index("idx_research_judgments_session", "session_id", "updated_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(40), ForeignKey("research_sessions.id", ondelete="CASCADE"), nullable=False)
+    target_type = Column(String(30), nullable=False)
+    target_key = Column(String(100), nullable=False)
+    ai_judgment = Column(JSON, nullable=False, default=dict)
+    action = Column(String(20), nullable=False)
+    user_judgment = Column(Text)
+    reason = Column(Text)
+    validation_status = Column(String(20), nullable=False, default="PENDING")
+    validation_result = Column(Text)
+    correct_party = Column(String(20))
+    validated_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ResearchHypothesis(Base):
+    """A falsifiable market, sector or stock claim awaiting real outcomes."""
+
+    __tablename__ = "research_hypotheses"
+    __table_args__ = (
+        UniqueConstraint("session_id", "hypothesis_key", name="uq_research_hypothesis_key"),
+        Index("idx_research_hypotheses_status_due", "status", "due_date"),
+        Index("idx_research_hypotheses_session", "session_id", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(40), ForeignKey("research_sessions.id", ondelete="CASCADE"), nullable=False)
+    hypothesis_key = Column(String(100), nullable=False)
+    scope = Column(String(20), nullable=False)
+    target = Column(String(100))
+    title = Column(String(200), nullable=False)
+    statement = Column(Text, nullable=False)
+    nature = Column(String(20), nullable=False, default="FORECAST")
+    horizon = Column(String(20), nullable=False, default="T+5")
+    evidence = Column(JSON, nullable=False, default=list)
+    falsification = Column(JSON, nullable=False, default=list)
+    due_date = Column(Date)
+    status = Column(String(20), nullable=False, default="PENDING")
+    actual_result = Column(Text)
+    validation_result = Column(Text)
+    error_type = Column(String(50))
+    validated_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ResearchMarketCase(Base):
+    """Validated research outcome used by the case and cognition libraries."""
+
+    __tablename__ = "research_market_cases"
+    __table_args__ = (
+        Index("idx_research_cases_date", "case_date"),
+        Index("idx_research_cases_type", "case_type", "outcome"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(40), ForeignKey("research_sessions.id", ondelete="SET NULL"))
+    hypothesis_id = Column(Integer, ForeignKey("research_hypotheses.id", ondelete="SET NULL"))
+    case_type = Column(String(30), nullable=False)
+    title = Column(String(200), nullable=False)
+    summary = Column(Text, nullable=False)
+    market_context = Column(JSON, nullable=False, default=dict)
+    outcome = Column(String(20), nullable=False)
+    error_attribution = Column(String(50))
+    lesson = Column(Text)
+    tags = Column(JSON, nullable=False, default=list)
+    case_date = Column(Date, nullable=False, default=date.today)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class KnowledgeTerm(Base):
     __tablename__ = "knowledge_terms"
 

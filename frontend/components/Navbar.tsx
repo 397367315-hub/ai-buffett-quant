@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -61,6 +61,9 @@ export default function Navbar() {
 
       {/* 桌面端导航 */}
       <div className="hidden md:flex items-center gap-1 flex-1">
+        <Link href="/research" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${pathname.startsWith('/research') ? 'bg-[#1F6FEB22] text-accent font-medium' : 'text-text-secondary hover:text-text hover:bg-[#21262D]'}`}>
+          <Microscope size={16} /> AI研究中心
+        </Link>
         <div
           className="relative"
           onMouseEnter={() => setProDropdownOpen(true)}
@@ -108,6 +111,9 @@ export default function Navbar() {
       {/* 移动端菜单 */}
       {menuOpen && (
         <div className="absolute top-14 left-0 right-0 bg-card border-b border-border p-4 md:hidden z-50 max-h-[calc(100vh-56px)] overflow-y-auto">
+          <Link href="/research" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
+            <Microscope size={16} /> AI研究中心
+          </Link>
           <Link href="/market" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
             <BrainCircuit size={16} /> AI决策工作台
           </Link>

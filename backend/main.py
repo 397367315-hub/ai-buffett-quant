@@ -6,6 +6,7 @@ from api.routes import router
 from api.quant_routes import router as quant_router
 from api.personal_routes import router as personal_router
 from api.openclaw_routes import router as openclaw_router
+from api.research_routes import router as research_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI):
     from services.ai_robot import ai_robot_service
     from services.fqe_reference_data import fqe_reference_data
     from services.scheduler import scheduler, start_scheduler
+    from services.weekend_research import weekend_research_service
     await seed()
     from quant.persistence import hydrate_strategy_store
     await hydrate_strategy_store()
@@ -27,6 +29,7 @@ async def lifespan(app: FastAPI):
     await ai_robot_service.resume_incomplete_runs()
     await fqe_reference_data.resume_incomplete_runs()
     await fqe_reference_data.ensure_initialized()
+    await weekend_research_service.resume_incomplete_runs()
     await start_scheduler(collector)
     yield
     if scheduler.running:
@@ -67,6 +70,7 @@ app.include_router(router)
 app.include_router(quant_router)
 app.include_router(personal_router)
 app.include_router(openclaw_router)
+app.include_router(research_router)
 
 
 @app.get("/")
