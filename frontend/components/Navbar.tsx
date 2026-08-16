@@ -8,6 +8,7 @@ import { useAuth } from '@/lib/AuthContext';
 
 const proSubItems = [
   { href: '/market', label: 'AI决策工作台', icon: BrainCircuit },
+  { href: '/research/midday', label: '午间AI研究台', icon: Activity },
   { href: '/pro/stock', label: '个股决策画像', icon: BarChart3 },
   { href: '/pro', label: '资金排名', icon: TrendingUp },
   { href: '/pro/sentiment', label: '市场情绪', icon: TrendingUp },
@@ -114,12 +115,15 @@ export default function Navbar() {
           <Link href="/research" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
             <Microscope size={16} /> AI研究中心
           </Link>
+          <Link href="/research/midday" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
+            <Activity size={16} /> 午间AI研究台
+          </Link>
           <Link href="/market" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
             <BrainCircuit size={16} /> AI决策工作台
           </Link>
           <div className="border-t border-border my-2 pt-2">
             <div className="text-xs text-text-secondary px-3 mb-1">专业看板</div>
-            {proSubItems.filter((item) => item.href !== '/market').map((item) => {
+            {proSubItems.filter((item) => !['/market', '/research/midday'].includes(item.href)).map((item) => {
               const Icon = item.icon;
               return (
                 <Link key={item.href} href={item.href} className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>

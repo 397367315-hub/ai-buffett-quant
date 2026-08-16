@@ -36,6 +36,7 @@ MARKET_DATA_VERSION = "market-workbench-v2.0"
 STRATEGY_VERSION = "adaptive-strategy+overnight-v2"
 PROMPT_VERSION = "weekend-research-evidence-v3"
 MODEL_VERSION = "structured-multi-agent-v3"
+WEEKEND_MODES = ("quick", "deep", "topic")
 SESSION_STATUSES = {
     "DRAFT", "RUNNING", "COMPLETED", "REVIEWING", "VALIDATING", "ARCHIVED", "FAILED",
 }
@@ -734,7 +735,7 @@ class WeekendResearchService:
     async def _update(self, session_id: str, **values: Any) -> None:
         async with async_session() as session:
             row = await session.get(ResearchSession, session_id)
-            if row is None:
+            if row is None or row.mode not in WEEKEND_MODES:
                 return
             for key, value in values.items():
                 setattr(row, key, value)
@@ -751,7 +752,7 @@ class WeekendResearchService:
 
     async def start(self, *, mode: str = "quick", topic: str | None = None) -> dict:
         normalized_mode = str(mode or "quick").lower()
-        if normalized_mode not in {"quick", "deep", "topic"}:
+        if normalized_mode not in WEEKEND_MODES:
             raise ValueError("研究模式必须是 quick、deep 或 topic")
         topic_text = str(topic or "").strip() or None
         if normalized_mode == "topic" and not topic_text:
@@ -759,7 +760,10 @@ class WeekendResearchService:
         async with async_session() as session:
             active = (await session.execute(
                 select(ResearchSession)
-                .where(ResearchSession.status.in_(["DRAFT", "RUNNING"]))
+                .where(
+                    ResearchSession.mode.in_(WEEKEND_MODES),
+                    ResearchSession.status.in_(["DRAFT", "RUNNING"]),
+                )
                 .order_by(desc(ResearchSession.created_at))
                 .limit(1)
             )).scalar_one_or_none()
@@ -794,7 +798,10 @@ class WeekendResearchService:
         try:
             async with async_session() as session:
                 rows = list((await session.execute(
-                    select(ResearchSession).where(ResearchSession.status.in_(["DRAFT", "RUNNING"]))
+                    select(ResearchSession).where(
+                        ResearchSession.mode.in_(WEEKEND_MODES),
+                        ResearchSession.status.in_(["DRAFT", "RUNNING"]),
+                    )
                 )).scalars().all())
                 for row in rows:
                     row.status = "DRAFT"
@@ -939,7 +946,7 @@ class WeekendResearchService:
     async def get(self, session_id: str) -> dict | None:
         async with async_session() as session:
             row = await session.get(ResearchSession, session_id)
-            if row is None:
+            if row is None or row.mode not in WEEKEND_MODES:
                 return None
             judgments = list((await session.execute(
                 select(ResearchJudgment)
@@ -959,12 +966,15 @@ class WeekendResearchService:
     async def latest(self) -> dict | None:
         async with async_session() as session:
             row = (await session.execute(
-                select(ResearchSession).order_by(desc(ResearchSession.created_at)).limit(1)
+                select(ResearchSession)
+                .where(ResearchSession.mode.in_(WEEKEND_MODES))
+                .order_by(desc(ResearchSession.created_at))
+                .limit(1)
             )).scalar_one_or_none()
         return await self.get(row.id) if row else None
 
     async def list(self, *, limit: int = 30, status: str | None = None) -> list[dict]:
-        statement = select(ResearchSession)
+        statement = select(ResearchSession).where(ResearchSession.mode.in_(WEEKEND_MODES))
         if status:
             normalized = status.upper()
             if normalized not in SESSION_STATUSES:

@@ -19,6 +19,7 @@ from services.dragon_board import dragon_board_service
 from services.flow_analysis import flow_analysis_service
 from services.mao_strategy_agent import mao_strategy_agent
 from services.macro_dashboard import macro_dashboard_service
+from services.midday_research import midday_research_service
 from services.openclaw_database import query_system_database
 from services.overnight_strategy import overnight_strategy_service
 from services.personal_portfolio import personal_portfolio_service
@@ -183,6 +184,21 @@ async def _data_source_health(arguments: dict[str, Any]) -> dict[str, Any]:
     return await collector.check_data_source()
 
 
+async def _midday_research(arguments: dict[str, Any]) -> dict[str, Any]:
+    session_id = str(arguments.get("session_id") or "").strip()
+    result = await midday_research_service.get(session_id) if session_id else await midday_research_service.latest()
+    if result is None:
+        return {"available": False, "message": "尚无午间研究记录"}
+    return result
+
+
+async def _run_midday_research(arguments: dict[str, Any]) -> dict[str, Any]:
+    force = arguments.get("force", False)
+    if not isinstance(force, bool):
+        raise ValueError("force 必须是布尔值")
+    return await midday_research_service.start(force=force, background=True)
+
+
 ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -272,6 +288,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "get_midday_research",
+        "description": "读取最新或指定午间AI研究，包含上午尸检、主要矛盾、板块结构、Alpha/Beta异常、下午情景和14:55预演。",
+        "inputSchema": {"type": "object", "properties": {"session_id": {"type": "string"}}, "additionalProperties": False},
+    },
+    {
+        "name": "run_midday_research",
+        "description": "发起午间AI战术研究任务；仅做研究和模拟筛选，不执行真实交易。",
+        "inputSchema": {"type": "object", "properties": {"force": {"type": "boolean", "default": False}}, "additionalProperties": False},
+    },
+    {
         "name": "query_system_database",
         "description": "只读查询系统生产数据库中的白名单数据集，支持历史行情、资金流、选股运行、量化策略和一夜持仓；不接受任意SQL。",
         "inputSchema": {
@@ -326,6 +352,8 @@ HANDLERS: dict[str, ToolHandler] = {
     "get_personal_pool": _personal_pool,
     "add_to_personal_pool": _add_personal_stock,
     "check_data_source": _data_source_health,
+    "get_midday_research": _midday_research,
+    "run_midday_research": _run_midday_research,
     "query_system_database": query_system_database,
 }
 
@@ -337,7 +365,7 @@ class OpenClawGateway:
     def manifest() -> dict[str, Any]:
         return {
             "name": "ai-buffett-openclaw",
-            "version": "1.2.0",
+            "version": "1.3.0",
             "protocol": "MCP JSON-RPC 2.0 over stateless HTTP",
             "endpoint": "/api/v1/openclaw/mcp",
             "enabled": bool(settings.openclaw_enabled),
@@ -378,7 +406,7 @@ class OpenClawGateway:
                 "result": {
                     "protocolVersion": self.protocol_version,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "ai-buffett-openclaw", "version": "1.2.0"},
+                    "serverInfo": {"name": "ai-buffett-openclaw", "version": "1.3.0"},
                 },
             }
         if method == "ping":

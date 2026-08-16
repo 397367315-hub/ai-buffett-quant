@@ -58,6 +58,12 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         expected = {
             "startup_cache_recovery",
             "midday_collection",
+            "midday_ai_research",
+            "midday_track_1330",
+            "midday_track_1400",
+            "midday_track_1430",
+            "midday_track_1455",
+            "midday_close_validation",
             "daily_collection",
             "ai_robot_short_daily",
             "ai_robot_long_daily",
@@ -85,6 +91,10 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(calls["overnight_force_exit"].args[0], scheduler_module.force_overnight_exits)
         self.assertIs(calls["resume_fqe_data_sync"].args[0], scheduler_module.resume_incomplete_fqe_syncs)
         self.assertIs(calls["fqe_audit_data_close"].args[0], scheduler_module.refresh_fqe_audit_data)
+        self.assertIs(calls["midday_ai_research"].args[0], scheduler_module.run_midday_research)
+        self.assertIs(calls["midday_track_1330"].args[0], scheduler_module.track_midday_research)
+        self.assertEqual(calls["midday_track_1330"].kwargs["args"], ["13:30"])
+        self.assertIs(calls["midday_close_validation"].args[0], scheduler_module.validate_midday_research)
 
     async def test_startup_recovery_uses_recent_cache_during_market_session(self):
         fake_scheduler = MagicMock()

@@ -219,6 +219,39 @@ async def force_overnight_exits():
         return None
 
 
+async def run_midday_research():
+    from services.midday_research import midday_research_service
+
+    try:
+        return await midday_research_service.start(force=False, background=False)
+    except Exception as exc:
+        print(f"[Scheduler] 午间AI研究失败: {type(exc).__name__}")
+        return None
+
+
+async def track_midday_research(checkpoint: str):
+    from services.midday_research import midday_research_service
+
+    try:
+        return await midday_research_service.track(checkpoint, force_quote=True)
+    except (LookupError, ValueError) as exc:
+        print(f"[Scheduler] 午间候选{checkpoint}跟踪跳过: {exc}")
+        return None
+    except Exception as exc:
+        print(f"[Scheduler] 午间候选{checkpoint}跟踪失败: {type(exc).__name__}")
+        return None
+
+
+async def validate_midday_research():
+    from services.midday_research import midday_research_service
+
+    try:
+        return await midday_research_service.validate_pending()
+    except Exception as exc:
+        print(f"[Scheduler] 午间研究盘后验证失败: {type(exc).__name__}")
+        return []
+
+
 async def start_scheduler(data_collector=None, db_session=None):
     from apscheduler.triggers.cron import CronTrigger
     from services.data_sync import data_sync
@@ -299,6 +332,46 @@ async def start_scheduler(data_collector=None, db_session=None):
         coalesce=True,
         max_instances=1,
         misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        run_midday_research,
+        CronTrigger(hour=11, minute=42, day_of_week="mon-fri"),
+        id="midday_ai_research", name="午间AI战术研究", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=900,
+    )
+    scheduler.add_job(
+        track_midday_research,
+        CronTrigger(hour=13, minute=30, day_of_week="mon-fri"),
+        args=["13:30"],
+        id="midday_track_1330", name="午间候选13:30固定样本跟踪", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        track_midday_research,
+        CronTrigger(hour=14, minute=0, day_of_week="mon-fri"),
+        args=["14:00"],
+        id="midday_track_1400", name="午间候选14:00固定样本跟踪", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        track_midday_research,
+        CronTrigger(hour=14, minute=31, day_of_week="mon-fri"),
+        args=["14:30"],
+        id="midday_track_1430", name="午间候选14:30固定样本跟踪", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        track_midday_research,
+        CronTrigger(hour=14, minute=58, day_of_week="mon-fri"),
+        args=["14:55"],
+        id="midday_track_1455", name="午间候选14:55正式筛选对照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        validate_midday_research,
+        CronTrigger(hour=15, minute=50, day_of_week="mon-fri"),
+        id="midday_close_validation", name="午间研究盘后验证与AI学习", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         resume_incomplete_backfills,

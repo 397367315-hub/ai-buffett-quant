@@ -629,7 +629,7 @@ class StockDecisionProfile(Base):
 
 
 class ResearchSession(Base):
-    """One versioned AI weekend-research run and its compact report snapshot."""
+    """One versioned strategic or tactical research run and its report snapshot."""
 
     __tablename__ = "research_sessions"
     __table_args__ = (

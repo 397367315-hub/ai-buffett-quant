@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from services.midday_research import midday_research_service
 from services.weekend_research import weekend_research_service
 
 
@@ -53,6 +54,15 @@ class HypothesisValidationRequest(BaseModel):
     correct_party: str | None = None
 
 
+class MiddayResearchRequest(BaseModel):
+    force: bool = False
+
+
+class MiddayTrackRequest(BaseModel):
+    checkpoint: str = Field(default="manual", min_length=1, max_length=20)
+    force_quote: bool = True
+
+
 def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, ValueError):
         return HTTPException(status_code=422, detail=str(exc))
@@ -98,6 +108,64 @@ async def get_latest_weekly_research():
 @router.get("/weekly/{session_id}")
 async def get_weekly_research(session_id: str):
     return {"code": 0, "data": await _research_or_404(session_id)}
+
+
+@router.post("/midday/start", status_code=status.HTTP_202_ACCEPTED)
+async def start_midday_research(request: MiddayResearchRequest):
+    try:
+        result = await midday_research_service.start(force=request.force, background=True)
+    except Exception as exc:
+        raise _error(exc) from exc
+    return {"code": 0, "data": result}
+
+
+@router.get("/midday/latest")
+async def get_latest_midday_research():
+    return {"code": 0, "data": await midday_research_service.latest()}
+
+
+@router.get("/midday")
+async def list_midday_research(limit: int = Query(30, ge=1, le=100)):
+    try:
+        rows = await midday_research_service.list(limit=limit)
+    except Exception as exc:
+        raise _error(exc) from exc
+    return {"code": 0, "data": {"sessions": rows, "count": len(rows)}}
+
+
+@router.post("/midday/validate")
+async def validate_midday_research():
+    try:
+        session_ids = await midday_research_service.validate_pending()
+    except Exception as exc:
+        raise _error(exc) from exc
+    return {"code": 0, "data": {"validated_session_ids": session_ids, "count": len(session_ids)}}
+
+
+@router.get("/framework")
+async def get_research_framework():
+    return {"code": 0, "data": await midday_research_service.framework()}
+
+
+@router.get("/midday/{session_id}")
+async def get_midday_research(session_id: str):
+    result = await midday_research_service.get(session_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="午间研究记录不存在")
+    return {"code": 0, "data": result}
+
+
+@router.post("/midday/{session_id}/track")
+async def track_midday_research(session_id: str, request: MiddayTrackRequest):
+    try:
+        result = await midday_research_service.track(
+            request.checkpoint,
+            session_id=session_id,
+            force_quote=request.force_quote,
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+    return {"code": 0, "data": result}
 
 
 async def _component(session_id: str, component: str) -> dict:

@@ -2225,6 +2225,7 @@ def assemble_workbench(
             "missing_policy": "缺失数据保持为空并列入审计，不填造、不按默认50分通过；质变只允许not_confirmed/warning/confirmed证据状态。",
         },
         "quick_links": [
+            {"label": "午间AI研究", "href": "/research/midday"},
             {"label": "题材强弱", "href": "/pro/topic-strength"},
             {"label": "智能选股", "href": "/pro/stock-picker"},
             {"label": "量化策略", "href": "/quant"},

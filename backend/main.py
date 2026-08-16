@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI):
     from services.ai_robot import ai_robot_service
     from services.fqe_reference_data import fqe_reference_data
     from services.scheduler import scheduler, start_scheduler
+    from services.midday_research import midday_research_service
     from services.weekend_research import weekend_research_service
     await seed()
     from quant.persistence import hydrate_strategy_store
@@ -30,6 +31,7 @@ async def lifespan(app: FastAPI):
     await fqe_reference_data.resume_incomplete_runs()
     await fqe_reference_data.ensure_initialized()
     await weekend_research_service.resume_incomplete_runs()
+    await midday_research_service.resume_incomplete_runs()
     await start_scheduler(collector)
     yield
     if scheduler.running:

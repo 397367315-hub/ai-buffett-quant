@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import {
   AlertTriangle,
   Archive,
@@ -492,6 +493,7 @@ export default function ResearchCenterPage() {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Link href="/research/midday" className="command-button"><Clock3 size={14} />午间研究台</Link>
           <button type="button" onClick={() => void startResearch('quick')} disabled={Boolean(starting || running)} className="command-button"><Search size={14} />{starting === 'quick' ? '启动中' : '快速研究'}</button>
           <button type="button" onClick={() => void startResearch('deep')} disabled={Boolean(starting || running)} className="command-button-primary"><Sparkles size={14} />{starting === 'deep' ? '启动中' : '深度研究'}</button>
           {session && !running && session.status !== 'ARCHIVED' && <button type="button" onClick={() => void archiveSession()} className="icon-button" title="归档研究"><Archive size={16} /></button>}
