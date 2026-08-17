@@ -50,6 +50,11 @@ Example tool call:
 - `get_personal_pool`: personal pool and risk alerts.
 - `add_to_personal_pool`: idempotently add a validated stock to a personal pool.
 - `check_data_source`: proxy/upstream health and latency.
+- `get_decision_workbench_2026`: unified market permission, opportunity density,
+  sector lifecycle, Alpha attribution, decision windows, conditional orders,
+  dynamic exits, and the daily six-question conclusion.
+- `get_decision_snapshots`: read immutable 10:40, midday, 14:40, 14:55, close,
+  and manual decision snapshots with validation status.
 - `query_system_database`: read-only access to the same production database used by
   the web app. Allowed datasets are `stock_daily_bars`, `market_flow`,
   `stock_selection_runs`, `quant_strategies`, `overnight_runs`, and

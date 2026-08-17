@@ -41,6 +41,7 @@ from services.history_cache import history_cache
 from services.sector_flow_network import build_inferred_transfers
 from services.topic_strength import topic_strength_service
 from services.market_decision_workbench import market_decision_workbench_service
+from services.decision_workbench_2026 import decision_workbench_2026_service
 from services.block_trade_analysis import block_trade_analysis_service
 from services.stock_essence_decision import stock_essence_decision_service
 from quant.market_cache import load_quant_market_snapshot
@@ -2052,6 +2053,54 @@ async def get_market_overview(refresh: bool = False):
 async def get_market_decision_workbench(refresh: bool = Query(False)):
     """Return one date-aligned decision contract for the market workbench."""
     data = await market_decision_workbench_service.get(force=refresh)
+    data = await decision_workbench_2026_service.decorate(data)
+    return {"code": 0, "data": data}
+
+
+@router.get("/market/workbench/snapshots")
+async def list_market_decision_snapshots(
+    limit: int = Query(30, ge=1, le=100),
+    phase: str | None = Query(None),
+):
+    data = await decision_workbench_2026_service.list_snapshots(limit=limit, phase=phase)
+    return {"code": 0, "data": data}
+
+
+@router.get("/market/workbench/snapshots/{snapshot_id}")
+async def get_market_decision_snapshot(snapshot_id: int):
+    try:
+        data = await decision_workbench_2026_service.get_snapshot(snapshot_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.post("/market/workbench/snapshots")
+async def capture_market_decision_snapshot(request: dict | None = None):
+    body = request or {}
+    try:
+        data = await decision_workbench_2026_service.capture(
+            str(body.get("phase") or "manual"),
+            force=bool(body.get("force", True)),
+            user_judgment=str(body.get("user_judgment") or "") or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.post("/market/workbench/validate")
+async def validate_market_decision_snapshot(request: dict | None = None):
+    raw_date = str((request or {}).get("decision_date") or "")
+    target = None
+    if raw_date:
+        normalized_date = _market_date(raw_date)
+        if normalized_date is None:
+            raise HTTPException(status_code=422, detail="decision_date 必须是有效日期")
+        target = date.fromisoformat(normalized_date)
+    data = await decision_workbench_2026_service.validate(target)
     return {"code": 0, "data": data}
 
 

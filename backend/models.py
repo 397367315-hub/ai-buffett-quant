@@ -628,6 +628,38 @@ class StockDecisionProfile(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class DecisionWorkbenchSnapshot(Base):
+    """Immutable evidence snapshot for one decision window on one trade date."""
+
+    __tablename__ = "decision_workbench_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "decision_date", "phase", "contract_version",
+            name="uq_decision_workbench_snapshot_date_phase_version",
+        ),
+        Index("idx_decision_workbench_snapshot_date", "decision_date", "captured_at"),
+        Index("idx_decision_workbench_snapshot_phase", "phase", "captured_at"),
+        Index("idx_decision_workbench_snapshot_validation", "validation_status", "decision_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    decision_date = Column(Date, nullable=False)
+    source_data_date = Column(Date, nullable=False)
+    phase = Column(String(30), nullable=False)
+    phase_label = Column(String(80), nullable=False)
+    contract_version = Column(String(50), nullable=False)
+    snapshot_hash = Column(String(64), nullable=False)
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    payload = Column(JSON, nullable=False)
+    evidence = Column(JSON, nullable=False, default=list)
+    user_judgment = Column(Text)
+    validation_status = Column(String(20), nullable=False, default="PENDING")
+    validation_result = Column(JSON)
+    captured_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    validated_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ResearchSession(Base):
     """One versioned strategic or tactical research run and its report snapshot."""
 

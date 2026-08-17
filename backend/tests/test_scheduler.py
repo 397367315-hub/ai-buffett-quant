@@ -64,6 +64,13 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             "midday_track_1430",
             "midday_track_1455",
             "midday_close_validation",
+            "decision_2026_morning_freeze",
+            "decision_2026_midday_freeze",
+            "decision_2026_hypothesis_1330",
+            "decision_2026_hypothesis_1400",
+            "decision_2026_tail_1440",
+            "decision_2026_tail_1455",
+            "decision_2026_close_validation",
             "daily_collection",
             "ai_robot_short_daily",
             "ai_robot_long_daily",
@@ -95,6 +102,9 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(calls["midday_track_1330"].args[0], scheduler_module.track_midday_research)
         self.assertEqual(calls["midday_track_1330"].kwargs["args"], ["13:30"])
         self.assertIs(calls["midday_close_validation"].args[0], scheduler_module.validate_midday_research)
+        self.assertIs(calls["decision_2026_morning_freeze"].args[0], scheduler_module.capture_decision_workbench_window)
+        self.assertEqual(calls["decision_2026_morning_freeze"].kwargs["args"], ["morning_1040"])
+        self.assertIs(calls["decision_2026_close_validation"].args[0], scheduler_module.close_and_validate_decision_workbench)
 
     async def test_startup_recovery_uses_recent_cache_during_market_session(self):
         fake_scheduler = MagicMock()

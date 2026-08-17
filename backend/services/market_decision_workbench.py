@@ -24,6 +24,7 @@ from models import (
 )
 from services.data_collector import collector, is_a_share_market_session, shanghai_now
 from services.cyclical_valuation import cycle_guard_from_stock
+from services.decision_workbench_2026 import build_decision_2026
 from services.market_decision_contract import (
     CANDIDATE_SCORE_VERSION,
     FINAL_ACTIONS,
@@ -70,6 +71,31 @@ def _number(value: object) -> float | None:
 def _integer(value: object) -> int | None:
     parsed = _number(value)
     return int(parsed) if parsed is not None else None
+
+
+def _usable_market_amount(item: dict) -> float | None:
+    """Return a turnover value only when its optional completeness audit passes.
+
+    Older in-memory callers did not carry coverage metadata, so those rows are
+    accepted for compatibility. Persisted rows include ``stock_count`` and
+    ``amount_count``; incomplete aggregates must never become a market-wide
+    baseline.
+    """
+    amount = _number(item.get("market_amount"))
+    if amount is None or amount <= 0:
+        return None
+    stock_count = _integer(item.get("stock_count"))
+    amount_count = _integer(item.get("amount_count"))
+    if stock_count is None and amount_count is None:
+        return amount
+    if (
+        stock_count is None
+        or amount_count is None
+        or stock_count < 1_000
+        or amount_count < stock_count * 0.9
+    ):
+        return None
+    return amount
 
 
 def _date(value: object) -> date | None:
@@ -268,9 +294,13 @@ def _liquidity_dimension(
     liquidity = market.get("liquidity") or {}
     current = _number(liquidity.get("market_amount"))
     prior: list[tuple[date, float]] = []
+    rejected_history = 0
     for item in sentiment_history:
         row_date = _date(item.get("trade_date"))
-        amount = _number(item.get("market_amount"))
+        raw_amount = _number(item.get("market_amount"))
+        amount = _usable_market_amount(item)
+        if raw_amount is not None and amount is None:
+            rejected_history += 1
         if row_date and amount is not None and row_date < decision_date:
             prior.append((row_date, amount))
     prior.sort(key=lambda item: item[0])
@@ -283,6 +313,8 @@ def _liquidity_dimension(
         "previous_5d_average": _integer(average_5),
         "previous_20d_average": _integer(average_20),
         "amount_complete": bool(liquidity.get("amount_complete")),
+        "usable_history_count": len(prior),
+        "rejected_history_count": rejected_history,
     }
     if current is None or comparison in (None, 0):
         return (
@@ -292,6 +324,14 @@ def _liquidity_dimension(
             "历史成交额不足，不按绝对金额猜测活跃度",
         )
     ratio = current / comparison
+    if ratio < 0.25 or ratio > 4.0:
+        metrics["comparison_status"] = "unit_or_coverage_mismatch"
+        return (
+            None,
+            metrics,
+            ["历史成交额基准与当日数据单位或覆盖范围不可比"],
+            "成交额基准必须通过完整性审计且与当日口径处于合理数量级",
+        )
     change_pct = (ratio - 1) * 100
     score = _clamp(55 + (ratio - 1) * 100)
     metrics.update({
@@ -466,12 +506,20 @@ def _volume_price_alignment(
         item for item in _dated_rows(sentiment_history, decision_date)
         if item.get("_date") < decision_date
     ]
-    amounts = [_number(item.get("market_amount")) for item in history]
+    raw_amounts = [_number(item.get("market_amount")) for item in history]
+    amounts = [_usable_market_amount(item) for item in history]
+    rejected_amounts = sum(raw is not None and usable is None for raw, usable in zip(raw_amounts, amounts))
     amounts = [item for item in amounts if item is not None and item > 0]
     amount_change = None
+    amount_status = "observed"
     if current_amount is not None and len(amounts) >= 3:
         baseline = sum(amounts[-5:]) / min(5, len(amounts))
-        amount_change = (current_amount / baseline - 1) * 100 if baseline else None
+        if baseline and 0.25 <= current_amount / baseline <= 4.0:
+            amount_change = (current_amount / baseline - 1) * 100
+        else:
+            amount_status = "unit_or_coverage_mismatch"
+    elif rejected_amounts:
+        amount_status = "incomplete_history"
 
     breadth = _number((market.get("sentiment") or {}).get("up_ratio"))
     top_topics = [item for item in topic_snapshot.get("topics") or [] if _number(item.get("strength_score")) is not None][:5]
@@ -512,6 +560,9 @@ def _volume_price_alignment(
         "coverage_pct": round(observed / len(components) * 100, 1),
         "metrics": {
             "market_amount_change_pct": _round(amount_change, 2),
+            "market_amount_history_count": len(amounts),
+            "market_amount_rejected_history_count": rejected_amounts,
+            "market_amount_comparison_status": amount_status if amount_change is None else "comparable",
             "breadth_pct": _round(breadth, 1),
             "top_sector_breadth_pct": _round(topic_breadth, 1),
             "top_sector_change_pct": _round(sector_change, 2),
@@ -527,7 +578,7 @@ def _volume_price_alignment(
                 (topic_breadth, "板块宽度"),
                 (index_return, "指数5日收益"),
             ) if value is None
-        ],
+        ] + (["历史成交额基准（完整性/单位）"] if amount_change is None else []),
     }
 
 
@@ -877,7 +928,7 @@ def _contradiction_evolution(
     """Track accumulating signals and explicitly separate warning from regime shift."""
     history = _dated_rows(sentiment_history, decision_date)
     recent = history[-5:]
-    amount_values = [_number(item.get("market_amount")) for item in recent]
+    amount_values = [_usable_market_amount(item) for item in recent]
     amount_values = [item for item in amount_values if item is not None]
     failed_values = [_number(item.get("failed_limit_rate")) for item in recent]
     failed_values = [item for item in failed_values if item is not None]
@@ -2136,7 +2187,7 @@ def assemble_workbench(
     )
     available = bool(decision_date and market_state.get("dimensions"))
     now = calculated_at or shanghai_now().isoformat()
-    return {
+    payload = {
         "available": available,
         "meta": {
             "contract_version": WORKBENCH_CONTRACT_VERSION,
@@ -2233,6 +2284,8 @@ def assemble_workbench(
             {"label": "交易复盘", "href": "/pro/research"},
         ],
     }
+    payload["decision_2026"] = build_decision_2026(payload)
+    return payload
 
 
 class MarketDecisionWorkbenchService:
@@ -2378,11 +2431,14 @@ class MarketDecisionWorkbenchService:
             return [{
                 "trade_date": row.trade_date.isoformat(),
                 "market_amount": row.market_amount,
+                "stock_count": row.stock_count,
+                "amount_count": row.amount_count,
                 "up_count": row.up_count,
                 "down_count": row.down_count,
                 "limit_up_count": row.limit_up_count,
                 "limit_down_count": row.limit_down_count,
                 "failed_limit_rate": row.failed_limit_rate,
+                "source": row.source,
             } for row in rows]
         except Exception as exc:
             print(f"Workbench sentiment history load failed: {type(exc).__name__}")

@@ -252,6 +252,36 @@ async def validate_midday_research():
         return []
 
 
+async def capture_decision_workbench_window(phase: str):
+    from services.decision_workbench_2026 import decision_workbench_2026_service
+
+    try:
+        result = await decision_workbench_2026_service.capture(phase, force=True)
+        print(f"[Scheduler] 2026决策窗口已冻结: {phase} / {result.get('id')}")
+        return result
+    except RuntimeError as exc:
+        print(f"[Scheduler] 2026决策窗口{phase}跳过: {exc}")
+        return None
+    except Exception as exc:
+        print(f"[Scheduler] 2026决策窗口{phase}失败: {type(exc).__name__}")
+        return None
+
+
+async def close_and_validate_decision_workbench():
+    from services.decision_workbench_2026 import decision_workbench_2026_service
+
+    try:
+        snapshot = await decision_workbench_2026_service.capture("close_review", force=True)
+        result = await decision_workbench_2026_service.validate()
+        return {"snapshot": snapshot, "validation": result}
+    except RuntimeError as exc:
+        print(f"[Scheduler] 2026决策盘后验证跳过: {exc}")
+        return None
+    except Exception as exc:
+        print(f"[Scheduler] 2026决策盘后验证失败: {type(exc).__name__}")
+        return None
+
+
 async def start_scheduler(data_collector=None, db_session=None):
     from apscheduler.triggers.cron import CronTrigger
     from services.data_sync import data_sync
@@ -371,6 +401,54 @@ async def start_scheduler(data_collector=None, db_session=None):
         validate_midday_research,
         CronTrigger(hour=15, minute=50, day_of_week="mon-fri"),
         id="midday_close_validation", name="午间研究盘后验证与AI学习", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=1800,
+    )
+    scheduler.add_job(
+        capture_decision_workbench_window,
+        CronTrigger(hour=10, minute=40, day_of_week="mon-fri"),
+        args=["morning_1040"],
+        id="decision_2026_morning_freeze", name="2026工作台10:40状态冻结", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        capture_decision_workbench_window,
+        CronTrigger(hour=11, minute=44, day_of_week="mon-fri"),
+        args=["midday_1142"],
+        id="decision_2026_midday_freeze", name="2026工作台午间研究快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        capture_decision_workbench_window,
+        CronTrigger(hour=13, minute=32, day_of_week="mon-fri"),
+        args=["hypothesis_1330"],
+        id="decision_2026_hypothesis_1330", name="2026工作台13:30反证快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        capture_decision_workbench_window,
+        CronTrigger(hour=14, minute=2, day_of_week="mon-fri"),
+        args=["hypothesis_1400"],
+        id="decision_2026_hypothesis_1400", name="2026工作台14:00反证快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        capture_decision_workbench_window,
+        CronTrigger(hour=14, minute=40, day_of_week="mon-fri"),
+        args=["tail_1440"],
+        id="decision_2026_tail_1440", name="2026工作台14:40尾盘决策快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        capture_decision_workbench_window,
+        CronTrigger(hour=14, minute=57, day_of_week="mon-fri"),
+        args=["tail_1455"],
+        id="decision_2026_tail_1455", name="2026工作台14:55执行确认快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        close_and_validate_decision_workbench,
+        CronTrigger(hour=15, minute=55, day_of_week="mon-fri"),
+        id="decision_2026_close_validation", name="2026工作台盘后错误归因", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(

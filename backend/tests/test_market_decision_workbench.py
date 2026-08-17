@@ -648,6 +648,23 @@ class MarketDecisionWorkbenchTests(unittest.TestCase):
         self.assertIsNone(alignment["metrics"]["market_amount_change_pct"])
         self.assertIn("历史成交额基准", alignment["missing"])
 
+    def test_incomplete_market_amount_rows_cannot_create_a_false_turnover_signal(self):
+        snapshot = topic_snapshot()
+        history = [
+            {
+                "trade_date": (date(2026, 8, 4) + timedelta(days=index)).isoformat(),
+                "market_amount": 8_000_000_000,
+                "stock_count": 1,
+                "amount_count": 1,
+            }
+            for index in range(5)
+        ]
+        payload = assemble_workbench(snapshot, index_history(), history, None, {})
+        liquidity = next(item for item in payload["market_state"]["dimensions"] if item["id"] == "liquidity")
+        self.assertFalse(liquidity["observed"])
+        self.assertIsNone(payload["volume_price_alignment"]["metrics"]["market_amount_change_pct"])
+        self.assertIn("完整性/单位", " ".join(payload["volume_price_alignment"]["missing"]))
+
 
 if __name__ == "__main__":
     unittest.main()

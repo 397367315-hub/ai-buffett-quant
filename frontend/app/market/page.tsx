@@ -14,12 +14,16 @@ import {
   Clock3,
   Database,
   Gauge,
+  History,
   Layers3,
+  ListChecks,
   Loader2,
   RefreshCw,
+  ShieldCheck,
   ShieldAlert,
   Sparkles,
   Target,
+  Workflow,
   XCircle,
 } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
@@ -296,6 +300,124 @@ interface ExecutionPhase {
   run_id: number | null;
 }
 
+interface DecisionSnapshot {
+  id: number;
+  decision_date: string;
+  phase: string;
+  phase_label: string;
+  snapshot_hash: string;
+  is_realtime: boolean;
+  validation_status: string;
+  captured_at: string | null;
+  evidence: string[];
+}
+
+interface DecisionCandidate2026 {
+  code: string;
+  name: string;
+  sector: string;
+  price: number | null;
+  change_pct: number | null;
+  score: number | null;
+  state_label: string;
+  data_coverage_pct: number;
+  beta_alpha: {
+    market_beta_pct: number | null;
+    sector_beta_pct: number | null;
+    individual_alpha_pct: number | null;
+    alpha_score: number | null;
+    detachment: string;
+    method: string;
+  };
+  fundamental: Record<string, unknown> & { score?: number | null; roe?: number | null; pe?: number | null };
+  valuation: { pe: number | null; score: number | null; note: string };
+  fund_behaviour: { code: string; label: string; supports_price: boolean | null };
+  emotion: {
+    score: number | null;
+    label: string;
+    coverage_pct: number;
+    boundary: string;
+  };
+  trade_structure: { label: string; technical_score: number | null };
+  execution: {
+    level: 'ALERT' | 'PREPARE' | 'EXECUTE' | 'EXCLUDE';
+    label: string;
+    passed_count: number;
+    observed_count: number;
+    conditions: Array<{ key: string; label: string; passed: boolean; observed: boolean }>;
+  };
+  why_strong: string[];
+  why_not_buy: string[];
+  trigger_conditions: string[];
+  invalidation_conditions: string[];
+  detail_href: string;
+  source: string;
+}
+
+interface Decision2026 {
+  version: string;
+  positioning: string;
+  market_regime: {
+    code: string;
+    label: string;
+    score: number | null;
+    structure_score: number | null;
+    crowding_score: number | null;
+    evidence: string[];
+  };
+  trading_permission: {
+    code: 'ALLOW' | 'CAUTION' | 'OBSERVE' | 'BLOCK';
+    label: string;
+    allows_new_position: boolean;
+    max_total_position_pct: number;
+    reasons: string[];
+    rule: string;
+  };
+  opportunity_density: {
+    score: number | null;
+    label: string;
+    coverage_pct: number;
+    candidate_count: number;
+    independent_alpha_count: number;
+    factors: Array<{ id: string; label: string; score: number | null; weight: number; observed: boolean }>;
+    method: string;
+  };
+  sector_map: Array<MainLine & { permission: string; internal_structure: string }>;
+  dynamic_weights: { regime: string; weights: Record<string, number>; version: string };
+  candidate_decisions: DecisionCandidate2026[];
+  decision_windows: Array<{ id: string; time: string; label: string; status: string; immutable_after_capture: boolean }>;
+  conditional_orders: {
+    alert: DecisionCandidate2026[];
+    prepare: DecisionCandidate2026[];
+    execute: DecisionCandidate2026[];
+    rule: string;
+    real_broker_order: boolean;
+  };
+  why_not_buy: { reasons: string[]; candidate_count: number; principle: string };
+  exit_engine: {
+    logic_failure: string[];
+    market_deterioration: string[];
+    overheating: string[];
+    fixed_stop_is_only_backstop: boolean;
+  };
+  strategy_lifecycle: Array<{
+    id: string;
+    name: string;
+    stage: string;
+    health_state: string;
+    health_score: number | null;
+    sample_count: number;
+    win_rate_pct: number | null;
+    profit_factor: number | null;
+    weight_pct: number | null;
+    degradation_detected: boolean;
+    missing: string[];
+  }>;
+  final_questions: Array<{ question: string; answer: string }>;
+  snapshot_registry: { latest: DecisionSnapshot[]; count: number; immutable_windows: boolean };
+  boundaries: string[];
+}
+
 interface WorkbenchData {
   available: boolean;
   meta: WorkbenchMeta;
@@ -357,10 +479,11 @@ interface WorkbenchData {
     refresh_warning?: string;
   };
   quick_links: Array<{ label: string; href: string }>;
+  decision_2026: Decision2026;
 }
 
-const WORKBENCH_CONTRACT_VERSION = 'market-workbench-v2.1.0';
-const LOCAL_CACHE_KEY = 'market_decision_workbench_v2_1_0';
+const WORKBENCH_CONTRACT_VERSION = 'market-workbench-v3.0.1';
+const LOCAL_CACHE_KEY = 'market_decision_workbench_v3_0_0';
 
 function finite(value: number | null | undefined): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -427,6 +550,20 @@ function actionTone(action: string): string {
   if (action === 'caution') return 'text-warn border-warn/40 bg-warn/10';
   if (action === 'observe') return 'text-accent border-accent/40 bg-accent/10';
   return 'text-down border-down/40 bg-down/10';
+}
+
+function permissionTone(code: string): string {
+  if (code === 'ALLOW') return 'text-up border-up/40 bg-up/10';
+  if (code === 'CAUTION') return 'text-warn border-warn/40 bg-warn/10';
+  if (code === 'OBSERVE') return 'text-accent border-accent/40 bg-accent/10';
+  return 'text-down border-down/40 bg-down/10';
+}
+
+function executionTone(level: string): string {
+  if (level === 'EXECUTE') return 'text-up border-up/40 bg-up/10';
+  if (level === 'PREPARE') return 'text-warn border-warn/40 bg-warn/10';
+  if (level === 'ALERT') return 'text-accent border-accent/40 bg-accent/10';
+  return 'text-text-secondary border-border bg-[#21262D]';
 }
 
 function recommendationStatusTone(status: string): string {
@@ -525,6 +662,24 @@ function DailyRecommendationActions({ item }: { item: DailyShortTermRecommendati
   );
 }
 
+function DecisionCandidateActions({ item }: { item: DecisionCandidate2026 }) {
+  return (
+    <div className="flex items-center justify-end gap-2">
+      <Link href={item.detail_href} className="inline-flex h-8 items-center gap-1 rounded-md border border-border px-2 text-[10px] text-accent hover:border-accent hover:text-text">
+        决策画像<ArrowRight size={11} />
+      </Link>
+      <AddToPersonalPoolButton
+        code={item.code}
+        name={item.name}
+        industry={item.sector}
+        thesis={`2026决策工作台：${item.state_label}；${item.beta_alpha.detachment}；${item.execution.label}`}
+        source="decision_workbench_2026"
+        compact
+      />
+    </div>
+  );
+}
+
 export default function MarketDecisionWorkbenchPage() {
   const [data, setData] = useState<WorkbenchData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -532,6 +687,8 @@ export default function MarketDecisionWorkbenchPage() {
   const [progress, setProgress] = useState(8);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true);
@@ -589,6 +746,42 @@ export default function MarketDecisionWorkbenchPage() {
     return () => window.clearInterval(timer);
   }, [loading, refreshing]);
 
+  const captureSnapshot = useCallback(async () => {
+    setSnapshotBusy(true);
+    setError('');
+    try {
+      const response = await apiFetch<{ code: number; data: { id: number; created: boolean } }>('/market/workbench/snapshots', {
+        method: 'POST',
+        body: JSON.stringify({ phase: 'manual', force: false }),
+      });
+      const message = response.data.created ? `研究快照 #${response.data.id} 已保存` : `今日研究快照 #${response.data.id} 已存在`;
+      await load(false);
+      setNotice(message);
+    } catch (caught) {
+      setError(friendlyApiError(caught, '研究快照保存失败'));
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }, [load]);
+
+  const validateSnapshots = useCallback(async () => {
+    setSnapshotBusy(true);
+    setError('');
+    try {
+      const response = await apiFetch<{ code: number; data: { message: string } }>('/market/workbench/validate', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      const message = response.data.message || '决策验证已完成';
+      await load(false);
+      setNotice(message);
+    } catch (caught) {
+      setError(friendlyApiError(caught, '决策验证失败'));
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }, [load]);
+
   if (loading && !data) return <LoadingWorkbench progress={progress} />;
 
   if (error && !data) {
@@ -618,7 +811,7 @@ export default function MarketDecisionWorkbenchPage() {
     );
   }
 
-  const { meta, market_state: marketState, headline_metrics: metrics } = data;
+  const { meta, market_state: marketState, headline_metrics: metrics, decision_2026: decision } = data;
   const upDownText = finite(metrics.up_down_ratio) ? `${metrics.up_down_ratio.toFixed(2)} : 1` : '--';
   const staleCount = data.audit.stale_components.length;
 
@@ -628,7 +821,7 @@ export default function MarketDecisionWorkbenchPage() {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <BrainCircuit size={21} className="shrink-0 text-accent" />
-            <h1 className="text-xl font-semibold text-text sm:text-2xl">A股 AI 自适应决策工作台</h1>
+            <h1 className="text-xl font-semibold text-text sm:text-2xl">A股研究与交易决策工作台 2026</h1>
           </div>
           <p className="mt-1.5 text-xs text-text-secondary">客观事实 → 主要矛盾 → 阶段判断 → 策略许可 → 实践验证</p>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-secondary">
@@ -639,7 +832,22 @@ export default function MarketDecisionWorkbenchPage() {
             {staleCount > 0 && <span className="text-warn">{staleCount} 个跨日组件已降级</span>}
           </div>
         </div>
-        <div className="flex items-center gap-2 self-start lg:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
+          <button
+            type="button"
+            onClick={() => void captureSnapshot()}
+            disabled={snapshotBusy}
+            className="inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-xs text-text-secondary hover:border-accent hover:text-text disabled:opacity-50"
+          >
+            <ShieldCheck size={14} />{snapshotBusy ? '处理中' : '保存快照'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((current) => !current)}
+            className="grid h-9 w-9 place-items-center rounded-md border border-border text-text-secondary hover:border-accent hover:text-text"
+            title="历史决策快照"
+            aria-label="历史决策快照"
+          ><History size={14} /></button>
           <button
             type="button"
             onClick={() => void load(true)}
@@ -656,6 +864,10 @@ export default function MarketDecisionWorkbenchPage() {
         <div className={`mb-4 border-l-2 px-3 py-2 text-xs ${notice.startsWith('已重新') ? 'border-up bg-up/5 text-up' : 'border-warn bg-warn/5 text-warn'}`}>
           {notice}
         </div>
+      )}
+
+      {error && data && (
+        <div className="mb-4 border-l-2 border-down bg-down/5 px-3 py-2 text-xs text-down">{error}</div>
       )}
 
       {data.audit.refresh_warning && (
@@ -682,12 +894,59 @@ export default function MarketDecisionWorkbenchPage() {
         </div>
       </section>
 
-      <section className="mb-4 grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card sm:grid-cols-3 lg:grid-cols-5" aria-label="V2核心状态">
-        <MetricCell label="市场状态" primary={`${marketState.state_code} ${marketState.state_label}`} secondary={`覆盖 ${value(marketState.coverage_pct, 0)}%`} tone={stateTone(marketState.state_code).split(' ')[0]} />
-        <MetricCell label="结构健康" primary={value(data.structure_health.score)} secondary={data.structure_health.status} tone={data.structure_health.score != null && data.structure_health.score >= 65 ? 'text-up' : 'text-warn'} />
-        <MetricCell label="量价匹配" primary={value(data.volume_price_alignment.score)} secondary={data.volume_price_alignment.status === 'supportive' ? '承接支持' : data.volume_price_alignment.status === 'divergent' ? '冲高缺承接' : '混合'} tone={data.volume_price_alignment.status === 'divergent' ? 'text-down' : 'text-text'} />
-        <MetricCell label="抱团风险" primary={value(data.crowding_risk.score)} secondary={data.crowding_risk.status} tone={data.crowding_risk.score != null && data.crowding_risk.score >= 71 ? 'text-down' : data.crowding_risk.score != null && data.crowding_risk.score >= 51 ? 'text-warn' : 'text-up'} />
-        <MetricCell label="今日最终行动" primary={data.market_cognition.action_label} secondary={`阶段：${data.market_cognition.stage.label}`} tone={actionTone(data.market_cognition.final_action).split(' ')[0]} />
+      <section className="mb-4 grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card sm:grid-cols-3 lg:grid-cols-5" aria-label="2026核心决策">
+        <MetricCell label="今日交易许可" primary={decision.trading_permission.label} secondary={decision.trading_permission.allows_new_position ? '可筛选高质量机会' : '不生成主动执行建议'} tone={permissionTone(decision.trading_permission.code).split(' ')[0]} />
+        <MetricCell label="市场阶段" primary={decision.market_regime.label} secondary={`${decision.market_regime.code} · ${value(decision.market_regime.score)}分`} tone={stateTone(decision.market_regime.code).split(' ')[0]} />
+        <MetricCell label="机会密度" primary={value(decision.opportunity_density.score)} secondary={`${decision.opportunity_density.label} · Alpha ${decision.opportunity_density.independent_alpha_count}`} tone={decision.opportunity_density.score != null && decision.opportunity_density.score >= 70 ? 'text-up' : decision.opportunity_density.score != null && decision.opportunity_density.score >= 45 ? 'text-warn' : 'text-down'} />
+        <MetricCell label="建议总仓上限" primary={`${decision.trading_permission.max_total_position_pct}%`} secondary="最终决策由用户掌握" tone={decision.trading_permission.max_total_position_pct > 35 ? 'text-up' : decision.trading_permission.max_total_position_pct > 0 ? 'text-warn' : 'text-down'} />
+        <MetricCell label="条件单" primary={`${decision.conditional_orders.execute.length} / ${decision.conditional_orders.prepare.length} / ${decision.conditional_orders.alert.length}`} secondary="执行 / 准备 / 预警" tone="text-accent" />
+      </section>
+
+      <section className="mb-4 overflow-x-auto rounded-md border border-border bg-card" aria-label="研究与执行窗口">
+        <div className="flex min-w-max divide-x divide-border">
+          {decision.decision_windows.map((window) => (
+            <div key={window.id} className="w-[165px] px-3 py-3">
+              <div className="font-mono text-[10px] text-accent">{window.time}</div>
+              <div className="mt-1 text-xs font-medium text-text">{window.label}</div>
+              <div className={`mt-1 text-[10px] ${window.status === '进行中' ? 'text-up' : window.status === '窗口已到' ? 'text-warn' : 'text-text-secondary'}`}>{window.status}{window.immutable_after_capture ? ' · 可冻结' : ''}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {historyOpen && (
+        <section className="mb-4 overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+            <div>
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><History size={15} className="text-accent" />决策快照</h2>
+              <p className="mt-1 text-[10px] text-text-secondary">窗口数据冻结后只追加验证结果，不用下午数据改写上午判断</p>
+            </div>
+            <button type="button" onClick={() => void validateSnapshots()} disabled={snapshotBusy} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-[10px] text-text-secondary hover:border-accent hover:text-text disabled:opacity-50"><ListChecks size={12} />盘后验证</button>
+          </div>
+          {decision.snapshot_registry.latest.length ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-xs">
+                <thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary"><tr><th className="px-4 py-2.5 text-left">日期</th><th className="px-3 text-left">窗口</th><th className="px-3 text-left">证据</th><th className="px-3 text-left">验证</th><th className="px-4 text-right">哈希</th></tr></thead>
+                <tbody className="divide-y divide-border/70">{decision.snapshot_registry.latest.map((item) => <tr key={item.id}><td className="px-4 py-3 font-mono text-text">{item.decision_date}</td><td className="px-3 py-3 text-text">{item.phase_label}<div className="mt-1 font-mono text-[10px] text-text-secondary">{localTime(item.captured_at)}</div></td><td className="max-w-[360px] px-3 py-3 text-[10px] leading-4 text-text-secondary">{item.evidence.join('；')}</td><td className={`px-3 py-3 font-mono text-[10px] ${item.validation_status === 'ERROR' ? 'text-down' : item.validation_status === 'CONFIRMED' ? 'text-up' : 'text-warn'}`}>{item.validation_status}</td><td className="px-4 py-3 text-right font-mono text-[10px] text-text-secondary">{item.snapshot_hash.slice(0, 10)}</td></tr>)}</tbody>
+              </table>
+            </div>
+          ) : <div className="px-4 py-8 text-center text-xs text-text-secondary">尚无窗口快照，定时任务会在交易窗口自动冻结</div>}
+        </section>
+      )}
+
+      <section className="mb-4 grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(320px,0.9fr)]">
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Gauge size={15} className="text-accent" />机会密度</h2><span className="font-mono text-sm text-text">{value(decision.opportunity_density.score)}</span></div>
+          <div className="grid grid-cols-2 gap-x-5 gap-y-3 p-4 sm:grid-cols-3">
+            {decision.opportunity_density.factors.map((factor) => <div key={factor.id}><div className="flex items-center justify-between text-[10px]"><span className="text-text-secondary">{factor.label} <span className="font-mono">{factor.weight}%</span></span><span className={factor.observed ? 'font-mono text-text' : 'text-warn'}>{factor.observed ? value(factor.score, 0) : '待采集'}</span></div><div className="mt-1 h-1 bg-[#21262D]"><div className={factor.observed ? 'h-full bg-accent' : 'h-full bg-warn/30'} style={{ width: `${factor.observed ? Math.max(2, factor.score || 0) : 0}%` }} /></div></div>)}
+          </div>
+          <div className="border-t border-border px-4 py-2.5 text-[10px] leading-4 text-text-secondary">{decision.opportunity_density.method}</div>
+        </section>
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><ShieldAlert size={15} className="text-warn" />AI为什么不买</h2><span className={`rounded border px-2 py-1 text-[10px] ${permissionTone(decision.trading_permission.code)}`}>{decision.trading_permission.label}</span></div>
+          <ul className="space-y-2 p-4 text-xs leading-5 text-text-secondary">{decision.why_not_buy.reasons.slice(0, 6).map((item) => <li key={item} className="flex gap-2"><span className="text-warn">·</span><span>{item}</span></li>)}</ul>
+          <div className="border-t border-border px-4 py-2.5 text-[10px] text-text-secondary">{decision.why_not_buy.principle}</div>
+        </section>
       </section>
 
       <section className="mb-4 grid overflow-hidden rounded-md border border-border bg-card lg:grid-cols-[360px_minmax(0,1fr)]">
@@ -830,6 +1089,56 @@ export default function MarketDecisionWorkbenchPage() {
         <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-xs"><thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary"><tr><th className="px-4 py-2.5 text-left">策略</th><th className="px-3 text-left">状态</th><th className="px-3 text-right">样本</th><th className="px-3 text-right">胜率</th><th className="px-3 text-right">期望值</th><th className="px-3 text-right">盈亏比</th><th className="px-3 text-right">最大回撤</th><th className="px-4 text-left">结论</th></tr></thead><tbody className="divide-y divide-border/70">{data.strategy_health.length ? data.strategy_health.map((item) => <tr key={item.id}><td className="px-4 py-3 text-text">{item.name}<div className="mt-1 font-mono text-[10px] text-text-secondary">{item.id}</div></td><td className={`px-3 py-3 font-mono ${healthTone(item.state)}`}>{item.state}</td><td className="px-3 py-3 text-right font-mono text-text">{item.metrics.sample_count}</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.win_rate_pct)}%</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.expectancy, 2)}</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.metrics.profit_factor, 2)}</td><td className="px-3 py-3 text-right font-mono text-text">{amount(item.metrics.max_drawdown_amount)}</td><td className="max-w-[300px] px-4 py-3 text-[10px] leading-4 text-text-secondary">{item.reason}</td></tr>) : <tr><td colSpan={8} className="px-4 py-8 text-center text-xs text-text-secondary">暂无策略前向样本，不能判定有效性</td></tr>}</tbody></table></div>
       </section>
 
+      <section className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]">
+        <section className="min-w-0 overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Activity size={15} className="text-accent" />策略生命周期与衰减</h2>
+            <span className="text-[10px] text-text-secondary">异常自动降权，不因一次成功上线</span>
+          </div>
+          {decision.strategy_lifecycle.length ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[820px] text-xs">
+                <thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary"><tr><th className="px-4 py-2.5 text-left">策略</th><th className="px-3 text-left">阶段</th><th className="px-3 text-left">健康</th><th className="px-3 text-right">样本</th><th className="px-3 text-right">胜率</th><th className="px-3 text-right">盈亏比</th><th className="px-3 text-right">权重</th><th className="px-4 text-left">待验证</th></tr></thead>
+                <tbody className="divide-y divide-border/70">{decision.strategy_lifecycle.map((item) => <tr key={item.id} className={item.degradation_detected ? 'bg-down/5' : ''}><td className="px-4 py-3 text-text">{item.name}<div className="mt-1 font-mono text-[10px] text-text-secondary">{item.id}</div></td><td className="px-3 py-3 font-mono text-[10px] text-accent">{item.stage}</td><td className={`px-3 py-3 font-mono text-[10px] ${item.degradation_detected ? 'text-down' : healthTone(item.health_state)}`}>{item.health_state}</td><td className="px-3 py-3 text-right font-mono text-text">{item.sample_count}</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.win_rate_pct)}%</td><td className="px-3 py-3 text-right font-mono text-text">{value(item.profit_factor, 2)}</td><td className="px-3 py-3 text-right font-mono text-text">{finite(item.weight_pct) ? `${value(item.weight_pct, 0)}%` : '--'}</td><td className="max-w-[260px] px-4 py-3 text-[10px] leading-4 text-text-secondary">{item.missing.join('、') || '当前证据完整'}</td></tr>)}</tbody>
+              </table>
+            </div>
+          ) : <div className="px-4 py-8 text-center text-xs text-text-secondary">暂无可审计的策略样本</div>}
+        </section>
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Gauge size={15} className="text-accent" />动态因子权重</h2><span className="text-[10px] text-text-secondary">{decision.dynamic_weights.regime}</span></div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-3 p-4">
+            {Object.entries(decision.dynamic_weights.weights).map(([key, weight]) => <div key={key}><div className="flex items-center justify-between text-[10px]"><span className="text-text-secondary">{componentLabel(key)}</span><span className="font-mono text-text">{weight}%</span></div><div className="mt-1 h-1 bg-[#21262D]"><div className="h-full bg-accent" style={{ width: `${Math.min(100, weight * 4)}%` }} /></div></div>)}
+          </div>
+          <div className="border-t border-border px-4 py-2.5 font-mono text-[10px] text-text-secondary">{decision.dynamic_weights.version}</div>
+        </section>
+      </section>
+
+      <section className="mb-4 overflow-hidden rounded-md border border-border bg-card">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Workflow size={15} className="text-accent" />Alpha归因与三级条件单</h2>
+            <p className="mt-1 text-[10px] text-text-secondary">个股状态、板块Beta、独立Alpha、资金行为与风险条件统一判断</p>
+          </div>
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="rounded border border-up/40 px-2 py-1 text-up">执行 {decision.conditional_orders.execute.length}</span>
+            <span className="rounded border border-warn/40 px-2 py-1 text-warn">准备 {decision.conditional_orders.prepare.length}</span>
+            <span className="rounded border border-accent/40 px-2 py-1 text-accent">预警 {decision.conditional_orders.alert.length}</span>
+          </div>
+        </div>
+        {decision.candidate_decisions.length ? (
+          <>
+            <div className="hidden overflow-x-auto md:block">
+              <table className="w-full min-w-[1120px] text-xs">
+                <thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary"><tr><th className="px-4 py-2.5 text-left">股票 / 状态</th><th className="px-3 text-right">综合</th><th className="px-3 text-right">板块Beta</th><th className="px-3 text-right">个股Alpha</th><th className="px-3 text-left">资金 / 情绪</th><th className="px-3 text-left">交易结构</th><th className="px-3 text-left">条件单</th><th className="px-3 text-left">为什么不买</th><th className="px-4 text-right">操作</th></tr></thead>
+                <tbody className="divide-y divide-border/70">{decision.candidate_decisions.map((item) => <tr key={item.code} className="align-top hover:bg-[#21262D]/40"><td className="px-4 py-3"><StockKlineButton code={item.code} name={item.name} className="font-medium text-text">{item.name}<span className="ml-2 font-mono text-[10px] text-text-secondary">{item.code}</span></StockKlineButton><div className="mt-1 text-[10px] text-text-secondary">{item.sector} · {item.state_label} · 覆盖{value(item.data_coverage_pct, 0)}%</div></td><td className="px-3 py-3 text-right font-mono text-base font-semibold text-text">{value(item.score)}</td><td className="px-3 py-3 text-right font-mono text-text-secondary">{signed(item.beta_alpha.sector_beta_pct)}</td><td className={`px-3 py-3 text-right font-mono ${finite(item.beta_alpha.individual_alpha_pct) && item.beta_alpha.individual_alpha_pct > 0 ? 'text-up' : 'text-down'}`}>{signed(item.beta_alpha.individual_alpha_pct)}<div className="mt-1 text-[10px] text-text-secondary">{item.beta_alpha.detachment}</div></td><td className="px-3 py-3"><div className={item.fund_behaviour.supports_price === true ? 'text-up' : item.fund_behaviour.supports_price === false ? 'text-warn' : 'text-text-secondary'}>{item.fund_behaviour.label}</div><div className="mt-1 text-[10px] text-text-secondary">情绪 {item.emotion.label} · {value(item.emotion.score)}</div></td><td className="px-3 py-3 text-text">{item.trade_structure.label}<div className="mt-1 text-[10px] text-text-secondary">技术 {value(item.trade_structure.technical_score)}</div></td><td className="px-3 py-3"><span className={`inline-block rounded border px-1.5 py-0.5 text-[10px] ${executionTone(item.execution.level)}`}>{item.execution.label}</span><div className="mt-1 text-[10px] text-text-secondary">{item.execution.passed_count}/{item.execution.observed_count} 已观测条件通过</div></td><td className="max-w-[270px] px-3 py-3"><details><summary className="cursor-pointer text-[10px] text-warn">查看阻断与失效证据</summary><div className="mt-2 space-y-1 text-[10px] leading-4 text-text-secondary"><div>{item.why_not_buy.slice(0, 4).join('；')}</div><div className="text-down">失效：{item.invalidation_conditions.slice(0, 3).join('；')}</div></div></details></td><td className="px-4 py-3"><DecisionCandidateActions item={item} /></td></tr>)}</tbody>
+              </table>
+            </div>
+            <div className="grid gap-3 p-3 md:hidden">{decision.candidate_decisions.map((item) => <article key={item.code} className="rounded-md border border-border bg-bg p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><StockKlineButton code={item.code} name={item.name} className="font-medium text-text">{item.name}<span className="ml-1 font-mono text-[10px] text-text-secondary">{item.code}</span></StockKlineButton><div className="mt-1 text-[10px] text-text-secondary">{item.sector} · {item.state_label}</div></div><span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${executionTone(item.execution.level)}`}>{item.execution.label}</span></div><div className="mt-3 grid grid-cols-4 overflow-hidden rounded border border-border"><div className="p-2 text-center"><div className="text-[10px] text-text-secondary">综合</div><div className="mt-1 font-mono text-text">{value(item.score)}</div></div><div className="border-l border-border p-2 text-center"><div className="text-[10px] text-text-secondary">Alpha</div><div className="mt-1 font-mono text-up">{signed(item.beta_alpha.individual_alpha_pct)}</div></div><div className="border-l border-border p-2 text-center"><div className="text-[10px] text-text-secondary">情绪</div><div className="mt-1 text-text">{item.emotion.label}</div></div><div className="border-l border-border p-2 text-center"><div className="text-[10px] text-text-secondary">条件</div><div className="mt-1 font-mono text-text">{item.execution.passed_count}/{item.execution.observed_count}</div></div></div><div className="mt-3 space-y-1.5 text-[10px] leading-4"><div><span className="text-up">强因：</span><span className="text-text-secondary">{item.why_strong.slice(0, 2).join('；')}</span></div><div><span className="text-warn">不买：</span><span className="text-text-secondary">{item.why_not_buy.slice(0, 2).join('；')}</span></div><div><span className="text-down">失效：</span><span className="text-text-secondary">{item.invalidation_conditions.slice(0, 2).join('；')}</span></div></div><div className="mt-3"><DecisionCandidateActions item={item} /></div></article>)}</div>
+          </>
+        ) : <div className="px-4 py-10 text-center text-xs text-text-secondary">当前没有可形成完整归因的候选，系统不会为了交易而强行推荐</div>}
+        <div className="border-t border-border px-4 py-2.5 text-[10px] leading-4 text-text-secondary">{decision.conditional_orders.rule}</div>
+      </section>
+
       <section className="mb-4 overflow-hidden rounded-md border border-border bg-card">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
           <div>
@@ -941,7 +1250,10 @@ export default function MarketDecisionWorkbenchPage() {
 
         <section className="min-w-0 overflow-hidden rounded-md border border-border bg-card">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-            <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><BarChart3 size={15} className="text-accent" />候选股票池</h2>
+            <div>
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><BarChart3 size={15} className="text-accent" />原始策略证据池</h2>
+              <p className="mt-1 text-[10px] text-text-secondary">保留策略原始输出供复核；上方 2026 决策层负责 Alpha 归因和执行许可</p>
+            </div>
             <div className="flex flex-wrap gap-x-3 text-[10px] text-text-secondary">
               <span>执行 {data.candidate_summary.execution_ready}</span>
               <span>同日观察 {data.candidate_summary.same_day_observation}</span>
@@ -1051,16 +1363,19 @@ export default function MarketDecisionWorkbenchPage() {
           <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Layers3 size={15} className="text-accent" />主线板块与龙头结构</h2>
           <Link href="/pro/topic-strength" className="inline-flex items-center gap-1 text-[10px] text-accent hover:text-text">完整题材雷达<ArrowRight size={12} /></Link>
         </div>
-        {data.main_lines.length === 0 ? (
+        {decision.sector_map.length === 0 ? (
           <div className="px-4 py-10 text-center text-xs text-text-secondary">主线板块数据待采集</div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px] text-xs">
+          <>
+          <div className="hidden overflow-x-auto md:block">
+            <table className="w-full min-w-[1080px] text-xs">
               <thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary">
                 <tr>
                   <th className="px-4 py-2.5 text-left font-medium">排名 / 板块</th>
+                  <th className="px-3 text-left font-medium">许可</th>
                   <th className="px-3 text-left font-medium">级别</th>
                   <th className="px-3 text-left font-medium">生命周期</th>
+                  <th className="px-3 text-left font-medium">内部结构</th>
                   <th className="px-3 text-right font-medium">强度</th>
                   <th className="px-3 text-right font-medium">宽度</th>
                   <th className="px-3 text-right font-medium">资金</th>
@@ -1069,11 +1384,13 @@ export default function MarketDecisionWorkbenchPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/70">
-                {data.main_lines.slice(0, 8).map((line) => (
+                {decision.sector_map.slice(0, 8).map((line) => (
                   <tr key={`${line.rank}-${line.name}`} className="hover:bg-[#21262D]/40">
                     <td className="px-4 py-3"><span className="mr-2 font-mono text-text-secondary">{line.rank}</span><span className="font-medium text-text">{line.name}</span></td>
+                    <td className={`px-3 py-3 ${line.permission === '允许研究' ? 'text-up' : line.permission === '排除' ? 'text-down' : 'text-warn'}`}>{line.permission}</td>
                     <td className="px-3 py-3 text-accent">{line.classification}</td>
                     <td className={`px-3 py-3 ${line.lifecycle === '退潮' || line.lifecycle === '分化预警' ? 'text-warn' : 'text-text'}`}>{line.lifecycle}</td>
+                    <td className="px-3 py-3 text-[10px] text-text-secondary">{line.internal_structure}</td>
                     <td className="px-3 py-3 text-right font-mono text-text">{value(line.strength_score)}</td>
                     <td className="px-3 py-3 text-right font-mono text-text-secondary">{value(line.breadth)}%</td>
                     <td className={`px-3 py-3 text-right font-mono ${finite(line.main_net_inflow) && line.main_net_inflow >= 0 ? 'text-up' : 'text-down'}`}>{amount(line.main_net_inflow)}</td>
@@ -1093,6 +1410,20 @@ export default function MarketDecisionWorkbenchPage() {
               </tbody>
             </table>
           </div>
+          <div className="divide-y divide-border md:hidden">
+            {decision.sector_map.slice(0, 8).map((line) => (
+              <article key={`${line.rank}-${line.name}`} className="p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div><div className="text-sm font-medium text-text"><span className="mr-2 font-mono text-[10px] text-text-secondary">{line.rank}</span>{line.name}</div><div className="mt-1 text-[10px] text-text-secondary">{line.classification} · {line.lifecycle}</div></div>
+                  <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] ${line.permission === '允许研究' ? 'border-up/40 text-up' : line.permission === '排除' ? 'border-down/40 text-down' : 'border-warn/40 text-warn'}`}>{line.permission}</span>
+                </div>
+                <div className="mt-3 grid grid-cols-3 border-y border-border py-2 text-center text-[10px]"><div><div className="text-text-secondary">强度</div><div className="mt-1 font-mono text-text">{value(line.strength_score)}</div></div><div><div className="text-text-secondary">宽度</div><div className="mt-1 font-mono text-text">{value(line.breadth)}%</div></div><div><div className="text-text-secondary">资金</div><div className={`mt-1 font-mono ${finite(line.main_net_inflow) && line.main_net_inflow >= 0 ? 'text-up' : 'text-down'}`}>{amount(line.main_net_inflow)}</div></div></div>
+                <div className="mt-3 text-[10px] leading-4 text-text-secondary">{line.internal_structure}；{line.evidence}</div>
+                {line.risk_flags.length > 0 && <div className="mt-2 text-[10px] leading-4 text-warn">{line.risk_flags.join('；')}</div>}
+              </article>
+            ))}
+          </div>
+          </>
         )}
       </section>
 
@@ -1117,6 +1448,24 @@ export default function MarketDecisionWorkbenchPage() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="mb-4 grid gap-4 lg:grid-cols-[minmax(300px,0.8fr)_minmax(0,1.2fr)]">
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center gap-2 border-b border-border px-4 py-3"><ShieldAlert size={15} className="text-warn" /><h2 className="text-sm font-semibold text-text">动态退出引擎</h2></div>
+          <div className="grid gap-4 p-4 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+            <div><div className="text-[10px] font-medium text-text-secondary">原始逻辑失效</div><ul className="mt-2 space-y-1.5 text-[10px] leading-4 text-down">{decision.exit_engine.logic_failure.map((item) => <li key={item}>· {item}</li>)}</ul></div>
+            <div><div className="text-[10px] font-medium text-text-secondary">市场环境恶化</div><ul className="mt-2 space-y-1.5 text-[10px] leading-4 text-warn">{decision.exit_engine.market_deterioration.map((item) => <li key={item}>· {item}</li>)}</ul></div>
+            <div><div className="text-[10px] font-medium text-text-secondary">个股过热</div><ul className="mt-2 space-y-1.5 text-[10px] leading-4 text-warn">{decision.exit_engine.overheating.map((item) => <li key={item}>· {item}</li>)}</ul></div>
+          </div>
+          <div className="border-t border-border px-4 py-2.5 text-[10px] text-text-secondary">固定止盈止损只作最后保护，退出首先依据原研究逻辑是否失效。</div>
+        </section>
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><ListChecks size={15} className="text-accent" />每日决策六问</h2><span className="text-[10px] text-text-secondary">先回答，再执行</span></div>
+          <div className="grid sm:grid-cols-2">
+            {decision.final_questions.map((item, index) => <div key={item.question} className="border-b border-border p-4 sm:odd:border-r sm:[&:nth-last-child(-n+2)]:border-b-0"><div className="text-[10px] text-accent">0{index + 1}</div><div className="mt-1 text-xs font-medium text-text">{item.question}</div><div className="mt-2 text-[10px] leading-5 text-text-secondary">{item.answer}</div></div>)}
+          </div>
+        </section>
       </section>
 
       <div className="grid gap-4 lg:grid-cols-2">

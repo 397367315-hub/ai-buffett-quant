@@ -20,6 +20,8 @@ from services.flow_analysis import flow_analysis_service
 from services.mao_strategy_agent import mao_strategy_agent
 from services.macro_dashboard import macro_dashboard_service
 from services.midday_research import midday_research_service
+from services.decision_workbench_2026 import decision_workbench_2026_service
+from services.market_decision_workbench import market_decision_workbench_service
 from services.openclaw_database import query_system_database
 from services.overnight_strategy import overnight_strategy_service
 from services.personal_portfolio import personal_portfolio_service
@@ -199,6 +201,24 @@ async def _run_midday_research(arguments: dict[str, Any]) -> dict[str, Any]:
     return await midday_research_service.start(force=force, background=True)
 
 
+async def _decision_workbench(arguments: dict[str, Any]) -> dict[str, Any]:
+    force = bool(arguments.get("force", False))
+    payload = await market_decision_workbench_service.get(force=force)
+    return await decision_workbench_2026_service.decorate(payload)
+
+
+async def _decision_snapshots(arguments: dict[str, Any]) -> dict[str, Any]:
+    limit = _int_arg(arguments, "limit", 20, 1, 100)
+    phase = str(arguments.get("phase") or "").strip() or None
+    if phase and phase not in {
+        "auction_0925", "morning_1040", "midday_1142", "hypothesis_1330",
+        "hypothesis_1400", "tail_1440", "tail_1455", "close_review", "manual",
+    }:
+        raise ValueError("phase 不是允许的决策窗口")
+    rows = await decision_workbench_2026_service.list_snapshots(limit=limit, phase=phase)
+    return {"records": rows, "count": len(rows), "read_only": True}
+
+
 ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -298,6 +318,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {"force": {"type": "boolean", "default": False}}, "additionalProperties": False},
     },
     {
+        "name": "get_decision_workbench_2026",
+        "description": "读取2026统一决策工作台，包含交易许可、机会密度、板块生命周期、Alpha归因、双窗口、条件单和为什么不买。",
+        "inputSchema": {"type": "object", "properties": {"force": {"type": "boolean", "default": False}}, "additionalProperties": False},
+    },
+    {
+        "name": "get_decision_snapshots",
+        "description": "只读查询10:40、午间、14:40、14:55和盘后不可回写的历史决策快照。",
+        "inputSchema": {"type": "object", "properties": {"phase": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, "additionalProperties": False},
+    },
+    {
         "name": "query_system_database",
         "description": "只读查询系统生产数据库中的白名单数据集，支持历史行情、资金流、选股运行、量化策略和一夜持仓；不接受任意SQL。",
         "inputSchema": {
@@ -354,6 +384,8 @@ HANDLERS: dict[str, ToolHandler] = {
     "check_data_source": _data_source_health,
     "get_midday_research": _midday_research,
     "run_midday_research": _run_midday_research,
+    "get_decision_workbench_2026": _decision_workbench,
+    "get_decision_snapshots": _decision_snapshots,
     "query_system_database": query_system_database,
 }
 
@@ -365,7 +397,7 @@ class OpenClawGateway:
     def manifest() -> dict[str, Any]:
         return {
             "name": "ai-buffett-openclaw",
-            "version": "1.3.0",
+            "version": "1.4.0",
             "protocol": "MCP JSON-RPC 2.0 over stateless HTTP",
             "endpoint": "/api/v1/openclaw/mcp",
             "enabled": bool(settings.openclaw_enabled),
