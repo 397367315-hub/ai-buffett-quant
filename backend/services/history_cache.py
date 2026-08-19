@@ -777,9 +777,20 @@ class HistoryCacheService:
                         data = await self._request_with_deadline(
                             collector.fetch_stock_price_history(stock["code"], days)
                         )
-                    if data.get("history"):
+                    history = data.get("history") or []
+                    expected_sessions = max(1, round(max(days, 1) * 0.60))
+                    required_sessions = min(max(5, expected_sessions), len(history))
+                    complete_sessions = sum(
+                        row.get("amount") is not None and row.get("turnover") is not None
+                        for row in history
+                    )
+                    if history and complete_sessions >= required_sessions:
                         return stock, data, None
-                    raise RuntimeError("empty history")
+                    raise RuntimeError(
+                        "日线历史字段不完整"
+                        if history
+                        else "empty history"
+                    )
                 except Exception as exc:
                     last_error = type(exc).__name__
                     if attempt < 2:
@@ -1154,6 +1165,12 @@ class HistoryCacheService:
                     .having(func.min(StockDailyBar.trade_date) <= cutoff + timedelta(days=7))
                     .having(func.max(StockDailyBar.trade_date) >= recent_cutoff)
                     .having(func.count(StockDailyBar.id) >= minimum_sessions)
+                    # Old Tencent/partial upstream rows may contain OHLCV but
+                    # no amount or turnover. They cannot support the market
+                    # liquidity baseline, so force a source refresh for those
+                    # symbols instead of treating row count as completeness.
+                    .having(func.count(StockDailyBar.amount) >= minimum_sessions)
+                    .having(func.count(StockDailyBar.turnover) >= minimum_sessions)
                 )
                 return set((await session.execute(statement)).scalars().all())
 

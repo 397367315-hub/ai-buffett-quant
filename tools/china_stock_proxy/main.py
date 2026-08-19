@@ -27,6 +27,9 @@ ALLOWED_HOSTS = {
 }
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
 TENCENT_SYMBOL_RE = re.compile(r"^(?:sh|sz|bj)\d{6}$")
+TENCENT_COMPLETE_HOST = "proxy.finance.qq.com"
+TENCENT_COMPLETE_PATH = "/ifzqgtimg/appstock/app/newfqkline/get"
+TENCENT_COMPLETE_FALLBACK_HOSTS = ("web.ifzq.gtimg.cn", "ifzq.gtimg.cn")
 JSONP_ASSIGNMENT_RE = re.compile(
     r"^\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\s*=\s*(\{.*\})\s*;?\s*$",
     re.DOTALL,
@@ -238,7 +241,41 @@ async def _get_tencent_quote_text(symbols: list[str]) -> str:
 
 
 def _payload_has_error(data: dict) -> bool:
-    return isinstance(data, dict) and "rc" in data and str(data.get("rc")) not in {"0"}
+    if not isinstance(data, dict):
+        return True
+    if "rc" in data and str(data.get("rc")) not in {"0"}:
+        return True
+    # Tencent uses ``code`` instead of EastMoney's ``rc``.  A non-zero code
+    # can still arrive with HTTP 200, so it must participate in failover.
+    return "code" in data and str(data.get("code")) not in {"0"}
+
+
+def _has_value(value: object) -> bool:
+    return value not in (None, "", "-")
+
+
+def _tencent_complete_kline_has_liquidity(data: dict) -> bool:
+    """Reject Tencent's six-column legacy response for the rich endpoint."""
+    payload = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(payload, dict):
+        return False
+
+    total_rows = 0
+    rich_rows = 0
+    for item in payload.values():
+        if not isinstance(item, dict):
+            continue
+        series = item.get("qfqday") or item.get("day") or []
+        if not isinstance(series, list):
+            continue
+        for row in series:
+            if not isinstance(row, list):
+                continue
+            total_rows += 1
+            if len(row) > 8 and _has_value(row[7]) and _has_value(row[8]):
+                rich_rows += 1
+
+    return total_rows > 0 and rich_rows >= min(5, total_rows)
 
 
 def _replace_host(url: str, host: str) -> str:
@@ -288,6 +325,16 @@ async def _fetch_market_request(url: str, params: dict, headers: dict) -> dict:
         # Overseas regions commonly reset this connection, so the delay node
         # remains a source-backed, current-day fallback.
         candidates.append((_replace_host(url, PUSH2_DELAY_HOST), params))
+    elif parsed.hostname == TENCENT_COMPLETE_HOST and parsed.path == TENCENT_COMPLETE_PATH:
+        # The rich endpoint is occasionally routed to a legacy Tencent node
+        # in overseas regions.  The alternate hosts expose the same endpoint
+        # without the historical ``/ifzqgtimg`` prefix.
+        alternate_path = parsed.path.removeprefix("/ifzqgtimg")
+        for host in TENCENT_COMPLETE_FALLBACK_HOSTS:
+            candidates.append((
+                parsed._replace(netloc=host, path=alternate_path).geturl(),
+                params,
+            ))
 
     last_error: Exception | None = None
     for candidate_url, candidate_params in candidates:
@@ -295,8 +342,14 @@ async def _fetch_market_request(url: str, params: dict, headers: dict) -> dict:
             data = await _get_upstream_json(candidate_url, candidate_params, headers)
             if _payload_has_error(data):
                 raise UpstreamPayloadError(
-                    f"Upstream returned rc={data.get('rc')}"
+                    f"Upstream returned rc={data.get('rc', data.get('code'))}"
                 )
+            if (
+                parsed.hostname == TENCENT_COMPLETE_HOST
+                and parsed.path == TENCENT_COMPLETE_PATH
+                and not _tencent_complete_kline_has_liquidity(data)
+            ):
+                raise UpstreamPayloadError("Tencent rich K-line response has no amount/turnover")
             return data
         except (
             httpx.HTTPStatusError,

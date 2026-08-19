@@ -48,6 +48,38 @@ class ProxyRequestTests(unittest.IsolatedAsyncioTestCase):
             [proxy.PUSH2_HISTORY_HOST, proxy.PUSH2_DELAY_HOST],
         )
 
+    async def test_tencent_rich_kline_skips_a_legacy_six_column_response(self):
+        requested_urls = []
+
+        async def fake_get(url, params, headers):
+            del params, headers
+            requested_urls.append(url)
+            if urlparse(url).hostname == proxy.TENCENT_COMPLETE_HOST:
+                return {
+                    "code": 0,
+                    "data": {"sh600519": {"qfqday": [["2026-08-18", "1", "1", "1", "1", "1"]]}},
+                }
+            return {
+                "code": 0,
+                "data": {"sh600519": {"qfqday": [[
+                    "2026-08-18", "1", "1", "1", "1", "1", {}, "1.2", "10.0",
+                ]]}},
+            }
+
+        with patch.object(proxy, "_get_upstream_json", new=fake_get):
+            payload = await proxy._fetch_market_request(
+                "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
+                {"param": "sh600519,day,,,30,qfq"},
+                {},
+            )
+
+        self.assertEqual(payload["code"], 0)
+        self.assertEqual([urlparse(url).hostname for url in requested_urls], [
+            proxy.TENCENT_COMPLETE_HOST,
+            proxy.TENCENT_COMPLETE_FALLBACK_HOSTS[0],
+        ])
+        self.assertEqual(urlparse(requested_urls[1]).path, "/appstock/app/newfqkline/get")
+
     async def test_ftshare_proxy_relays_only_allowlisted_tool_and_session_header(self):
         received = {}
 

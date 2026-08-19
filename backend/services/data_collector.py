@@ -685,11 +685,12 @@ class EastMoneyDataCollector:
         code = normalize_stock_code(stock_code)
         symbol = self._tencent_symbol(code)
         count = min(max(days + 20, 30), 800)
-        source = ""
         source_error: Exception | None = None
-        data: dict = {}
-        payload: dict = {}
-        series: list = []
+        best_history: list[dict] = []
+        best_payload: dict = {}
+        best_source = ""
+        best_coverage = -1
+        complete_found = False
         source_candidates = (
             (
                 self.TENCENT_COMPLETE_KLINE_URL,
@@ -702,71 +703,99 @@ class EastMoneyDataCollector:
                 "tencent_qfq",
             ),
         )
+
+        def parse_series(raw_series: list) -> list[dict]:
+            history = []
+            previous_close: float | None = None
+            for values in raw_series:
+                if not isinstance(values, list) or len(values) < 6:
+                    continue
+                raw_date = str(values[0] or "")[:10]
+                try:
+                    trade_date = date.fromisoformat(raw_date)
+                except ValueError:
+                    continue
+                open_price = as_optional_float(values[1])
+                close_price = as_optional_float(values[2])
+                high_price = as_optional_float(values[3])
+                low_price = as_optional_float(values[4])
+                volume_lots = as_optional_float(values[5])
+                turnover = as_optional_float(values[7]) if len(values) > 7 else None
+                amount_wan = as_optional_float(values[8]) if len(values) > 8 else None
+                change_amount = None
+                change_pct = None
+                amplitude = None
+                if previous_close not in (None, 0) and close_price is not None:
+                    change_amount = close_price - previous_close
+                    change_pct = change_amount / previous_close * 100
+                if previous_close not in (None, 0) and high_price is not None and low_price is not None:
+                    amplitude = (high_price - low_price) / previous_close * 100
+                history.append({
+                    "trade_date": trade_date.isoformat(), "open": open_price, "close": close_price,
+                    "high": high_price, "low": low_price,
+                    "volume": self._tencent_volume_in_shares(code, volume_lots),
+                    "amount": int(round(amount_wan * 10_000)) if amount_wan is not None else None,
+                    "amplitude": amplitude, "change_pct": change_pct,
+                    "change_amount": change_amount, "turnover": turnover,
+                })
+                previous_close = close_price
+            return self._history_in_window(history, days)
+
         for source_url, params, source_name in source_candidates:
             try:
                 data = await self.fetch_json(source_url, params, self.TENCENT_HEADERS)
                 payload = ((data.get("data") or {}).get(symbol) or {})
                 series = payload.get("qfqday") or payload.get("day") or []
-                if not series:
+                candidate_history = parse_series(series)
+                if not candidate_history:
                     raise RuntimeError("Tencent returned empty daily history")
-                source = source_name
-                break
+                coverage = sum(
+                    item.get("amount") is not None and item.get("turnover") is not None
+                    for item in candidate_history
+                )
+                if coverage > best_coverage:
+                    best_history = candidate_history
+                    best_payload = payload
+                    best_source = source_name
+                    best_coverage = coverage
+                # A legacy six-column response is a usable chart fallback,
+                # but not a complete liquidity history for the market cache.
+                if coverage >= min(5, len(candidate_history)):
+                    complete_found = True
+                    break
+                raise RuntimeError("Tencent daily history lacks amount/turnover")
             except Exception as exc:
                 source_error = exc
-                data = {}
-                payload = {}
-                series = []
-        if not series:
+        if not complete_found:
+            fallback: dict | None = None
             try:
                 fallback = await self._fetch_ftshare_stock_price_history(code, days)
             except Exception as fallback_error:
                 print(f"FTShare history fallback failed for {code}: {type(fallback_error).__name__}")
-                raise RuntimeError(f"股票历史行情不可用: {code}") from source_error
-            if fallback.get("history"):
+                if not best_history:
+                    raise RuntimeError(f"股票历史行情不可用: {code}") from source_error
+                # Preserve a chartable partial response, but its explicit
+                # coverage flag prevents it from satisfying cache audits.
+            if fallback and fallback.get("history"):
                 return fallback
-            raise RuntimeError(f"股票历史行情不可用: {code}") from source_error
-        history = []
-        previous_close: float | None = None
-        for values in series:
-            if not isinstance(values, list) or len(values) < 6:
-                continue
-            raw_date = str(values[0] or "")[:10]
-            try:
-                trade_date = date.fromisoformat(raw_date)
-            except ValueError:
-                continue
-            open_price = as_optional_float(values[1])
-            close_price = as_optional_float(values[2])
-            high_price = as_optional_float(values[3])
-            low_price = as_optional_float(values[4])
-            volume_lots = as_optional_float(values[5])
-            turnover = as_optional_float(values[7]) if len(values) > 7 else None
-            amount_wan = as_optional_float(values[8]) if len(values) > 8 else None
-            change_amount = None
-            change_pct = None
-            amplitude = None
-            if previous_close not in (None, 0) and close_price is not None:
-                change_amount = close_price - previous_close
-                change_pct = change_amount / previous_close * 100
-            if previous_close not in (None, 0) and high_price is not None and low_price is not None:
-                amplitude = (high_price - low_price) / previous_close * 100
-            history.append({
-                "trade_date": trade_date.isoformat(), "open": open_price, "close": close_price,
-                "high": high_price, "low": low_price,
-                "volume": self._tencent_volume_in_shares(code, volume_lots),
-                "amount": int(round(amount_wan * 10_000)) if amount_wan is not None else None,
-                "amplitude": amplitude, "change_pct": change_pct,
-                "change_amount": change_amount, "turnover": turnover,
-            })
-            previous_close = close_price
-        quote_payload = payload.get("qt") or []
+            if not best_history:
+                raise RuntimeError(f"股票历史行情不可用: {code}") from source_error
+        quote_payload = best_payload.get("qt") or []
         quote = quote_payload.get(symbol, []) if isinstance(quote_payload, dict) else quote_payload
         name = str(quote[1]) if isinstance(quote, list) and len(quote) > 1 else ""
+        field_coverage = {
+            "rows": len(best_history),
+            "amount": sum(item.get("amount") is not None for item in best_history),
+            "turnover": sum(item.get("turnover") is not None for item in best_history),
+            "complete": best_coverage >= min(5, len(best_history)),
+        }
         return {
             "code": code,
             "name": name,
-            "source": source,
-            "history": self._history_in_window(history, days),
+            "source": best_source,
+            "history": best_history,
+            "field_coverage": field_coverage,
+            "liquidity_complete": field_coverage["complete"],
         }
 
     async def _fetch_ftshare_stock_price_history(self, stock_code: str, days: int) -> dict:
@@ -817,6 +846,13 @@ class EastMoneyDataCollector:
             "name": "",
             "source": "ftshare_mcp",
             "history": self._history_in_window(history, days),
+            "field_coverage": {
+                "rows": len(history),
+                "amount": sum(item.get("amount") is not None for item in history),
+                "turnover": sum(item.get("turnover") is not None for item in history),
+                "complete": False,
+            },
+            "liquidity_complete": False,
         }
 
     async def fetch_shanghai_index_history(self, days: int = 365) -> list[dict]:
