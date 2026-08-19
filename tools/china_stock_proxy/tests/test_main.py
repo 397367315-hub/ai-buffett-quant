@@ -10,6 +10,19 @@ import main as proxy  # noqa: E402
 
 
 class ProxyRequestTests(unittest.IsolatedAsyncioTestCase):
+    async def test_tencent_complete_kline_host_and_assignment_jsonp_are_supported(self):
+        proxy._validate_url(
+            "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+        )
+        payload = proxy._decode_json_or_jsonp(
+            'kline_dayqfq={"code":0,"data":{"sh600519":{"qfqday":[]}}};'
+        )
+        self.assertEqual(payload["code"], 0)
+
+    async def test_jsonp_decoder_rejects_executable_callback_syntax(self):
+        with self.assertRaises(ValueError):
+            proxy._decode_json_or_jsonp('callback({"code":0})')
+
     async def test_capital_flow_is_an_allowlisted_read_only_ftshare_tool(self):
         self.assertIn("capital_flow", proxy.FTSHARE_ALLOWED_TOOLS)
         self.assertIn("ft_get_eastmoney_stock_flow", proxy.FTSHARE_ALLOWED_TOOLS)

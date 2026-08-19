@@ -181,6 +181,48 @@ class TopicStrengthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved, date(2026, 8, 14))
         cached_date.assert_not_awaited()
 
+    async def test_intraday_capture_prioritizes_every_topic_leader(self):
+        target = date(2026, 8, 18)
+        topics = [
+            {
+                "leader": {"code": f"6000{index:02d}"},
+                "members": [
+                    {"code": f"6000{index:02d}"},
+                    {"code": f"6009{index:02d}"},
+                ],
+            }
+            for index in range(1, 13)
+        ]
+
+        async def minute_history(code, **kwargs):
+            return {
+                "stock_code": code,
+                "stock_name": code,
+                "source": "test_minute_source",
+                "data_date": target.isoformat(),
+                "bars": [{
+                    "bar_time": f"{target.isoformat()}T15:00",
+                    "open": 10,
+                    "close": 10,
+                    "high": 10,
+                    "low": 10,
+                    "volume": 100,
+                    "amount": 1000,
+                }],
+            }
+
+        with (
+            patch.object(self.service, "_cached_intraday_evidence", new=AsyncMock(return_value={})),
+            patch.object(self.service, "_persist_intraday", new=AsyncMock()),
+            patch("services.topic_strength.collector.fetch_stock_minute_history", new=AsyncMock(side_effect=minute_history)),
+        ):
+            evidence, metadata = await self.service._intraday_evidence(topics, target, False)
+
+        self.assertEqual(metadata["requested"], 12)
+        self.assertEqual(set(evidence), {f"6000{index:02d}" for index in range(1, 13)})
+        self.assertTrue(all(item["active_direction"] == "balanced" for item in evidence.values()))
+        self.assertTrue(all(item["direction_basis"] == "分钟线价量代理" for item in evidence.values()))
+
     async def test_kline_rejects_unknown_category_without_network(self):
         with self.assertRaisesRegex(ValueError, "category"):
             await self.service.kline("600519", category=9, offset=60)

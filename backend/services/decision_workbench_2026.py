@@ -256,6 +256,36 @@ def _fund_behaviour(change: float | None, volume_ratio: float | None, inflow: fl
     return {"code": "NEUTRAL", "label": "中性观察", "supports_price": None}
 
 
+def _quote_profitability(item: dict, sector: str) -> tuple[float | None, dict]:
+    """Use the verified quote snapshot when a PIT row is not in the candidate.
+
+    The quote fields are deliberately labelled as a proxy.  They keep a
+    candidate in the research loop, while the decision layer still exposes
+    that a disclosed financial statement was not available for this symbol.
+    """
+    roe = _number(item.get("roe"))
+    pe = _number(item.get("pe"))
+    parts: list[float] = []
+    evidence: list[str] = []
+    if roe is not None:
+        parts.append(_scale(roe, 0, 25) or 0.0)
+        evidence.append(f"行情快照ROE {roe:.1f}%")
+    if pe is not None and pe > 0:
+        parts.append(85.0 if pe <= 20 else 68.0 if pe <= 40 else 42.0 if pe <= 80 else 20.0)
+        evidence.append(f"行情快照PE {pe:.1f}")
+    if not parts:
+        return None, {"status": "unavailable", "roe": roe, "pe": pe, "source": "quote_snapshot"}
+    cycle = any(term in sector for term in ("煤", "钢", "有色", "化工", "航运", "养殖"))
+    return _round(_average(parts), 1), {
+        "status": "quote_proxy",
+        "roe": roe,
+        "pe": pe,
+        "source": "eastmoney_or_tencent_quote",
+        "evidence": evidence,
+        "note": "周期行业PE仅作辅助，需结合盈利周期" if cycle else "未替代公告日财务PIT，仅作研究代理",
+    }
+
+
 def _candidate_decisions(payload: dict, permission: dict, dynamic: dict) -> list[dict]:
     lines = {str(item.get("name")): item for item in payload.get("main_lines") or []}
     daily = {
@@ -283,12 +313,22 @@ def _candidate_decisions(payload: dict, permission: dict, dynamic: dict) -> list
         breakdown = {**(recommendation.get("score_breakdown") or {}), **(item.get("score_breakdown") or {})}
         profitability = recommendation.get("profitability") or {}
         fundamental_score = _number(breakdown.get("profitability"))
+        if fundamental_score is None:
+            fundamental_score, quote_view = _quote_profitability(item, sector)
+            if quote_view.get("status") == "quote_proxy":
+                profitability = {**quote_view, **profitability}
         sector_score = _number(breakdown.get("sector_strength")) or _number(line.get("strength_score"))
         funding_score = _number(breakdown.get("capital"))
         technical_score = _number(breakdown.get("trend"))
         risk_score = _number(breakdown.get("risk_safety"))
+        if risk_score is None:
+            risk_score = _number((( _dimension_map(payload).get("risk") or {}).get("score")))
         volume_ratio = _number(recommendation.get("volume_ratio"))
+        if volume_ratio is None:
+            volume_ratio = _number(item.get("volume_ratio"))
         inflow = _number(recommendation.get("main_net_inflow"))
+        if inflow is None:
+            inflow = _number(item.get("main_net_inflow"))
         fund = _fund_behaviour(change, volume_ratio, inflow)
         emotion_parts = [
             funding_score,
@@ -367,11 +407,19 @@ def _candidate_decisions(payload: dict, permission: dict, dynamic: dict) -> list
             execution_label = "排除"
         failed = [row["label"] for row in conditions if row["observed"] and not row["passed"]]
         unavailable = [row["label"] for row in conditions if not row["observed"]]
+        unavailable_labels = {
+            "资金行为": "资金行为尚未形成可比证据，不作为通过条件",
+            "风险安全": "风险安全字段尚未形成独立证据，不作为通过条件",
+            "个股Alpha": "同日板块对照不足，Alpha不作通过条件",
+            "策略/价格结构": "尚未经过对应策略触发确认",
+            "同日数据": "数据日期未与研究日对齐",
+            "板块结构": "板块结构证据不足，不作通过条件",
+        }
         why_not = _unique([
             *(item.get("why_not_full") or []),
             *([str(recommendation.get("risk"))] if recommendation.get("risk") else []),
             *(f"{label}未通过" for label in failed),
-            *(f"{label}待核验" for label in unavailable),
+            *(unavailable_labels.get(label, f"{label}暂无可验证证据") for label in unavailable),
         ])
         output.append({
             "code": code,
@@ -387,7 +435,7 @@ def _candidate_decisions(payload: dict, permission: dict, dynamic: dict) -> list
                 "sector_beta_pct": _round(sector_change, 2),
                 "individual_alpha_pct": _round(alpha, 2),
                 "alpha_score": _round(alpha_score, 1),
-                "detachment": "显著Alpha" if alpha is not None and alpha >= 2 else "抗跌Alpha" if alpha is not None and alpha >= 1 and (sector_change or 0) < 0 else "板块Beta为主" if alpha is not None else "待核验",
+                "detachment": "显著Alpha" if alpha is not None and alpha >= 2 else "抗跌Alpha" if alpha is not None and alpha >= 1 and (sector_change or 0) < 0 else "板块Beta为主" if alpha is not None else "板块对照未形成",
                 "method": "同日个股涨幅减所属板块涨幅；同口径指数日收益缺失时市场Beta保持为空。",
             },
             "fundamental": {"score": fundamental_score, **profitability},

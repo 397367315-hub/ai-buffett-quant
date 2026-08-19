@@ -149,6 +149,28 @@ async def refresh_market_decision_execution_gate():
         return None
 
 
+async def refresh_market_way_policy_source():
+    """Keep official policy evidence warm before and during the trading day."""
+    from services.market_way_v4 import market_way_v4_service
+
+    try:
+        return await market_way_v4_service.refresh_policy_source()
+    except Exception as exc:
+        print(f"[Scheduler] V4官方政策源更新失败: {type(exc).__name__}")
+        return None
+
+
+async def refresh_market_way_data_sources():
+    """Rebuild policy, industry, financial, and PIT caches after disclosure sync."""
+    from services.market_way_v4 import market_way_v4_service
+
+    try:
+        return await market_way_v4_service.refresh_sources(background=False)
+    except Exception as exc:
+        print(f"[Scheduler] V4数据闭环更新失败: {type(exc).__name__}")
+        return None
+
+
 async def refresh_dragon_board_cache():
     from services.dragon_board import dragon_board_service
 
@@ -545,6 +567,18 @@ async def start_scheduler(data_collector=None, db_session=None):
         capture_financial_pit_snapshot,
         CronTrigger(hour=16, minute=35, day_of_week="mon-fri"),
         id="financial_pit_close", name="公告日财务PIT增量快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        refresh_market_way_policy_source,
+        CronTrigger(hour="8,12", minute=5, day_of_week="mon-fri"),
+        id="market_way_policy_source", name="V4官方政策证据更新", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=1800,
+    )
+    scheduler.add_job(
+        refresh_market_way_data_sources,
+        CronTrigger(hour=16, minute=45, day_of_week="mon-fri"),
+        id="market_way_data_sources", name="V4产业财务与市场数据闭环", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
     scheduler.add_job(

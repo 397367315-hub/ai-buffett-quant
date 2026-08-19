@@ -660,6 +660,224 @@ class DecisionWorkbenchSnapshot(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class DataSourceRegistry(Base):
+    """Auditable source identity and S/A/B/C trust grade for V4 evidence."""
+
+    __tablename__ = "data_sources"
+
+    source_key = Column(String(80), primary_key=True)
+    name = Column(String(120), nullable=False)
+    grade = Column(String(1), nullable=False)
+    source_type = Column(String(30), nullable=False)
+    official_url = Column(String(500))
+    active = Column(Boolean, nullable=False, default=True)
+    metadata_payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TruthDataEvent(Base):
+    """One point-in-time fact with the four timestamps required by V4."""
+
+    __tablename__ = "truth_data_events"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_truth_data_event_fingerprint"),
+        Index("idx_truth_events_trade_date", "research_trade_date", "snapshot_time"),
+        Index("idx_truth_events_source", "source_key", "available_time"),
+        Index("idx_truth_events_kind", "event_kind", "research_trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fingerprint = Column(String(64), nullable=False)
+    event_kind = Column(String(40), nullable=False)
+    fact_key = Column(String(120), nullable=False)
+    label = Column(String(300), nullable=False)
+    source_key = Column(String(80), ForeignKey("data_sources.source_key"), nullable=False)
+    source_grade = Column(String(1), nullable=False)
+    evidence_tag = Column(String(20), nullable=False, default="FACT")
+    event_time = Column(DateTime, nullable=False)
+    publish_time = Column(DateTime, nullable=False)
+    available_time = Column(DateTime, nullable=False)
+    snapshot_time = Column(DateTime, nullable=False)
+    research_trade_date = Column(Date, nullable=False)
+    data_cutoff_time = Column(DateTime, nullable=False)
+    status = Column(String(30), nullable=False, default="ACCEPTED")
+    value_payload = Column(JSON, nullable=False, default=dict)
+    quality_flags = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TruthDataConflict(Base):
+    """A source, value, statistical-basis, or trading-date conflict."""
+
+    __tablename__ = "data_conflicts"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_truth_data_conflict_fingerprint"),
+        Index("idx_truth_conflicts_status", "status", "detected_at"),
+        Index("idx_truth_conflicts_trade_date", "research_trade_date", "detected_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fingerprint = Column(String(64), nullable=False)
+    conflict_type = Column(String(40), nullable=False, default="DATA_CONFLICT")
+    fact_key = Column(String(120), nullable=False)
+    research_trade_date = Column(Date, nullable=False)
+    source_keys = Column(JSON, nullable=False, default=list)
+    conflicting_values = Column(JSON, nullable=False, default=list)
+    resolution = Column(Text)
+    confidence_penalty = Column(Float, nullable=False, default=0.0)
+    status = Column(String(20), nullable=False, default="OPEN")
+    detected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    resolved_at = Column(DateTime)
+
+
+class DataQualityEvent(Base):
+    """Recoverable acquisition/quality issue instead of a silent data skip."""
+
+    __tablename__ = "data_quality_events"
+    __table_args__ = (
+        Index("idx_data_quality_events_status", "status", "detected_at"),
+        Index("idx_data_quality_events_component", "component", "research_trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    component = Column(String(80), nullable=False)
+    event_type = Column(String(40), nullable=False)
+    severity = Column(String(20), nullable=False, default="WARNING")
+    research_trade_date = Column(Date)
+    source_key = Column(String(80))
+    message = Column(Text, nullable=False)
+    acquisition_action = Column(Text)
+    details = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="OPEN")
+    detected_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    resolved_at = Column(DateTime)
+
+
+class IndustryValidationSnapshot(Base):
+    """Daily PIT aggregate of issuer financial facts for a national direction."""
+
+    __tablename__ = "industry_validation"
+    __table_args__ = (
+        UniqueConstraint(
+            "direction_key", "trade_date", "source_data_date",
+            name="uq_industry_validation_direction_date",
+        ),
+        Index("idx_industry_validation_trade_date", "trade_date", "direction_key"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    direction_key = Column(String(80), nullable=False)
+    direction_name = Column(String(100), nullable=False)
+    industries = Column(JSON, nullable=False, default=list)
+    trade_date = Column(Date, nullable=False)
+    source_data_date = Column(Date, nullable=False)
+    latest_disclosure_date = Column(Date)
+    universe_count = Column(Integer, nullable=False, default=0)
+    financial_sample_count = Column(Integer, nullable=False, default=0)
+    coverage_pct = Column(Float, nullable=False, default=0.0)
+    validation_status = Column(String(30), nullable=False)
+    metrics = Column(JSON, nullable=False, default=dict)
+    source = Column(String(100), nullable=False, default="financial_pit_snapshots")
+    source_grade = Column(String(1), nullable=False, default="A")
+    available_time = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PolicyTransmissionRecord(Base):
+    """Observed policy evidence and its explicitly bounded L1-L6 chain."""
+
+    __tablename__ = "policy_transmission"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_policy_transmission_fingerprint"),
+        Index("idx_policy_transmission_direction", "direction_key", "published_at"),
+        Index("idx_policy_transmission_trade_date", "research_trade_date", "published_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    fingerprint = Column(String(64), nullable=False)
+    direction_key = Column(String(80), nullable=False)
+    direction_name = Column(String(100), nullable=False)
+    policy_title = Column(String(500), nullable=False)
+    policy_url = Column(String(800))
+    source_key = Column(String(80), nullable=False)
+    source_grade = Column(String(1), nullable=False, default="S")
+    published_at = Column(DateTime, nullable=False)
+    available_time = Column(DateTime, nullable=False)
+    research_trade_date = Column(Date, nullable=False)
+    policy_level = Column(String(10), nullable=False)
+    marginal_state = Column(String(20), nullable=False, default="STABLE")
+    max_verified_level = Column(String(10), nullable=False, default="L2")
+    transmission_state = Column(String(30), nullable=False, default="UNVERIFIED")
+    stages = Column(JSON, nullable=False, default=list)
+    evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MarketWayState(Base):
+    """Latest deterministic V4 state for one trade date and decision phase."""
+
+    __tablename__ = "market_way_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "trade_date", "phase", "contract_version",
+            name="uq_market_way_state_date_phase_version",
+        ),
+        Index("idx_market_way_states_date", "trade_date", "generated_at"),
+        Index("idx_market_way_states_order", "order_state", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    phase = Column(String(30), nullable=False, default="current")
+    contract_version = Column(String(50), nullable=False)
+    snapshot_hash = Column(String(64), nullable=False)
+    truth_status = Column(String(20), nullable=False)
+    way_state = Column(String(30), nullable=False)
+    order_state = Column(String(30), nullable=False)
+    momentum_state = Column(String(30), nullable=False)
+    risk_appetite = Column(String(20), nullable=False)
+    pricing_force = Column(String(30), nullable=False)
+    ai_conclusion = Column(String(30), nullable=False)
+    confidence_pct = Column(Float, nullable=False, default=0.0)
+    payload = Column(JSON, nullable=False)
+    generated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MarketWayJudgment(Base):
+    """AI/user dual-track judgment with later outcome validation."""
+
+    __tablename__ = "market_way_judgments"
+    __table_args__ = (
+        UniqueConstraint(
+            "trade_date", "phase", "user_key",
+            name="uq_market_way_judgment_date_phase_user",
+        ),
+        Index("idx_market_way_judgments_date", "trade_date", "created_at"),
+        Index("idx_market_way_judgments_validation", "validation_status", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    phase = Column(String(30), nullable=False, default="current")
+    user_key = Column(String(80), nullable=False, default="default")
+    ai_judgment = Column(JSON, nullable=False, default=dict)
+    user_action = Column(String(30), nullable=False)
+    user_judgment = Column(Text)
+    user_evidence = Column(JSON, nullable=False, default=list)
+    actual_result = Column(JSON)
+    validation_status = Column(String(20), nullable=False, default="PENDING")
+    correct_party = Column(String(20))
+    error_type = Column(String(50))
+    validated_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ResearchSession(Base):
     """One versioned strategic or tactical research run and its report snapshot."""
 

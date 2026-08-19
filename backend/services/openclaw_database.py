@@ -14,6 +14,9 @@ from sqlalchemy import asc, desc, func, select
 
 from database import async_session
 from models import (
+    IndustryValidationSnapshot,
+    MarketWayJudgment,
+    MarketWayState,
     MarketSentimentDaily,
     MarketFundFlowDaily,
     OvernightPosition,
@@ -24,6 +27,9 @@ from models import (
     StockDailyBar,
     StockSelectionRun,
     StockValuationHistory,
+    PolicyTransmissionRecord,
+    TruthDataConflict,
+    TruthDataEvent,
 )
 from services.data_collector import normalize_stock_code
 
@@ -48,6 +54,10 @@ COMMON_ARGUMENTS = {
     "is_builtin",
     "strategy_id",
     "sync_status",
+    "direction_key",
+    "phase",
+    "truth_status",
+    "validation_status",
 }
 
 
@@ -187,6 +197,85 @@ DATASET_DEFINITIONS: dict[str, dict[str, Any]] = {
             "sync_status", "source", "updated_at",
         ),
     },
+    "truth_data_events": {
+        "label": "V4四时间真值证据",
+        "model": TruthDataEvent,
+        "fields": (
+            "id", "fingerprint", "event_kind", "fact_key", "label", "source_key", "source_grade",
+            "evidence_tag", "event_time", "publish_time", "available_time", "snapshot_time",
+            "research_trade_date", "data_cutoff_time", "status", "value_payload", "quality_flags", "created_at",
+        ),
+        "filters": {"source", "status", "start_date", "end_date"},
+        "filter_columns": {"source": "source_key"},
+        "date_field": "snapshot_time", "date_kind": "datetime",
+        "sort_fields": {"id", "event_time", "available_time", "snapshot_time", "research_trade_date", "source_grade"},
+        "default_sort": "snapshot_time",
+    },
+    "data_conflicts": {
+        "label": "V4数据冲突",
+        "model": TruthDataConflict,
+        "fields": (
+            "id", "fingerprint", "conflict_type", "fact_key", "research_trade_date", "source_keys",
+            "conflicting_values", "resolution", "confidence_penalty", "status", "detected_at", "resolved_at",
+        ),
+        "filters": {"status", "start_date", "end_date"},
+        "date_field": "detected_at", "date_kind": "datetime",
+        "sort_fields": {"id", "research_trade_date", "confidence_penalty", "status", "detected_at"},
+        "default_sort": "detected_at",
+    },
+    "industry_validation": {
+        "label": "V4产业与盈利PIT验证",
+        "model": IndustryValidationSnapshot,
+        "fields": (
+            "id", "direction_key", "direction_name", "industries", "trade_date", "source_data_date",
+            "latest_disclosure_date", "universe_count", "financial_sample_count", "coverage_pct",
+            "validation_status", "metrics", "source", "source_grade", "available_time", "updated_at",
+        ),
+        "filters": {"direction_key", "source", "validation_status", "start_date", "end_date"},
+        "date_field": "trade_date", "date_kind": "date",
+        "sort_fields": {"id", "direction_key", "trade_date", "coverage_pct", "validation_status", "updated_at"},
+        "default_sort": "trade_date",
+    },
+    "policy_transmission": {
+        "label": "V4官方政策L1-L6传导",
+        "model": PolicyTransmissionRecord,
+        "fields": (
+            "id", "direction_key", "direction_name", "policy_title", "policy_url", "source_key",
+            "source_grade", "published_at", "available_time", "research_trade_date", "policy_level",
+            "marginal_state", "max_verified_level", "transmission_state", "stages", "evidence", "updated_at",
+        ),
+        "filters": {"direction_key", "source", "start_date", "end_date"},
+        "filter_columns": {"source": "source_key"},
+        "date_field": "published_at", "date_kind": "datetime",
+        "sort_fields": {"id", "direction_key", "published_at", "policy_level", "available_time", "updated_at"},
+        "default_sort": "published_at",
+    },
+    "market_way_states": {
+        "label": "V4市场之道历史状态",
+        "model": MarketWayState,
+        "fields": (
+            "id", "trade_date", "phase", "contract_version", "snapshot_hash", "truth_status",
+            "way_state", "order_state", "momentum_state", "risk_appetite", "pricing_force",
+            "ai_conclusion", "confidence_pct", "payload", "generated_at", "updated_at",
+        ),
+        "filters": {"phase", "truth_status", "start_date", "end_date"},
+        "date_field": "trade_date", "date_kind": "date",
+        "sort_fields": {"id", "trade_date", "phase", "truth_status", "confidence_pct", "generated_at"},
+        "default_sort": "trade_date",
+    },
+    "market_way_judgments": {
+        "label": "V4 AI与用户双轨判断",
+        "model": MarketWayJudgment,
+        "fields": (
+            "id", "trade_date", "phase", "user_key", "ai_judgment", "user_action", "user_judgment",
+            "user_evidence", "actual_result", "validation_status", "correct_party", "error_type",
+            "validated_at", "created_at", "updated_at",
+        ),
+        "filters": {"phase", "validation_status", "start_date", "end_date"},
+        "date_field": "trade_date", "date_kind": "date",
+        "sort_fields": {"id", "trade_date", "phase", "validation_status", "updated_at"},
+        "default_sort": "trade_date",
+    },
 }
 
 
@@ -267,7 +356,7 @@ async def query_system_database(arguments: dict[str, Any]) -> dict[str, Any]:
 
     invalid_filters = sorted(
         key for key in arguments
-        if key in {"stock_code", "start_date", "end_date", "market", "source", "status", "stage", "mode", "risk_profile", "sync_status", "is_realtime", "is_builtin", "strategy_id"}
+        if key in {"stock_code", "start_date", "end_date", "market", "source", "status", "stage", "mode", "risk_profile", "sync_status", "direction_key", "phase", "truth_status", "validation_status", "is_realtime", "is_builtin", "strategy_id"}
         and key not in definition["filters"]
     )
     if invalid_filters:
@@ -299,12 +388,13 @@ async def query_system_database(arguments: dict[str, Any]) -> dict[str, Any]:
     conditions: list[Any] = []
     if "stock_code" in definition["filters"] and arguments.get("stock_code") not in (None, ""):
         conditions.append(model.stock_code == normalize_stock_code(arguments["stock_code"]))
-    for key in ("market", "source", "status", "stage", "mode", "risk_profile", "sync_status"):
+    filter_columns = definition.get("filter_columns") or {}
+    for key in ("market", "source", "status", "stage", "mode", "risk_profile", "sync_status", "direction_key", "phase", "truth_status", "validation_status"):
         if key in definition["filters"] and arguments.get(key) not in (None, ""):
             value = str(arguments[key]).strip()
             if len(value) > 100:
                 raise ValueError(f"{key} 不能超过100个字符")
-            conditions.append(getattr(model, key) == value)
+            conditions.append(getattr(model, filter_columns.get(key, key)) == value)
     for key in ("is_realtime", "is_builtin"):
         if key in definition["filters"] and arguments.get(key) is not None:
             conditions.append(getattr(model, key) == _parse_bool(arguments[key], key))

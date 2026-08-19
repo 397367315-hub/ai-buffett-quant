@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from datetime import date, datetime, timedelta
@@ -33,6 +34,24 @@ BEIJING_PREFIXES = ("4", "8", "92")
 SCI_TECH_PREFIXES = ("688", "689")
 STOCK_CODE_RE = re.compile(r"^(?:(SH|SZ|BJ)[.:-]?)?(\d{6})(?:\.(SH|SZ|BJ))?$")
 BOARD_CODE_RE = re.compile(r"^BK\d{4}$")
+JSONP_ASSIGNMENT_RE = re.compile(
+    r"^\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\s*=\s*(\{.*\})\s*;?\s*$",
+    re.DOTALL,
+)
+
+
+def decode_json_or_jsonp(text: str) -> dict:
+    """Decode plain JSON or Tencent's assignment-style JSONP response."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = JSONP_ASSIGNMENT_RE.fullmatch(text)
+        if not match:
+            raise ValueError("upstream response is neither JSON nor supported JSONP")
+        payload = json.loads(match.group(1))
+    if not isinstance(payload, dict):
+        raise ValueError("upstream response must be a JSON object")
+    return payload
 
 
 def shanghai_now() -> datetime:
@@ -118,6 +137,7 @@ class EastMoneyDataCollector:
     HISTORY_BASE_URL = "https://push2his.eastmoney.com"
     DELAY_BASE_URL = "https://push2delay.eastmoney.com"
     DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+    TENCENT_COMPLETE_KLINE_URL = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
     TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
     TENCENT_MINUTE_URL = "https://ifzq.gtimg.cn/appstock/app/kline/mkline"
     TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
@@ -200,7 +220,7 @@ class EastMoneyDataCollector:
                 try:
                     response = await client.get(candidate, params=params, headers=headers)
                     response.raise_for_status()
-                    payload = response.json()
+                    payload = decode_json_or_jsonp(response.text)
                     if isinstance(payload, dict) and str(payload.get("rc", "0")) == "0":
                         return payload
                     raise RuntimeError(f"EastMoney returned rc={payload.get('rc') if isinstance(payload, dict) else 'invalid'}")
@@ -664,14 +684,39 @@ class EastMoneyDataCollector:
         """
         code = normalize_stock_code(stock_code)
         symbol = self._tencent_symbol(code)
-        params = {
-            # The spare rows let us calculate the first retained bar's daily
-            # change against the preceding close.
-            "param": f"{symbol},day,,,{min(max(days + 20, 30), 800)},qfq",
-        }
-        try:
-            data = await self.fetch_json(self.TENCENT_KLINE_URL, params, self.TENCENT_HEADERS)
-        except Exception as source_error:
+        count = min(max(days + 20, 30), 800)
+        source = ""
+        source_error: Exception | None = None
+        data: dict = {}
+        payload: dict = {}
+        series: list = []
+        source_candidates = (
+            (
+                self.TENCENT_COMPLETE_KLINE_URL,
+                {"_var": "kline_dayqfq", "param": f"{symbol},day,,,{count},qfq"},
+                "tencent_newfqkline_qfq",
+            ),
+            (
+                self.TENCENT_KLINE_URL,
+                {"param": f"{symbol},day,,,{count},qfq"},
+                "tencent_qfq",
+            ),
+        )
+        for source_url, params, source_name in source_candidates:
+            try:
+                data = await self.fetch_json(source_url, params, self.TENCENT_HEADERS)
+                payload = ((data.get("data") or {}).get(symbol) or {})
+                series = payload.get("qfqday") or payload.get("day") or []
+                if not series:
+                    raise RuntimeError("Tencent returned empty daily history")
+                source = source_name
+                break
+            except Exception as exc:
+                source_error = exc
+                data = {}
+                payload = {}
+                series = []
+        if not series:
             try:
                 fallback = await self._fetch_ftshare_stock_price_history(code, days)
             except Exception as fallback_error:
@@ -680,8 +725,6 @@ class EastMoneyDataCollector:
             if fallback.get("history"):
                 return fallback
             raise RuntimeError(f"股票历史行情不可用: {code}") from source_error
-        payload = ((data.get("data") or {}).get(symbol) or {})
-        series = payload.get("qfqday") or payload.get("day") or []
         history = []
         previous_close: float | None = None
         for values in series:
@@ -697,6 +740,8 @@ class EastMoneyDataCollector:
             high_price = as_optional_float(values[3])
             low_price = as_optional_float(values[4])
             volume_lots = as_optional_float(values[5])
+            turnover = as_optional_float(values[7]) if len(values) > 7 else None
+            amount_wan = as_optional_float(values[8]) if len(values) > 8 else None
             change_amount = None
             change_pct = None
             amplitude = None
@@ -709,8 +754,9 @@ class EastMoneyDataCollector:
                 "trade_date": trade_date.isoformat(), "open": open_price, "close": close_price,
                 "high": high_price, "low": low_price,
                 "volume": self._tencent_volume_in_shares(code, volume_lots),
-                "amount": None, "amplitude": amplitude, "change_pct": change_pct,
-                "change_amount": change_amount, "turnover": None,
+                "amount": int(round(amount_wan * 10_000)) if amount_wan is not None else None,
+                "amplitude": amplitude, "change_pct": change_pct,
+                "change_amount": change_amount, "turnover": turnover,
             })
             previous_close = close_price
         quote_payload = payload.get("qt") or []
@@ -719,7 +765,7 @@ class EastMoneyDataCollector:
         return {
             "code": code,
             "name": name,
-            "source": "tencent",
+            "source": source,
             "history": self._history_in_window(history, days),
         }
 
@@ -776,12 +822,26 @@ class EastMoneyDataCollector:
     async def fetch_shanghai_index_history(self, days: int = 365) -> list[dict]:
         """Fetch verified Shanghai Composite daily closes from Tencent."""
         symbol = "sh000001"
-        params = {
-            "param": f"{symbol},day,,,{min(max(days + 20, 30), 800)},qfq",
-        }
-        data = await self.fetch_json(self.TENCENT_KLINE_URL, params, self.TENCENT_HEADERS)
-        payload = ((data.get("data") or {}).get(symbol) or {})
-        series = payload.get("qfqday") or payload.get("day") or []
+        count = min(max(days + 20, 30), 800)
+        series: list = []
+        last_error: Exception | None = None
+        for source_url, params in (
+            (
+                self.TENCENT_COMPLETE_KLINE_URL,
+                {"_var": "kline_dayqfq", "param": f"{symbol},day,,,{count},qfq"},
+            ),
+            (self.TENCENT_KLINE_URL, {"param": f"{symbol},day,,,{count},qfq"}),
+        ):
+            try:
+                data = await self.fetch_json(source_url, params, self.TENCENT_HEADERS)
+                payload = ((data.get("data") or {}).get(symbol) or {})
+                series = payload.get("qfqday") or payload.get("day") or []
+                if series:
+                    break
+            except Exception as exc:
+                last_error = exc
+        if not series and last_error is not None:
+            raise RuntimeError("上证指数历史行情不可用") from last_error
         history = []
         for values in series:
             if not isinstance(values, list) or len(values) < 3:

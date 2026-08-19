@@ -1,6 +1,60 @@
 {
   "version": 1,
-  "scan": {},
+  "scan": {
+    "scan_c92ed45e09e7": {
+      "job_id": "scan_c92ed45e09e7",
+      "status": "completed",
+      "progress": 100,
+      "phase": "completed",
+      "message": "扫描完成，生成 0 条信号",
+      "created_at": "2026-08-17T13:04:42.105782+08:00",
+      "started_at": "2026-08-17T13:04:42.110899+08:00",
+      "completed_at": "2026-08-17T13:04:55.755871+08:00",
+      "error": null,
+      "strategy_id": null,
+      "scheduled_only": true,
+      "total_stocks": 5540,
+      "processed_stocks": 5500,
+      "result": {
+        "count": 0,
+        "scanned_stocks": 5540,
+        "warning": "实时行情不可用，已降级到 2026-08-17T03:18:55.573409+08:00 的缓存快照；限售解禁数据源暂不可用，相关规则按数据不足处理（HTTPStatusError）"
+      }
+    },
+    "scan_8425a113f838": {
+      "job_id": "scan_8425a113f838",
+      "status": "completed",
+      "progress": 100,
+      "phase": "completed",
+      "message": "扫描完成，生成 0 条信号",
+      "created_at": "2026-08-17T09:32:14.123240+08:00",
+      "started_at": "2026-08-17T09:32:14.125367+08:00",
+      "completed_at": "2026-08-17T09:32:15.822393+08:00",
+      "error": null,
+      "strategy_id": null,
+      "scheduled_only": true,
+      "total_stocks": 5540,
+      "processed_stocks": 5500,
+      "result": {
+        "count": 0,
+        "scanned_stocks": 5540,
+        "warning": "实时行情不可用，已使用 2026-08-14 的最近交易日缓存；已使用按真实公告日保存的财务PIT缓存；限售解禁数据源暂不可用，相关规则按数据不足处理（ConnectError）"
+      }
+    },
+    "scan_016dccbd32f3": {
+      "job_id": "scan_016dccbd32f3",
+      "status": "failed",
+      "progress": 100,
+      "phase": "failed",
+      "message": "信号扫描失败",
+      "created_at": "2026-08-14T09:34:51.449249+08:00",
+      "started_at": "2026-08-14T09:34:51.451547+08:00",
+      "completed_at": "2026-08-14T09:34:51.461639+08:00",
+      "error": "实时行情与本地行情缓存均不可用",
+      "strategy_id": null,
+      "scheduled_only": true
+    }
+  },
   "backtest": {},
   "fqe": {},
   "zhaban": {},

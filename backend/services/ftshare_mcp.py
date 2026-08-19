@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -515,12 +516,49 @@ class FTShareMCPClient:
             if not re.fullmatch(r"BK\d{4}", code):
                 raise FTShareMCPError("FTShare sector flow requires a BK board code")
             arguments["sector_code"] = code
-        result = await self.call_paginated_tool(
-            "ft_get_eastmoney_sector_flow",
-            arguments,
-        )
-        data = result.get("data")
-        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        try:
+            start = date.fromisoformat(str(start_date)[:10])
+            end = date.fromisoformat(str(end_date)[:10])
+        except ValueError as exc:
+            raise FTShareMCPError("FTShare sector flow requires ISO dates") from exc
+        if end < start:
+            raise FTShareMCPError("FTShare sector flow end_date must not precede start_date")
+
+        # The gateway becomes unreliable when a full year of every sector is
+        # requested in one paginated session (usually around page 50). Keep
+        # each window small enough to be independently verified, then merge by
+        # sector/date. This is real source partitioning, not synthetic filling.
+        windows: list[tuple[date, date]] = []
+        cursor = start
+        while cursor <= end:
+            window_end = min(cursor + timedelta(days=34), end)
+            windows.append((cursor, window_end))
+            cursor = window_end + timedelta(days=1)
+
+        rows: list[dict[str, Any]] = []
+        for window_start, window_end in windows:
+            window_arguments = {
+                **arguments,
+                "start_date": window_start.isoformat(),
+                "end_date": window_end.isoformat(),
+            }
+            result = await self.call_paginated_tool(
+                "ft_get_eastmoney_sector_flow",
+                window_arguments,
+            )
+            data = result.get("data")
+            if isinstance(data, list):
+                rows.extend(item for item in data if isinstance(item, dict))
+
+        unique: dict[str, dict[str, Any]] = {}
+        for item in rows:
+            code = str(item.get("sector_code") or item.get("sector_name") or "")
+            trade_date = str(item.get("trade_date") or "")[:10]
+            # Keep malformed mock/upstream rows deterministic for callers,
+            # while real dated records are always deduplicated by board/day.
+            key = f"{code}:{trade_date}" if code and trade_date else json.dumps(item, ensure_ascii=True, sort_keys=True, default=str)
+            unique[key] = item
+        return list(unique.values())
 
     async def get_eastmoney_board_directory(self) -> list[dict[str, Any]]:
         result = await self.call_tool(

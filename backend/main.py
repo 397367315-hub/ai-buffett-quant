@@ -53,6 +53,8 @@ app.add_middleware(
         "https://ai-buffett-quant.netlify.app",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:3100",
+        "http://127.0.0.1:3100",
     ],
     allow_origin_regex=r"^https://[a-z0-9-]+--ai-buffett-quant\.netlify\.app$",
     allow_credentials=True,

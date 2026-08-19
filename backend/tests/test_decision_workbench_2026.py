@@ -19,7 +19,7 @@ def payload(*, permission_action="execute", sector_lifecycle="强化", alpha_cha
     result = {
         "available": True,
         "meta": {
-            "contract_version": "market-workbench-v3.0.1",
+            "contract_version": "market-workbench-v4.0.0",
             "decision_date": "2026-08-18",
             "calculated_at": NOW.isoformat(),
             "updated_at": NOW.isoformat(),

@@ -24,6 +24,13 @@ def decision_payload(
             "contract_version": contract_version,
             "decision_date": decision_date,
         },
+        "market_way_v4": {
+            "truth": {
+                "status": "PASS",
+                "completeness_pct": 100,
+                "pit_guard": {"rejected_count": 0},
+            },
+        },
         "market_cognition": {"final_action": action},
         "adaptive_strategy_weights": {
             "weights": [{"strategy_id": "tail_1455", "weight_pct": weight_pct}],

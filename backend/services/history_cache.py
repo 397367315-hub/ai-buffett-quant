@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 import httpx
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import DBAPIError
@@ -25,8 +25,10 @@ from models import (
     ConceptFundFlowDaily,
     IndustryFundFlowDaily,
     MarketBoard,
+    MarketDataCache,
     NorthboundDealDaily,
     StockDailyBar,
+    StockUniverseSnapshot,
 )
 from services.data_collector import (
     as_int,
@@ -215,6 +217,68 @@ class HistoryCacheService:
         self._track_task(run.id, task)
         return {"run_id": run.id, "status": "queued", "days": days, "include_stock_bars": include_stock_bars}
 
+    @staticmethod
+    def _run_dict(run: CacheBackfillRun | None) -> dict | None:
+        if run is None:
+            return None
+        total = int(run.total_tasks or 0)
+        completed = int(run.completed_tasks or 0)
+        progress = min(100.0, completed / total * 100.0) if total else 0.0
+        return {
+            "run_id": run.id,
+            "status": run.status,
+            "dataset": run.dataset,
+            "requested_days": run.requested_days,
+            "total_tasks": total,
+            "completed_tasks": completed,
+            "records_written": int(run.records_written or 0),
+            "progress": round(progress, 1),
+            "error": run.error,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        }
+
+    async def latest_backfill_status(self) -> dict | None:
+        """Return the persisted latest backfill state for lightweight UI polling."""
+        async def load_run():
+            async with async_session() as session:
+                return (await session.execute(
+                    select(CacheBackfillRun).order_by(CacheBackfillRun.id.desc()).limit(1)
+                )).scalar_one_or_none()
+
+        return self._run_dict(await self._with_database_retry(load_run))
+
+    async def ensure_recent_backfill(
+        self,
+        days: int = 45,
+        *,
+        include_stock_bars: bool = True,
+        retry_after_minutes: int = 30,
+        partial_retry_after_minutes: int = 5,
+    ) -> dict:
+        """Queue a bounded recent-history repair without creating a task storm.
+
+        V4 needs a comparable recent market baseline. A source refresh may run
+        several times while that baseline is being repaired, so an active run
+        is reused and a recently finished run gets a short retry cooldown.
+        """
+        latest = await self.latest_backfill_status()
+        if latest and latest.get("status") in {"queued", "running"}:
+            return {**latest, "already_running": True}
+        if latest and latest.get("completed_at") and latest.get("status") in {"completed", "partial", "failed"}:
+            try:
+                completed_at = datetime.fromisoformat(str(latest["completed_at"]))
+                cooldown_minutes = (
+                    retry_after_minutes
+                    if latest.get("status") == "completed"
+                    else partial_retry_after_minutes
+                )
+                if datetime.utcnow() - completed_at.replace(tzinfo=None) < timedelta(minutes=cooldown_minutes):
+                    return {**latest, "cooldown": True}
+            except (TypeError, ValueError):
+                pass
+        return await self.queue_backfill(days=days, include_stock_bars=include_stock_bars)
+
     async def resume_incomplete_runs(self) -> list[int]:
         """Resume persisted work after a web instance restart.
 
@@ -336,6 +400,22 @@ class HistoryCacheService:
                 warnings.append(f"板块资金流历史未完成 {board_failures} 个")
             if not north_written:
                 warnings.append("北向历史未返回记录")
+
+            # A backfill is only complete when the derived market-sentiment
+            # table has been rebuilt from the bars just written. This keeps the
+            # V4 workbench from showing a full stock-bar cache with a stale
+            # one-day sentiment history.
+            try:
+                from services.strategic_market_data import strategic_market_data_service
+
+                sentiment_result = await strategic_market_data_service.sync_recent(
+                    days=min(max(int(days), 1), 260),
+                )
+                if sentiment_result.get("status") not in {"success", "partial"}:
+                    warnings.append("市场情绪历史聚合未完成")
+                await self._invalidate_current_derived_caches()
+            except Exception as exc:
+                warnings.append(f"市场情绪历史聚合失败: {type(exc).__name__}")
 
             await self._set_run(
                 run_id,
@@ -770,6 +850,62 @@ class HistoryCacheService:
                 })
         return await self._upsert(StockDailyBar, rows, ["stock_code", "trade_date"])
 
+    async def _tencent_market_snapshot_from_cached_universe(self) -> dict | None:
+        """Build a complete quote snapshot from the last verified stock universe.
+
+        EastMoney is the preferred all-market source, but an overseas Render
+        instance can lose access to its paginated endpoint.  Tencent's compact
+        quote endpoint is still usable outside the trading session, so use the
+        already verified PIT universe as the code directory and fetch quotes in
+        batches.  The result remains marked as Tencent-sourced and incomplete
+        when any symbol cannot be returned.
+        """
+        async with async_session() as session:
+            latest = (await session.execute(
+                select(func.max(StockUniverseSnapshot.trade_date))
+            )).scalar_one_or_none()
+            if latest is None:
+                return None
+            universe = list((await session.execute(
+                select(StockUniverseSnapshot)
+                .where(StockUniverseSnapshot.trade_date == latest)
+                .order_by(StockUniverseSnapshot.stock_code)
+            )).scalars().all())
+        if not universe:
+            return None
+
+        try:
+            quotes = await collector.fetch_tencent_quotes([row.stock_code for row in universe])
+        except Exception as exc:
+            print(f"Tencent full-market snapshot fallback failed: {type(exc).__name__}")
+            return None
+        by_code = {str(item.get("code")): item for item in quotes.get("stocks") or []}
+        stocks: list[dict] = []
+        for row in universe:
+            quote = by_code.get(str(row.stock_code))
+            if not quote:
+                continue
+            stocks.append({
+                **quote,
+                "code": row.stock_code,
+                "name": row.stock_name or quote.get("name") or "",
+                "sector": row.industry or quote.get("sector") or "",
+                "market_cap": quote.get("market_cap") or row.market_cap,
+            })
+        if not stocks:
+            return None
+        return {
+            "stocks": stocks,
+            "total": len(stocks),
+            "upstream_total": len(universe),
+            "source": "tencent+pit_universe_cache",
+            **collector._quote_snapshot_metadata(stocks),
+            "fetched_at": shanghai_now().isoformat(),
+            "complete": len(stocks) == len(universe),
+            "reconstructed": True,
+            "directory_date": latest.isoformat(),
+        }
+
     async def cache_current_stock_bars(self) -> dict:
         """Persist one complete, timestamp-verified A-share daily snapshot.
 
@@ -778,10 +914,18 @@ class HistoryCacheService:
         code-sorted full-market quote snapshot keeps every stock on the same
         source date without issuing thousands of per-symbol requests.
         """
+        primary_error: str | None = None
         try:
             snapshot = await collector.fetch_quant_market_snapshot(include_special=True)
         except Exception as exc:
-            return {"status": "unavailable", "count": 0, "source": "eastmoney", "error": type(exc).__name__}
+            primary_error = type(exc).__name__
+            snapshot = await self._tencent_market_snapshot_from_cached_universe()
+            if snapshot is None:
+                return {
+                    "status": "unavailable", "count": 0,
+                    "source": "eastmoney->tencent->pit_universe_cache",
+                    "error": primary_error,
+                }
 
         raw_date = snapshot.get("data_date")
         try:
@@ -871,6 +1015,8 @@ class HistoryCacheService:
             "data_date": trade_date.isoformat(),
             "source_updated_at": snapshot.get("source_updated_at"),
             "is_realtime": bool(snapshot.get("is_realtime")),
+            "fallback_from": primary_error,
+            "reconstructed": bool(snapshot.get("reconstructed")),
             "pit_universe": pit_universe,
         }
 
@@ -998,14 +1144,16 @@ class HistoryCacheService:
     async def _cached_stock_codes(self, days: int) -> set[str]:
         cutoff = shanghai_now().date() - timedelta(days=max(days, 1))
         recent_cutoff = shanghai_now().date() - timedelta(days=7)
+        minimum_sessions = max(5, round(max(days, 1) * 0.60))
 
         async def load_codes():
             async with async_session() as session:
                 statement = (
                     select(StockDailyBar.stock_code)
                     .group_by(StockDailyBar.stock_code)
-                    .having(func.min(StockDailyBar.trade_date) <= cutoff)
+                    .having(func.min(StockDailyBar.trade_date) <= cutoff + timedelta(days=7))
                     .having(func.max(StockDailyBar.trade_date) >= recent_cutoff)
+                    .having(func.count(StockDailyBar.id) >= minimum_sessions)
                 )
                 return set((await session.execute(statement)).scalars().all())
 
@@ -1014,6 +1162,34 @@ class HistoryCacheService:
         # STAR Market rows. Treat those cached symbols like every other code
         # so a process restart resumes only genuinely missing histories.
         return codes
+
+    async def _invalidate_current_derived_caches(self) -> None:
+        """Drop current computed views after source bars and aggregates change."""
+        from services.market_decision_contract import (
+            WORKBENCH_CACHE_KEY,
+            WORKBENCH_CACHE_PREFIX,
+        )
+        from services.topic_strength import TOPIC_CACHE_PREFIX, TOPIC_LATEST_CACHE_KEY
+
+        latest_date = await self._latest_cached_stock_bar_date()
+        topic_date_key = f"{TOPIC_CACHE_PREFIX}{latest_date.isoformat()}" if latest_date else ""
+
+        async def clear_rows():
+            async with async_session() as session:
+                predicates = [
+                    MarketDataCache.key == WORKBENCH_CACHE_KEY,
+                    MarketDataCache.key.like(f"{WORKBENCH_CACHE_PREFIX}%"),
+                    MarketDataCache.key == TOPIC_LATEST_CACHE_KEY,
+                ]
+                if topic_date_key:
+                    predicates.append(MarketDataCache.key == topic_date_key)
+                result = await session.execute(
+                    delete(MarketDataCache).where(or_(*predicates))
+                )
+                await session.commit()
+                return int(result.rowcount or 0)
+
+        await self._with_database_retry(clear_rows)
 
     async def cache_current_concept_flow(
         self,
@@ -1081,7 +1257,42 @@ class HistoryCacheService:
             }
         rows = await collector.fetch_all_industry_flow()
         if not rows:
-            return {"status": "unavailable", "count": 0, "source": "eastmoney"}
+            # Preserve the last complete, date-aligned board snapshot when the
+            # live endpoint is rate-limited.  This is a real cache fallback,
+            # not a zero-filled replacement; the caller can show its age and
+            # source explicitly.
+            async def read_cached():
+                async with async_session() as session:
+                    cached_date = (await session.execute(
+                        select(func.max(IndustryFundFlowDaily.trade_date)).where(
+                            IndustryFundFlowDaily.trade_date <= trade_date,
+                        )
+                    )).scalar_one_or_none()
+                    count = 0
+                    if cached_date is not None:
+                        count = int((await session.execute(
+                            select(func.count()).select_from(IndustryFundFlowDaily).where(
+                                IndustryFundFlowDaily.trade_date == cached_date,
+                            )
+                        )).scalar_one() or 0)
+                    return cached_date, count
+
+            cached_date, cached_count = await self._with_database_retry(read_cached)
+            if cached_date is not None and cached_count:
+                return {
+                    "status": "cache",
+                    "count": cached_count,
+                    "source": "database_cache",
+                    "trade_date": cached_date.isoformat(),
+                    "cache_used": True,
+                    "live_source_error": "eastmoney_empty",
+                }
+            return {
+                "status": "unavailable",
+                "count": 0,
+                "source": "eastmoney->database_cache",
+                "error": "eastmoney_empty_and_cache_empty",
+            }
         cleared_stale_rows = (
             await self._clear_stale_current_board_snapshot(IndustryFundFlowDaily, trade_date)
             if verified_trade_date
@@ -1256,13 +1467,9 @@ class HistoryCacheService:
         run = await self._with_database_retry(load_run)
         if run is None:
             return None
-        return {
-            "id": run.id, "status": run.status, "dataset": run.dataset, "requested_days": run.requested_days,
-            "total_tasks": run.total_tasks, "completed_tasks": run.completed_tasks,
-            "records_written": run.records_written, "error": run.error,
-            "started_at": run.started_at.isoformat() if run.started_at else None,
-            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
-        }
+        result = self._run_dict(run) or {}
+        result["id"] = run.id
+        return result
 
 
 history_cache = HistoryCacheService()

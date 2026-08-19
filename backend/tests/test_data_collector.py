@@ -4,7 +4,12 @@ from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
-from services.data_collector import EastMoneyDataCollector, normalize_stock_code, stock_secid
+from services.data_collector import (
+    EastMoneyDataCollector,
+    decode_json_or_jsonp,
+    normalize_stock_code,
+    stock_secid,
+)
 
 
 class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
@@ -655,21 +660,22 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["stocks"][0]["sector"], "")
         self.assertIsNone(result["stocks"][0]["main_net_inflow"])
 
-    async def test_tencent_history_preserves_known_fields_and_nulls_unknown_ones(self):
+    async def test_tencent_complete_history_preserves_amount_turnover_and_units(self):
         collector = EastMoneyDataCollector()
 
         async def fake_fetch_json(url, params, headers=None):
-            self.assertEqual(url, collector.TENCENT_KLINE_URL)
+            self.assertEqual(url, collector.TENCENT_COMPLETE_KLINE_URL)
             self.assertEqual(params["param"], "sh600519,day,,,385,qfq")
+            self.assertEqual(params["_var"], "kline_dayqfq")
             self.assertEqual(headers, collector.TENCENT_HEADERS)
             return {
                 "code": 0,
                 "data": {
                     "sh600519": {
                         "qfqday": [
-                            ["2025-07-29", "10", "10", "10.5", "9.5", "100"],
-                            ["2025-07-30", "11", "11", "11.5", "10.5", "123"],
-                            ["2026-07-30", "12", "12", "13", "11", "200"],
+                            ["2025-07-29", "10", "10", "10.5", "9.5", "100", {}, "1.10", "12.34"],
+                            ["2025-07-30", "11", "11", "11.5", "10.5", "123", {}, "1.25", "15.67"],
+                            ["2026-07-30", "12", "12", "13", "11", "200", {}, "2.50", "24.50"],
                         ],
                         "qt": {"sh600519": ["1", "贵州茅台", "600519"]},
                     }
@@ -680,20 +686,20 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         with patch("services.data_collector.shanghai_now", return_value=datetime(2026, 7, 30)):
             result = await collector.fetch_stock_price_history("600519", 365)
 
-        self.assertEqual(result["source"], "tencent")
+        self.assertEqual(result["source"], "tencent_newfqkline_qfq")
         self.assertEqual(result["name"], "贵州茅台")
         self.assertEqual([item["trade_date"] for item in result["history"]], ["2025-07-30", "2026-07-30"])
         first = result["history"][0]
         self.assertEqual(first["volume"], 12300)
-        self.assertIsNone(first["amount"])
-        self.assertIsNone(first["turnover"])
+        self.assertEqual(first["amount"], 156700)
+        self.assertEqual(first["turnover"], 1.25)
         self.assertAlmostEqual(first["change_pct"], 10.0)
 
     async def test_tencent_star_market_volume_is_already_in_shares(self):
         collector = EastMoneyDataCollector()
 
         async def fake_fetch_json(url, params, headers=None):
-            self.assertEqual(url, collector.TENCENT_KLINE_URL)
+            self.assertEqual(url, collector.TENCENT_COMPLETE_KLINE_URL)
             self.assertEqual(params["param"], "sh688432,day,,,385,qfq")
             return {
                 "data": {
@@ -717,8 +723,9 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         collector = EastMoneyDataCollector()
 
         async def fake_fetch_json(url, params, headers=None):
-            self.assertEqual(url, collector.TENCENT_KLINE_URL)
+            self.assertEqual(url, collector.TENCENT_COMPLETE_KLINE_URL)
             self.assertEqual(params["param"], "sh000001,day,,,385,qfq")
+            self.assertEqual(params["_var"], "kline_dayqfq")
             self.assertEqual(headers, collector.TENCENT_HEADERS)
             return {
                 "data": {
@@ -740,6 +747,39 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
             {"date": "2025-07-30", "close": 3810.0},
             {"date": "2026-07-30", "close": 3804.69},
         ])
+
+    async def test_tencent_history_uses_legacy_endpoint_before_ftshare(self):
+        collector = EastMoneyDataCollector()
+        requested_urls = []
+
+        async def fake_fetch_json(url, params, headers=None):
+            requested_urls.append(url)
+            if url == collector.TENCENT_COMPLETE_KLINE_URL:
+                raise RuntimeError("complete endpoint unavailable")
+            return {
+                "data": {
+                    "sh600519": {
+                        "qfqday": [["2026-07-30", "10", "11", "11.5", "9.8", "100"]],
+                    },
+                },
+            }
+
+        collector.fetch_json = fake_fetch_json
+        with patch("services.data_collector.shanghai_now", return_value=datetime(2026, 7, 30)):
+            result = await collector.fetch_stock_price_history("600519", 30)
+
+        self.assertEqual(requested_urls, [
+            collector.TENCENT_COMPLETE_KLINE_URL,
+            collector.TENCENT_KLINE_URL,
+        ])
+        self.assertEqual(result["source"], "tencent_qfq")
+        self.assertIsNone(result["history"][0]["amount"])
+
+    def test_assignment_jsonp_decoder_is_strict(self):
+        payload = decode_json_or_jsonp('kline_dayqfq={"code":0,"data":{}};')
+        self.assertEqual(payload["code"], 0)
+        with self.assertRaises(ValueError):
+            decode_json_or_jsonp('callback({"code":0})')
 
     def test_tencent_quote_parser_preserves_code_units_and_timestamp(self):
         values = [""] * 88

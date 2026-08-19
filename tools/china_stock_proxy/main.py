@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -21,10 +22,15 @@ ALLOWED_HOSTS = {
     "datacenter-web.eastmoney.com",
     "np-anotice-stock.eastmoney.com",
     "ifzq.gtimg.cn",
+    "proxy.finance.qq.com",
     "web.ifzq.gtimg.cn",
 }
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
 TENCENT_SYMBOL_RE = re.compile(r"^(?:sh|sz|bj)\d{6}$")
+JSONP_ASSIGNMENT_RE = re.compile(
+    r"^\s*[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*\s*=\s*(\{.*\})\s*;?\s*$",
+    re.DOTALL,
+)
 
 PUSH2_HOST = "push2.eastmoney.com"
 PUSH2_DELAY_HOST = "push2delay.eastmoney.com"
@@ -116,6 +122,20 @@ class UpstreamPayloadError(RuntimeError):
     """Raised when an upstream returns an application-level error response."""
 
 
+def _decode_json_or_jsonp(text: str) -> dict:
+    """Accept JSON and the fixed assignment-style JSONP used by Tencent."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        match = JSONP_ASSIGNMENT_RE.fullmatch(text)
+        if not match:
+            raise ValueError("unsupported upstream JSONP response")
+        payload = json.loads(match.group(1))
+    if not isinstance(payload, dict):
+        raise ValueError("upstream response must be a JSON object")
+    return payload
+
+
 def _require_token(token: str | None):
     expected = os.getenv("DATA_PROXY_TOKEN", "")
     if expected and (not token or not secrets.compare_digest(token, expected)):
@@ -177,7 +197,7 @@ async def _get_upstream_json(url: str, params: dict, headers: dict) -> dict:
             try:
                 resp = await client.get(url, params=params, headers=headers)
                 resp.raise_for_status()
-                return resp.json()
+                return _decode_json_or_jsonp(resp.text)
             except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
                 last_error = exc
                 status_code = (

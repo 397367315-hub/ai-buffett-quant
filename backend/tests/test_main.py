@@ -50,6 +50,20 @@ class MainAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["access-control-allow-origin"], origin)
 
+    def test_local_qa_origin_is_allowed(self):
+        origin = "http://127.0.0.1:3100"
+        response = TestClient(app).options(
+            "/api/v1/market/workbench",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], origin)
+
 
 if __name__ == "__main__":
     unittest.main()

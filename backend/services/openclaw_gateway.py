@@ -22,6 +22,7 @@ from services.macro_dashboard import macro_dashboard_service
 from services.midday_research import midday_research_service
 from services.decision_workbench_2026 import decision_workbench_2026_service
 from services.market_decision_workbench import market_decision_workbench_service
+from services.market_way_v4 import market_way_v4_service
 from services.openclaw_database import query_system_database
 from services.overnight_strategy import overnight_strategy_service
 from services.personal_portfolio import personal_portfolio_service
@@ -219,6 +220,44 @@ async def _decision_snapshots(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"records": rows, "count": len(rows), "read_only": True}
 
 
+async def _market_way_v4(arguments: dict[str, Any]) -> dict[str, Any]:
+    force = arguments.get("force", False)
+    if not isinstance(force, bool):
+        raise ValueError("force 必须是布尔值")
+    payload = await market_way_v4_service.current(force=force)
+    return {
+        "meta": payload.get("meta") or {},
+        "market_way_v4": payload.get("market_way_v4") or {},
+        "trading_permission": (payload.get("decision_2026") or {}).get("trading_permission") or {},
+    }
+
+
+async def _truth_status(arguments: dict[str, Any]) -> dict[str, Any]:
+    force = arguments.get("force", False)
+    if not isinstance(force, bool):
+        raise ValueError("force 必须是布尔值")
+    return await market_way_v4_service.truth_status(force=force)
+
+
+async def _national_direction_radar(arguments: dict[str, Any]) -> dict[str, Any]:
+    force = arguments.get("force", False)
+    if not isinstance(force, bool):
+        raise ValueError("force 必须是布尔值")
+    payload = await market_way_v4_service.current(force=force)
+    return (payload.get("market_way_v4") or {}).get("national_direction_radar") or {}
+
+
+async def _refresh_market_way_sources(arguments: dict[str, Any]) -> dict[str, Any]:
+    background = arguments.get("background", True)
+    if not isinstance(background, bool):
+        raise ValueError("background 必须是布尔值")
+    return await market_way_v4_service.refresh_sources(background=background)
+
+
+async def _save_market_judgment(arguments: dict[str, Any]) -> dict[str, Any]:
+    return await market_way_v4_service.save_judgment(arguments)
+
+
 ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -328,6 +367,40 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {"phase": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}, "additionalProperties": False},
     },
     {
+        "name": "get_market_way_v4",
+        "description": "读取V4市场之道决策中枢：真值、国家方向、政策传导、产业盈利、九种势态、资金迁徙、定价力量、位置、时机与知止。",
+        "inputSchema": {"type": "object", "properties": {"force": {"type": "boolean", "default": False}}, "additionalProperties": False},
+    },
+    {
+        "name": "get_truth_status",
+        "description": "检查四时间、S/A/B/C来源等级、数据冲突和未来函数防火墙；返回可追溯证据而非示例值。",
+        "inputSchema": {"type": "object", "properties": {"force": {"type": "boolean", "default": False}}, "additionalProperties": False},
+    },
+    {
+        "name": "get_national_direction_radar",
+        "description": "读取国家方向、官方政策L1-L6传导、行业财务PIT验证和政策-产业-市场错位状态。",
+        "inputSchema": {"type": "object", "properties": {"force": {"type": "boolean", "default": False}}, "additionalProperties": False},
+    },
+    {
+        "name": "refresh_market_way_sources",
+        "description": "触发官方政策、股票行业PIT、公司公告日财务PIT与产业聚合缓存更新；不执行交易。",
+        "inputSchema": {"type": "object", "properties": {"background": {"type": "boolean", "default": True}}, "additionalProperties": False},
+    },
+    {
+        "name": "save_market_way_judgment",
+        "description": "保存用户对当日市场的独立判断，与AI结论分轨记录并在后续交易日验证。",
+        "inputSchema": {
+            "type": "object", "required": ["user_action"],
+            "properties": {
+                "user_action": {"type": "string", "enum": ["BULLISH", "NEUTRAL", "BEARISH", "WAIT", "NO_TRADE"]},
+                "user_judgment": {"type": "string", "maxLength": 4000},
+                "user_evidence": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
+                "phase": {"type": "string"}, "trade_date": {"type": "string", "format": "date"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "query_system_database",
         "description": "只读查询系统生产数据库中的白名单数据集，支持历史行情、资金流、选股运行、量化策略和一夜持仓；不接受任意SQL。",
         "inputSchema": {
@@ -340,7 +413,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "stock_daily_bars", "overnight_runs", "overnight_positions",
                         "stock_selection_runs", "quant_strategies", "market_flow",
                         "market_sentiment_daily", "security_master", "security_status_events",
-                        "stock_valuation_history",
+                        "stock_valuation_history", "truth_data_events", "data_conflicts",
+                        "industry_validation", "policy_transmission", "market_way_states",
+                        "market_way_judgments",
                     ],
                 },
                 "fields": {"type": "array", "items": {"type": "string"}, "maxItems": 40},
@@ -386,6 +461,11 @@ HANDLERS: dict[str, ToolHandler] = {
     "run_midday_research": _run_midday_research,
     "get_decision_workbench_2026": _decision_workbench,
     "get_decision_snapshots": _decision_snapshots,
+    "get_market_way_v4": _market_way_v4,
+    "get_truth_status": _truth_status,
+    "get_national_direction_radar": _national_direction_radar,
+    "refresh_market_way_sources": _refresh_market_way_sources,
+    "save_market_way_judgment": _save_market_judgment,
     "query_system_database": query_system_database,
 }
 
@@ -397,7 +477,7 @@ class OpenClawGateway:
     def manifest() -> dict[str, Any]:
         return {
             "name": "ai-buffett-openclaw",
-            "version": "1.4.0",
+            "version": "1.5.0",
             "protocol": "MCP JSON-RPC 2.0 over stateless HTTP",
             "endpoint": "/api/v1/openclaw/mcp",
             "enabled": bool(settings.openclaw_enabled),
@@ -438,7 +518,7 @@ class OpenClawGateway:
                 "result": {
                     "protocolVersion": self.protocol_version,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "ai-buffett-openclaw", "version": "1.3.0"},
+                    "serverInfo": {"name": "ai-buffett-openclaw", "version": "1.5.0"},
                 },
             }
         if method == "ping":

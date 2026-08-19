@@ -7,9 +7,9 @@ from math import isfinite
 from typing import Any
 
 
-WORKBENCH_CACHE_KEY = "market_decision_workbench_latest_v3_0_1"
-WORKBENCH_CACHE_PREFIX = "market_decision_workbench_v3_0_1:"
-WORKBENCH_CONTRACT_VERSION = "market-workbench-v3.0.1"
+WORKBENCH_CACHE_KEY = "market_decision_workbench_latest_v4_0_0"
+WORKBENCH_CACHE_PREFIX = "market_decision_workbench_v4_0_0:"
+WORKBENCH_CONTRACT_VERSION = "market-workbench-v4.0.0"
 SCORE_VERSION = "market-state-v2.0.0"
 CANDIDATE_SCORE_VERSION = "workbench-candidate-v2.0.0"
 FINAL_ACTIONS = ("execute", "caution", "observe", "no_trade")
@@ -56,6 +56,23 @@ def evaluate_market_execution_gate(
         return result
     if payload_date != decision_date.isoformat():
         result["reason"] = "市场决策日与策略信号日不一致，不使用跨日结论建立模拟仓位"
+        return result
+
+    market_way = payload.get("market_way_v4") if isinstance(payload.get("market_way_v4"), dict) else {}
+    truth = market_way.get("truth") if isinstance(market_way.get("truth"), dict) else {}
+    truth_status = str(truth.get("status") or "")
+    result["truth_status"] = truth_status or None
+    result["truth_completeness_pct"] = truth.get("completeness_pct")
+    if not truth_status:
+        legacy_action = str((payload.get("market_cognition") or {}).get("final_action") or "")
+        result["reason"] = (
+            "V4真值层缺失，按失败关闭规则不建立新模拟仓位；市场工作台输出不交易"
+            if legacy_action == "no_trade"
+            else "V4真值层缺失，按失败关闭规则不建立新模拟仓位"
+        )
+        return result
+    if truth_status == "FAIL" or int((truth.get("pit_guard") or {}).get("rejected_count") or 0) > 0:
+        result["reason"] = "V4真值层未通过或存在未来数据，按失败关闭规则不建立新模拟仓位"
         return result
 
     cognition = payload.get("market_cognition") if isinstance(payload.get("market_cognition"), dict) else {}

@@ -6,7 +6,7 @@ import asyncio
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, case, desc, func, select
+from sqlalchemy import and_, case, delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -33,6 +33,23 @@ def _percentile(value: float | None, values: list[float]) -> float | None:
 
 class StrategicMarketDataService:
     _CONCURRENCY = 4
+    # A market-wide session must contain a broad A-share universe. Rows with
+    # one or a handful of bars are remnants of an interrupted backfill and are
+    # not valid market breadth/liquidity evidence.
+    _MIN_MARKET_STOCK_COUNT = 1_000
+
+    @staticmethod
+    def _trading_day_distance(start: date | None, end: date) -> int | None:
+        """Measure cache age by weekdays so weekends do not look like gaps."""
+        if start is None or start > end:
+            return None
+        distance = 0
+        cursor = start
+        while cursor < end:
+            cursor += timedelta(days=1)
+            if cursor.weekday() < 5:
+                distance += 1
+        return distance
 
     def __init__(self) -> None:
         self._ensure_lock = asyncio.Lock()
@@ -188,16 +205,24 @@ class StrategicMarketDataService:
         async with async_session() as session:
             trade_dates = list((await session.execute(
                 select(StockDailyBar.trade_date)
-                .distinct()
+                .group_by(StockDailyBar.trade_date)
+                .having(func.count(StockDailyBar.id) >= self._MIN_MARKET_STOCK_COUNT)
                 .order_by(desc(StockDailyBar.trade_date))
                 .limit(bounded)
             )).scalars().all())
+            # Remove incomplete aggregate rows left by older interrupted jobs.
+            # They would otherwise remain visible in longer history queries and
+            # contaminate limit/breadth statistics with a one-stock session.
+            await session.execute(delete(MarketSentimentDaily).where(
+                MarketSentimentDaily.stock_count < self._MIN_MARKET_STOCK_COUNT
+            ))
             existing = {
                 row.trade_date: row
                 for row in (await session.execute(
                     select(MarketSentimentDaily).where(MarketSentimentDaily.trade_date.in_(trade_dates))
                 )).scalars().all()
             } if trade_dates else {}
+            await session.commit()
         if not trade_dates:
             return {"status": "unavailable", "written": 0, "reason": "stock_daily_bars_empty"}
 
@@ -310,7 +335,9 @@ class StrategicMarketDataService:
             "failed_limit_count": row.failed_limit_count,
             "failed_limit_rate": row.failed_limit_rate,
             "max_streak_height": row.max_streak_height,
+            "source": row.source,
         } for row in rows]
+        source_keys = sorted({str(item.get("source")) for item in history if item.get("source")})
         latest = history[-1] if history else {}
         amount_values = [
             value for item in history
@@ -332,11 +359,14 @@ class StrategicMarketDataService:
         stock_count = int(latest.get("stock_count") or 0)
         directional = int(latest.get("up_count") or 0) + int(latest.get("down_count") or 0)
         latest_date = date.fromisoformat(str(latest.get("date"))) if latest.get("date") else None
-        is_current = bool(latest_date and (shanghai_now().date() - latest_date).days <= 10)
+        today = shanghai_now().date()
+        trading_day_age = self._trading_day_distance(latest_date, today)
+        is_current = bool(trading_day_age is not None and trading_day_age <= 10)
         breadth_complete = bool(stock_count >= 1_000 and counted >= stock_count * 0.9)
         summary = {
             "latest": latest or None,
             "is_current": is_current,
+            "trading_day_age": trading_day_age,
             "breadth_complete": breadth_complete,
             "amount_complete": bool(stock_count >= 1_000 and int(latest.get("amount_count") or 0) >= stock_count * 0.9),
             "turnover_complete": bool(stock_count >= 1_000 and int(latest.get("turnover_count") or 0) >= stock_count * 0.9),
@@ -370,6 +400,7 @@ class StrategicMarketDataService:
             "count": len(history),
             "data_date": history[-1]["date"] if history else None,
             "source": "database_cache",
+            "sources": source_keys,
             "is_realtime": False,
             "cache_used": bool(history),
             "available": bool(history),

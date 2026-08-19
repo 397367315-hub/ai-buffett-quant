@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import defaultdict
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from typing import Any, Awaitable
 
@@ -691,7 +692,10 @@ def _crowding_risk(topic_snapshot: dict, sentiment_history: list[dict], decision
         ) / positive * 100
     components = [
         _scale(_average(heat_values), 8, 35) if heat_values else None,
-        _scale(abs(min(pullback_values)), 0, 20) if pullback_values and min(pullback_values) < 0 else None,
+        # A 0% pullback is an observed, risk-relevant result.  It means the
+        # leader is still at the five-session high, not that the field is
+        # missing.
+        _scale(abs(min(pullback_values)), 0, 20) if pullback_values else None,
         _scale(sum(bool(item) for item in overheated) / len(overheated) * 100, 0, 100) if overheated else None,
         _scale(100 - _average([_number(item.get("breadth")) for item in topics]), 0, 70) if topics and _average([_number(item.get("breadth")) for item in topics]) is not None else None,
         _scale(break_rate, 8, 35) if break_rate is not None else None,
@@ -736,6 +740,7 @@ def _crowding_risk(topic_snapshot: dict, sentiment_history: list[dict], decision
         },
         "evidence": [
             f"头部龙头近5日平均涨幅 {sum(heat_values) / len(heat_values):.1f}%" if heat_values else "头部涨幅待采集",
+            f"头部龙头近5日最大回撤 {abs(min(pullback_values)):.1f}%" if pullback_values else "头部回撤待采集",
             f"炸板率 {break_rate:.1f}%" if break_rate is not None else "炸板率待采集",
             f"头部板块平均宽度 {_average([_number(item.get('breadth')) for item in topics]):.1f}%" if topics and _average([_number(item.get("breadth")) for item in topics]) is not None else "跟风宽度待采集",
         ],
@@ -1111,8 +1116,19 @@ def _main_lines(topic_snapshot: dict) -> list[dict]:
                 "name": str(leader.get("name") or "--"),
                 "price": _round(_number(leader.get("price")), 2),
                 "change_pct": _round(_number(leader.get("pct")), 2),
+                "return_5d_pct": _round(_number(leader.get("return_5d_pct")), 2),
+                "pullback_5d_pct": _round(_number(leader.get("pullback_5d_pct")), 2),
+                "history_sessions": _integer(leader.get("history_sessions")),
                 "boards": _integer(leader.get("boards")),
                 "heat_status": leader.get("heat_status") or "待核验",
+                "turnover": _round(_number(leader.get("turnover")), 2),
+                "volume_ratio": _round(_number(leader.get("volume_ratio")), 2),
+                "pe": _round(_number(leader.get("pe")), 2),
+                "pb": _round(_number(leader.get("pb")), 2),
+                "roe": _round(_number(leader.get("roe")), 2),
+                "main_net_inflow": _integer(leader.get("main_net_inflow")),
+                "main_net_inflow_pct": _round(_number(leader.get("main_net_inflow_pct")), 2),
+                "intraday": leader.get("intraday"),
             },
             "risk_flags": _unique(risks),
         })
@@ -1173,7 +1189,9 @@ def _topic_candidate(topic: dict, market_state: dict, decision_date: str) -> dic
     }
     why = [str(topic.get("evidence") or "")]
     if intraday.get("above_vwap") is True:
-        why.append("分时价格位于均价线上方")
+        why.append(f"分时价格位于均价线上方（{intraday.get('vwap_basis') or '分时证据'}）")
+    if intraday.get("active_direction"):
+        why.append(f"成交方向{intraday.get('active_direction')}（{intraday.get('direction_basis') or '成交证据'}）")
     if inflow is not None:
         why.append(f"个股主力净额 {inflow / 1e8:+.2f} 亿")
     why_not = []
@@ -1181,13 +1199,30 @@ def _topic_candidate(topic: dict, market_state: dict, decision_date: str) -> dic
         why_not.append("位置偏热，风险扣分")
     if intraday.get("active_direction") == "sell":
         why_not.append("已采集主动方向偏卖出")
-    why_not.extend(f"{item}待补" for item in data_gaps[:2])
+    gap_labels = {
+        "分时均价线": "当日分时均价证据未覆盖，保留观察",
+        "主动买卖方向": "当日成交方向证据未覆盖，保留观察",
+        "近5日涨幅": "近5日历史窗口不足，暂不作趋势加分",
+        "换手率": "换手率未形成同日证据，不作通过条件",
+        "连板高度": "连板高度未形成源生事件证据，不作通过条件",
+    }
+    why_not.extend(gap_labels.get(item, f"{item}证据未形成") for item in data_gaps[:2])
     return {
         "code": code,
         "name": str(stock.get("name") or code),
         "sector": str(topic.get("name") or stock.get("industry") or "未分类"),
         "price": _round(_number(stock.get("price")), 2),
         "change_pct": _round(stock_change, 2),
+        "turnover": _round(turnover, 2),
+        "volume_ratio": _round(_number(stock.get("volume_ratio")), 2),
+        "pe": _round(_number(stock.get("pe")), 2),
+        "pb": _round(_number(stock.get("pb")), 2),
+        "roe": _round(_number(stock.get("roe")), 2),
+        "main_net_inflow": _integer(stock.get("main_net_inflow")),
+        "main_net_inflow_pct": _round(_number(stock.get("main_net_inflow_pct")), 2),
+        "return_5d_pct": _round(return_5d, 2),
+        "pullback_5d_pct": _round(_number(stock.get("pullback_5d_pct")), 2),
+        "history_sessions": _integer(stock.get("history_sessions")),
         "score": _round(score, 1),
         "confidence_pct": round(observed_weight / 0.90 * 100, 1),
         "score_breakdown": components,
@@ -1372,6 +1407,12 @@ def _daily_history_features(rows: list[StockDailyBar]) -> dict[str, float | int 
         for close in closes[-20:]:
             peak = max(peak, close)
             drawdown = max(drawdown, (peak - close) / peak * 100 if peak else 0.0)
+    pullback_5d = None
+    if len(closes) >= 5:
+        recent_window = closes[-5:]
+        recent_peak = max(recent_window)
+        if recent_peak > 0:
+            pullback_5d = (closes[-1] / recent_peak - 1) * 100
     volume_ratio = None
     valid_volumes = [value for value in volumes if value is not None and value > 0]
     if len(valid_volumes) >= 6:
@@ -1386,10 +1427,58 @@ def _daily_history_features(rows: list[StockDailyBar]) -> dict[str, float | int 
         "return_20d_pct": round((closes[-1] / closes[-21] - 1) * 100, 2) if len(closes) >= 21 else None,
         "volatility_20d_pct": round(volatility, 2) if volatility is not None else None,
         "max_drawdown_20d_pct": round(drawdown, 2) if drawdown is not None else None,
+        "pullback_5d_pct": round(pullback_5d, 2) if pullback_5d is not None else None,
         "volume_ratio": round(volume_ratio, 2) if volume_ratio is not None else None,
         "volume_ratio_source": "stock_daily_bars_5d_average" if volume_ratio is not None else None,
         "data_date": ordered[-1].trade_date.isoformat() if ordered else None,
     }
+
+
+def _daily_limit_pct(code: str) -> float:
+    if code.startswith(("300", "301", "302", "688", "689")):
+        return 20.0
+    if code.startswith(("4", "8", "92")):
+        return 30.0
+    return 10.0
+
+
+def _is_daily_limit_up(code: str, change_pct: object) -> bool:
+    value = _number(change_pct)
+    return value is not None and value >= _daily_limit_pct(code) - 0.30
+
+
+def _enrich_topic_history(topic_snapshot: dict, history_features: dict[str, dict]) -> dict:
+    """Attach cached-bar evidence to topic members without changing source facts."""
+    enriched = deepcopy(topic_snapshot)
+    for topic in enriched.get("topics") or []:
+        members = topic.get("members") or []
+        for member in members:
+            code = str(member.get("code") or "")
+            history = history_features.get(code) or {}
+            for key in ("return_5d_pct", "pullback_5d_pct", "history_sessions", "data_date"):
+                if member.get(key) in (None, "", "-") and history.get(key) not in (None, "", "-"):
+                    member[key] = history[key]
+            return_5d = _number(member.get("return_5d_pct"))
+            turnover = _number(member.get("turnover"))
+            boards = member.get("boards") if member.get("boards_verified") else None
+            heat_fields = sum(value is not None for value in (return_5d, turnover, boards))
+            if member.get("overheated") is None and heat_fields >= 2:
+                member["overheated"] = bool(
+                    (return_5d is not None and return_5d >= 25)
+                    or (turnover is not None and turnover >= 35)
+                    or (boards is not None and boards >= 4)
+                )
+                member["heat_status"] = "过热" if member["overheated"] else "可观察"
+            gaps = list(member.get("data_gaps") or [])
+            if member.get("return_5d_pct") is not None:
+                gaps = [item for item in gaps if item != "近5日涨幅"]
+            member["data_gaps"] = gaps
+        leader_code = str((topic.get("leader") or {}).get("code") or "")
+        topic["leader"] = next(
+            (member for member in members if str(member.get("code") or "") == leader_code),
+            topic.get("leader") or {},
+        )
+    return enriched
 
 
 def _build_daily_short_term_recommendations(
@@ -2300,6 +2389,24 @@ class MarketDecisionWorkbenchService:
             return fallback
 
     @staticmethod
+    async def _with_market_way_v4(payload: dict, *, refresh_policy: bool = False) -> dict:
+        from services.market_way_v4 import market_way_v4_service
+
+        decorated = await market_way_v4_service.decorate(
+            payload,
+            refresh_policy=refresh_policy,
+        )
+        # Overnight/auction workers read the same persisted cache directly.
+        # Store the V4 decoration there as well so no worker can accidentally
+        # consume a pre-V4 snapshot after the web page has been upgraded.
+        if decorated.get("available") and "market_way_v4" in decorated:
+            try:
+                await MarketDecisionWorkbenchService._write_cache(decorated)
+            except Exception as exc:
+                print(f"Workbench V4 cache write failed: {type(exc).__name__}")
+        return decorated
+
+    @staticmethod
     async def _read_cache() -> dict | None:
         try:
             async with async_session() as session:
@@ -2518,6 +2625,75 @@ class MarketDecisionWorkbenchService:
         return {code: _daily_history_features(items) for code, items in grouped.items()}
 
     @staticmethod
+    async def _load_daily_limit_transition(target: date) -> dict[str, Any]:
+        """Derive two-session limit-up promotion from the canonical daily bars."""
+        try:
+            async with async_session() as session:
+                dates = list((await session.execute(
+                    select(StockDailyBar.trade_date)
+                    .where(StockDailyBar.trade_date <= target)
+                    .distinct()
+                    .order_by(desc(StockDailyBar.trade_date))
+                    .limit(2)
+                )).scalars().all())
+                if len(dates) < 2:
+                    return {
+                        "promotion_rate": None,
+                        "source": "daily_bar_derived",
+                        "data_dates": [item.isoformat() for item in dates],
+                        "prior_limit_up_count": 0,
+                        "current_limit_up_count": 0,
+                    }
+                rows = list((await session.execute(
+                    select(StockDailyBar.stock_code, StockDailyBar.trade_date, StockDailyBar.change_pct)
+                    .where(StockDailyBar.trade_date.in_(dates))
+                )).all())
+        except Exception as exc:
+            print(f"Workbench limit transition load failed: {type(exc).__name__}")
+            return {
+                "promotion_rate": None,
+                "source": "daily_bar_derived",
+                "data_dates": [],
+                "prior_limit_up_count": 0,
+                "current_limit_up_count": 0,
+            }
+
+        current_date, prior_date = dates[0], dates[1]
+        current = {
+            str(code) for code, trade_date, change_pct in rows
+            if trade_date == current_date and _is_daily_limit_up(str(code), change_pct)
+        }
+        prior = {
+            str(code) for code, trade_date, change_pct in rows
+            if trade_date == prior_date and _is_daily_limit_up(str(code), change_pct)
+        }
+        promotion_rate = round(len(current & prior) / len(prior) * 100, 2) if prior else None
+        return {
+            "promotion_rate": promotion_rate,
+            "source": "daily_bar_derived",
+            "data_dates": [current_date.isoformat(), prior_date.isoformat()],
+            "prior_limit_up_count": len(prior),
+            "current_limit_up_count": len(current),
+            "promoted_count": len(current & prior),
+            "method": "连续两个真实日线交易日按代码板块涨停阈值派生；不等同于竞价或盘口晋级事件流",
+        }
+
+    @staticmethod
+    def _attach_daily_limit_transition(topic_snapshot: dict, transition: dict[str, Any]) -> dict:
+        enriched = deepcopy(topic_snapshot)
+        market = enriched.setdefault("market", {})
+        emotion = market.setdefault("emotion", {})
+        if transition.get("promotion_rate") is not None:
+            emotion["promotion_rate"] = transition["promotion_rate"]
+        emotion["promotion_rate_source"] = transition.get("source") or "daily_bar_derived"
+        emotion["promotion_rate_data_dates"] = transition.get("data_dates") or []
+        emotion["promotion_rate_sample"] = {
+            key: transition.get(key)
+            for key in ("prior_limit_up_count", "current_limit_up_count", "promoted_count")
+        }
+        return enriched
+
+    @staticmethod
     def _recommendation_codes(topic: dict, selection: dict | None) -> list[str]:
         codes: list[str] = []
         for item in ((topic.get("market") or {}).get("short_term_candidates") or []):
@@ -2550,7 +2726,7 @@ class MarketDecisionWorkbenchService:
         if cached and not force and self._cache_fresh(cached, now, cache_seconds):
             result = dict(cached)
             result["meta"] = {**(result.get("meta") or {}), "cache_used": True}
-            return result
+            return await self._with_market_way_v4(result)
 
         topic, index_history, overnight, selection, sentiment_history = await asyncio.gather(
             self._safe(topic_strength_service.get(force=force), {}, 18),
@@ -2561,12 +2737,13 @@ class MarketDecisionWorkbenchService:
         )
         topic_date = str(topic.get("data_date") or "")
         if not topic_date:
-            return cached or assemble_workbench(
+            fallback = cached or assemble_workbench(
                 {}, index_history, sentiment_history, selection, overnight,
             )
+            return await self._with_market_way_v4(fallback, refresh_policy=force)
         target_date = _date(topic_date)
         recommendation_codes = self._recommendation_codes(topic, selection)
-        financial_features, history_features = await asyncio.gather(
+        financial_features, history_features, limit_transition = await asyncio.gather(
             self._safe(
                 self._load_cached_financial_features(recommendation_codes, target_date) if target_date else asyncio.sleep(0, result={}),
                 {},
@@ -2577,7 +2754,14 @@ class MarketDecisionWorkbenchService:
                 {},
                 6,
             ),
+            self._safe(
+                self._load_daily_limit_transition(target_date) if target_date else asyncio.sleep(0, result={}),
+                {},
+                6,
+            ),
         )
+        topic = _enrich_topic_history(topic, history_features if isinstance(history_features, dict) else {})
+        topic = self._attach_daily_limit_transition(topic, limit_transition if isinstance(limit_transition, dict) else {})
         payload = assemble_workbench(
             topic,
             index_history,
@@ -2588,11 +2772,12 @@ class MarketDecisionWorkbenchService:
             history_features=history_features if isinstance(history_features, dict) else {},
         )
         if self._prefer_cached(payload, cached):
-            return self._retained_cache(cached, payload)
+            retained = self._retained_cache(cached, payload)
+            return await self._with_market_way_v4(retained, refresh_policy=force)
         if payload.get("available"):
             await self._write_cache(payload)
-            return payload
-        return cached or payload
+            return await self._with_market_way_v4(payload, refresh_policy=force)
+        return await self._with_market_way_v4(cached or payload, refresh_policy=force)
 
 
 market_decision_workbench_service = MarketDecisionWorkbenchService()

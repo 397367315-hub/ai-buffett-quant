@@ -130,14 +130,7 @@
         "max_position_pct": 20.0,
         "fixed_amount": null
       },
-      "builtin": true,
-      "description": "先筛选盈利质量、现金流、成长和估值均合格的公司，再用长期趋势和市场宽度确认入场。",
-      "horizon": "long",
-      "target_win_rate": [
-        70,
-        90
-      ],
-      "validation_note": "70%-90%仅为验证目标，需跨牛熊周期、至少60笔完成交易并做滚动样本外验证，不承诺收益。"
+      "builtin": false
     },
     {
       "id": "strat_builtin_short_v1",
@@ -233,11 +226,13 @@
           },
           {
             "type": "vol_ratio",
-            "operator": "between",
-            "value": [
-              1.2,
-              3.5
-            ]
+            "operator": "gt",
+            "value": 1.2
+          },
+          {
+            "type": "vol_ratio",
+            "operator": "lte",
+            "value": 3.5
           },
           {
             "type": "main_inflow",
@@ -272,14 +267,7 @@
         "max_position_pct": 20.0,
         "fixed_amount": null
       },
-      "builtin": true,
-      "description": "只在市场和行业同步偏强时，选择现金流为正且负债可控的非ST盈利股，用趋势、量能和主力资金共同确认，控制追高与解禁风险。",
-      "horizon": "short",
-      "target_win_rate": [
-        70,
-        90
-      ],
-      "validation_note": "70%-90%仅为验证目标，需至少60笔完成交易、滚动样本外回测和模拟盘确认，不承诺收益。"
+      "builtin": false
     }
   ]
 }

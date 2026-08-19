@@ -303,6 +303,13 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
                         "contract_version": WORKBENCH_CONTRACT_VERSION,
                         "decision_date": "2026-08-04",
                     },
+                    "market_way_v4": {
+                        "truth": {
+                            "status": "PASS",
+                            "completeness_pct": 100,
+                            "pit_guard": {"rejected_count": 0},
+                        },
+                    },
                     "market_cognition": {"final_action": "execute"},
                     "adaptive_strategy_weights": {
                         "weights": [
@@ -388,6 +395,13 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
             gate_row = await session.get(MarketDataCache, f"{WORKBENCH_CACHE_PREFIX}2026-08-04")
             gate_row.payload = {
                 **gate_row.payload,
+                "market_way_v4": {
+                    "truth": {
+                        "status": "PASS",
+                        "completeness_pct": 100,
+                        "pit_guard": {"rejected_count": 0},
+                    },
+                },
                 "market_cognition": {"final_action": "no_trade"},
                 "adaptive_strategy_weights": {
                     "weights": [{"strategy_id": "tail_1455", "weight_pct": 0}],

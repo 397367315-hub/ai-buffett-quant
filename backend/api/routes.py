@@ -42,6 +42,7 @@ from services.sector_flow_network import build_inferred_transfers
 from services.topic_strength import topic_strength_service
 from services.market_decision_workbench import market_decision_workbench_service
 from services.decision_workbench_2026 import decision_workbench_2026_service
+from services.market_way_v4 import market_way_v4_service
 from services.block_trade_analysis import block_trade_analysis_service
 from services.stock_essence_decision import stock_essence_decision_service
 from quant.market_cache import load_quant_market_snapshot
@@ -2102,6 +2103,216 @@ async def validate_market_decision_snapshot(request: dict | None = None):
         target = date.fromisoformat(normalized_date)
     data = await decision_workbench_2026_service.validate(target)
     return {"code": 0, "data": data}
+
+
+@router.get("/truth/status")
+async def get_truth_status(refresh: bool = Query(False)):
+    """Return the four-time, source-grade, conflict, and PIT audit."""
+    return {"code": 0, "data": await market_way_v4_service.truth_status(force=refresh)}
+
+
+@router.get("/truth/conflicts")
+async def get_truth_conflicts(limit: int = Query(100, ge=1, le=500)):
+    records = await market_way_v4_service.conflicts(limit=limit)
+    return {"code": 0, "data": {"records": records, "count": len(records)}}
+
+
+@router.get("/truth/quality-events")
+async def get_truth_quality_events(limit: int = Query(100, ge=1, le=500)):
+    records = await market_way_v4_service.quality_events(limit=limit)
+    return {"code": 0, "data": {"records": records, "count": len(records)}}
+
+
+async def _current_market_way(refresh: bool = False) -> tuple[dict, dict]:
+    payload = await market_way_v4_service.current(force=refresh)
+    return payload, payload.get("market_way_v4") or {}
+
+
+@router.get("/way/market")
+async def get_market_way(refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    return {"code": 0, "data": v4}
+
+
+@router.get("/way/order")
+async def get_market_order(refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    momentum = v4.get("momentum") or {}
+    return {"code": 0, "data": {
+        "state": momentum.get("order_state"), "score": momentum.get("order_score"),
+        "change": momentum.get("order_change"), "trajectory": momentum.get("order_trajectory") or [],
+        "trade_date": (v4.get("truth") or {}).get("research_trade_date"),
+    }}
+
+
+@router.get("/way/change")
+async def get_market_way_change(refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    momentum = v4.get("momentum") or {}
+    return {"code": 0, "data": {
+        "momentum_state": momentum.get("state"), "direction": momentum.get("direction"),
+        "marginal_change": momentum.get("marginal_change"),
+        "persistence_sessions": momentum.get("persistence_sessions"),
+        "order_change": momentum.get("order_change"), "evidence": momentum.get("evidence") or [],
+    }}
+
+
+@router.get("/way/data/status")
+async def get_market_way_data_status():
+    return {"code": 0, "data": await market_way_v4_service.data_status()}
+
+
+@router.post("/way/data/refresh")
+async def refresh_market_way_data(request: dict | None = None):
+    background = bool((request or {}).get("background", True))
+    return {"code": 0, "data": await market_way_v4_service.refresh_sources(background=background)}
+
+
+@router.get("/national-directions")
+async def get_national_directions(refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    return {"code": 0, "data": v4.get("national_direction_radar") or {}}
+
+
+@router.get("/national-directions/{direction_id}")
+async def get_national_direction(direction_id: str, refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    direction = next((item for item in (v4.get("national_direction_radar") or {}).get("directions") or [] if item.get("id") == direction_id), None)
+    if direction is None:
+        raise HTTPException(status_code=404, detail="国家方向不存在")
+    return {"code": 0, "data": direction}
+
+
+@router.get("/policies")
+async def get_market_way_policies(refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    policies = [
+        {**policy, "direction_id": item.get("id"), "direction_name": item.get("name")}
+        for item in (v4.get("national_direction_radar") or {}).get("directions") or []
+        for policy in item.get("policies") or []
+    ]
+    policies.sort(key=lambda item: str(item.get("published_at") or ""), reverse=True)
+    return {"code": 0, "data": {"records": policies, "count": len(policies)}}
+
+
+@router.get("/policies/{direction_id}/transmission")
+async def get_policy_transmission(direction_id: str, refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    direction = next((item for item in (v4.get("national_direction_radar") or {}).get("directions") or [] if item.get("id") == direction_id), None)
+    if direction is None:
+        raise HTTPException(status_code=404, detail="政策方向不存在")
+    return {"code": 0, "data": {
+        "direction_id": direction_id, "direction_name": direction.get("name"),
+        "marginal_state": direction.get("marginal_state"),
+        "max_verified_level": direction.get("max_verified_level"),
+        "transmission_state": direction.get("transmission_state"),
+        "stages": direction.get("stages") or [], "policies": direction.get("policies") or [],
+        "gap": direction.get("gap") or {},
+    }}
+
+
+@router.get("/industries/{direction_id}/validation")
+async def get_industry_validation(direction_id: str, refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    direction = next((item for item in (v4.get("national_direction_radar") or {}).get("directions") or [] if item.get("id") == direction_id), None)
+    if direction is None:
+        raise HTTPException(status_code=404, detail="产业方向不存在")
+    return {"code": 0, "data": {
+        "direction_id": direction_id, "direction_name": direction.get("name"),
+        "industry_validation": direction.get("industry_validation") or {},
+        "market_validation": direction.get("market_validation") or {},
+        "gap": direction.get("gap") or {},
+    }}
+
+
+@router.get("/capital/migration")
+async def get_capital_migration(refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    return {"code": 0, "data": v4.get("capital_migration") or {}}
+
+
+@router.get("/capital/risk-appetite")
+async def get_capital_risk_appetite(refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    capital = v4.get("capital_migration") or {}
+    return {"code": 0, "data": {
+        "risk_appetite": capital.get("risk_appetite"), "stage": capital.get("stage"),
+        "rotation_type": capital.get("rotation_type"), "evidence": capital.get("evidence") or [],
+    }}
+
+
+@router.get("/market/forces")
+async def get_market_forces(refresh: bool = Query(False)):
+    _, v4 = await _current_market_way(refresh)
+    return {"code": 0, "data": v4.get("market_force") or {}}
+
+
+@router.get("/decisions/current")
+async def get_current_v4_decision(refresh: bool = Query(False)):
+    payload, v4 = await _current_market_way(refresh)
+    return {"code": 0, "data": {
+        "meta": payload.get("meta") or {}, "market_way_v4": v4,
+        "trading_permission": (payload.get("decision_2026") or {}).get("trading_permission") or {},
+    }}
+
+
+@router.post("/decisions/snapshot")
+async def capture_v4_decision_snapshot(request: dict | None = None):
+    body = request or {}
+    try:
+        data = await decision_workbench_2026_service.capture(
+            str(body.get("phase") or "manual"), force=bool(body.get("force", True)),
+            user_judgment=str(body.get("user_judgment") or "") or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.get("/decisions/judgments")
+async def list_v4_judgments(limit: int = Query(50, ge=1, le=200)):
+    records = await market_way_v4_service.judgments(limit=limit)
+    return {"code": 0, "data": {"records": records, "count": len(records)}}
+
+
+@router.post("/decisions/judgments")
+async def save_v4_judgment(request: dict):
+    try:
+        data = await market_way_v4_service.save_judgment(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.post("/decisions/judgments/validate")
+async def validate_v4_judgments():
+    return {"code": 0, "data": await market_way_v4_service.validate_judgments()}
+
+
+@router.get("/signals/preview-1040")
+async def get_signal_preview_1040():
+    rows = await decision_workbench_2026_service.list_snapshots(limit=1, phase="morning_1040")
+    return {"code": 0, "data": rows[0] if rows else {"available": False, "message": "10:40快照尚未生成"}}
+
+
+@router.get("/signals/preview-1455")
+async def get_signal_preview_1455():
+    rows = await decision_workbench_2026_service.list_snapshots(limit=1, phase="tail_1455")
+    return {"code": 0, "data": rows[0] if rows else {"available": False, "message": "14:55快照尚未生成"}}
+
+
+@router.get("/signals/auction")
+async def get_signal_auction():
+    from services.overnight_strategy import overnight_strategy_service
+
+    dashboard = await overnight_strategy_service.dashboard()
+    return {"code": 0, "data": {
+        "auction": dashboard.get("latest_auction_run"),
+        "positions": dashboard.get("positions") or [],
+        "rule": "竞价量比与高开幅度必须来自09:24-09:27真实PIT快照；不以盘后数据回填。",
+    }}
 
 
 @router.get("/flow/concept/history")

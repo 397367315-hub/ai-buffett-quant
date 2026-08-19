@@ -109,6 +109,7 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
             return inflow_rows if sort_order == 0 else outflow_rows
 
         with (
+            patch.object(routes, "shanghai_now", return_value=datetime(2026, 8, 19, 10, 0)),
             patch.object(routes.collector, "fetch_industry_flow", new=fetch_industry_flow),
             patch.object(routes.collector, "fetch_market_turnover", new=AsyncMock(return_value={"sh_amount": 1_000_000_000})),
         ):
@@ -144,6 +145,7 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
             return {} if calls["market"] == 1 else {"sh_amount": 1_000_000_000}
 
         with (
+            patch.object(routes, "shanghai_now", return_value=datetime(2026, 8, 19, 10, 0)),
             patch.object(routes.collector, "fetch_industry_flow", new=fetch_industry_flow),
             patch.object(routes.collector, "fetch_market_turnover", new=fetch_market_turnover),
         ):

@@ -139,8 +139,8 @@ class FTShareMCPClientTests(unittest.TestCase):
 
         rows = asyncio.run(client.get_sector_flow_history(
             "industry",
-            "2025-08-08",
-            "2026-08-08",
+            "2026-07-01",
+            "2026-07-30",
         ))
 
         self.assertEqual(rows, [{"sector_code": "BK0475"}])
@@ -148,8 +148,8 @@ class FTShareMCPClientTests(unittest.TestCase):
             "ft_get_eastmoney_sector_flow",
             {
                 "sector_type": "industry",
-                "start_date": "2025-08-08",
-                "end_date": "2026-08-08",
+                "start_date": "2026-07-01",
+                "end_date": "2026-07-30",
             },
         )
 
@@ -235,7 +235,7 @@ class FTShareMCPClientTests(unittest.TestCase):
         })
 
         rows = asyncio.run(client.get_sector_flow_history(
-            "industry", "2026-07-01", "2026-08-14", "BK1277",
+            "industry", "2026-07-01", "2026-07-30", "BK1277",
         ))
 
         self.assertEqual(rows, [{"sector_code": "BK1277"}])
@@ -244,9 +244,27 @@ class FTShareMCPClientTests(unittest.TestCase):
             {
                 "sector_type": "industry",
                 "start_date": "2026-07-01",
-                "end_date": "2026-08-14",
+                "end_date": "2026-07-30",
                 "sector_code": "BK1277",
             },
+        )
+
+    def test_sector_history_splits_long_range_into_verified_windows(self):
+        client = FTShareMCPClient()
+        client.call_paginated_tool = AsyncMock(side_effect=[
+            {"data": [{"sector_code": "BK0475", "trade_date": "2025-08-08"}], "metadata": {}},
+            {"data": [{"sector_code": "BK0475", "trade_date": "2025-09-12"}], "metadata": {}},
+        ])
+
+        rows = asyncio.run(client.get_sector_flow_history(
+            "industry", "2025-08-08", "2025-09-12",
+        ))
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(client.call_paginated_tool.await_count, 2)
+        self.assertEqual(
+            [call.args[1]["start_date"] for call in client.call_paginated_tool.await_args_list],
+            ["2025-08-08", "2025-09-12"],
         )
 
     def test_valuation_history_uses_exchange_symbol_and_compact_dates(self):

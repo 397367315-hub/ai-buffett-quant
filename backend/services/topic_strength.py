@@ -45,7 +45,10 @@ TOPIC_LATEST_CACHE_KEY = "topic_strength_latest_v2"
 LEGACY_TOPIC_CACHE_PREFIXES = ("topic_strength_v1:",)
 MAX_TOPICS = 12
 MAX_MEMBERS = 8
-MAX_INTRADAY_STOCKS = 8
+# The workbench exposes eight candidates, while the radar can contain twelve
+# topic leaders. Capture every leader in one pass so the displayed candidates
+# do not depend on which topic happens to have the most members.
+MAX_INTRADAY_STOCKS = 12
 
 
 def _number(value: object) -> float | None:
@@ -447,8 +450,19 @@ class TopicStrengthService:
                 if last_close is not None and first_close not in (None, 0)
                 else None
             )
+            recent_closes = [
+                value for value in (_number(item.close_price) for item in recent[-5:])
+                if value is not None and value > 0
+            ]
+            recent_peak = max(recent_closes) if recent_closes else None
+            pullback_5d = (
+                (last_close / recent_peak - 1) * 100
+                if last_close is not None and recent_peak not in (None, 0)
+                else None
+            )
             output[code] = {
                 "return_5d_pct": round(return_5d, 2) if return_5d is not None else None,
+                "pullback_5d_pct": round(pullback_5d, 2) if pullback_5d is not None else None,
                 "history_sessions": len(recent),
                 "history_source": "stock_daily_bars",
             }
@@ -456,6 +470,8 @@ class TopicStrengthService:
 
     @staticmethod
     def _intraday_view(row: StockIntradayEvidence) -> dict:
+        source = str(row.source or "")
+        has_trade_tape = bool(row.trade_detail_count)
         return {
             "stock_code": row.stock_code,
             "stock_name": row.stock_name,
@@ -475,7 +491,10 @@ class TopicStrengthService:
             "trade_detail_count": row.trade_detail_count,
             "trade_detail_complete": row.trade_detail_complete,
             "source": row.source,
+            "direction_basis": "逐笔成交明细" if has_trade_tape else "分钟线价量代理" if "minute_bar_derived" in source else "未形成方向证据",
+            "vwap_basis": "源生分时均价" if "eastmoney" in source and row.vwap is not None else "分钟线成交量加权估算" if row.vwap is not None else "未形成均价证据",
             "is_realtime": bool(row.is_realtime),
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 
     async def _cached_intraday_evidence(self, codes: list[str], target: date) -> dict[str, dict]:
@@ -545,16 +564,20 @@ class TopicStrengthService:
         target: date,
         live_requested: bool,
     ) -> tuple[dict[str, dict], dict]:
-        codes: list[str] = []
+        priority_codes: list[str] = []
+        # Leaders are the primary evidence shown by the workbench. Put all of
+        # them ahead of follower members; otherwise the first large topic can
+        # consume the bounded capture window and starve later leaders.
         for topic in topics:
-            for stock in [topic.get("leader") or {}, *(topic.get("members") or [])]:
+            stock = topic.get("leader") or {}
+            code = str(stock.get("code") or "")
+            if code and code not in priority_codes:
+                priority_codes.append(code)
+        for topic in topics:
+            for stock in topic.get("members") or []:
                 code = str(stock.get("code") or "")
-                if code and code not in codes:
-                    codes.append(code)
-                if len(codes) >= MAX_INTRADAY_STOCKS:
-                    break
-            if len(codes) >= MAX_INTRADAY_STOCKS:
-                break
+                if code and code not in priority_codes:
+                    priority_codes.append(code)
         candidate_codes = list(dict.fromkeys(
             str(stock.get("code") or "")
             for topic in topics
@@ -562,7 +585,19 @@ class TopicStrengthService:
             if stock.get("code")
         ))
         cached = await self._cached_intraday_evidence(candidate_codes, target)
-        if not live_requested or not codes:
+        incomplete = [
+            code for code in priority_codes
+            if code not in cached
+            or cached[code].get("vwap") is None
+            or cached[code].get("active_direction") is None
+        ]
+        complete = [code for code in priority_codes if code not in incomplete]
+        # Once every candidate has one complete observation, rotate from the
+        # oldest persisted evidence so scheduled captures keep expanding the
+        # day's coverage instead of hammering the same leaders.
+        complete.sort(key=lambda code: str((cached.get(code) or {}).get("updated_at") or ""))
+        codes = (incomplete + complete)[:MAX_INTRADAY_STOCKS]
+        if not codes:
             vwap_covered = sum(item.get("vwap") is not None for item in cached.values())
             active_covered = sum(item.get("active_direction") is not None for item in cached.values())
             return cached, {
@@ -571,15 +606,91 @@ class TopicStrengthService:
                 "captured": len(cached),
                 "vwap_covered": vwap_covered,
                 "active_direction_covered": active_covered,
-                "capture_scope": "database_cache",
+                "capture_scope": "database_cache" if not live_requested else "no_pending_candidates",
             }
 
         async def fetch_one(code: str) -> tuple[str, dict, dict]:
-            minute, trades = await asyncio.gather(
-                self._safe(collector.fetch_stock_minute_trends(code, days=1), {}, 7.0),
-                self._safe(collector.fetch_stock_trade_details(code, limit=500), {}, 7.0),
+            """Get an evidence window for both live and closed-market research.
+
+            The live endpoint exposes native one-minute bars and recent trade
+            details.  After the close, the same endpoint is not a historical
+            tape, so use the bounded daily minute-history endpoint and fall
+            back to Tencent's 5-minute window.  Direction is derived from
+            price/volume only when a real trade tape is unavailable.
+            """
+            if live_requested:
+                minute, trades = await asyncio.gather(
+                    self._safe(collector.fetch_stock_minute_trends(code, days=1), {}, 7.0),
+                    self._safe(collector.fetch_stock_trade_details(code, limit=500), {}, 7.0),
+                )
+                return code, minute if isinstance(minute, dict) else {}, trades if isinstance(trades, dict) else {}
+
+            minute = await self._safe(
+                collector.fetch_stock_minute_history(code, interval_minutes=1, limit=1536),
+                {},
+                8.0,
             )
-            return code, minute if isinstance(minute, dict) else {}, trades if isinstance(trades, dict) else {}
+            bars = [
+                item for item in (minute.get("bars") or [])
+                if _date(item.get("bar_time")) == target
+            ] if isinstance(minute, dict) else []
+            if not bars:
+                minute = await self._safe(
+                    collector.fetch_stock_minute_history(code, interval_minutes=5, limit=320),
+                    {},
+                    8.0,
+                )
+            if isinstance(minute, dict):
+                minute = {**minute, "bars": [
+                    item for item in (minute.get("bars") or [])
+                    if _date(item.get("bar_time")) == target
+                ]}
+                minute["data_date"] = target.isoformat() if minute.get("bars") else None
+            # The public trade-details endpoint is a latest-window endpoint,
+            # not a date-addressable historical tape. Do not attach it to an
+            # older session; the minute-bar proxy below is date aligned.
+            return code, minute if isinstance(minute, dict) else {}, {}
+
+        def derive_direction(bars: list[dict]) -> dict:
+            buy = sell = neutral = 0.0
+            previous_close: float | None = None
+            for bar in bars:
+                close = _number(bar.get("close"))
+                open_price = _number(bar.get("open"))
+                volume = _number(bar.get("volume")) or 0.0
+                amount = _number(bar.get("amount"))
+                notional = amount if amount is not None and amount > 0 else (close or 0.0) * volume
+                if close is None or notional <= 0:
+                    continue
+                reference = open_price if open_price not in (None, 0) else previous_close
+                if reference in (None, 0):
+                    neutral += notional
+                elif close > reference:
+                    buy += notional
+                elif close < reference:
+                    sell += notional
+                else:
+                    neutral += notional
+                previous_close = close
+            directional = buy + sell
+            net = buy - sell if directional else None
+            direction = None
+            if directional:
+                direction = "balanced" if abs(net or 0) <= directional * 0.05 else "buy" if (net or 0) > 0 else "sell"
+            elif neutral:
+                # A flat session is still an observed session. Keep it as a
+                # balanced direction instead of presenting valid bars as a
+                # missing data source.
+                direction = "balanced"
+                net = 0.0
+            return {
+                "active_buy_amount": int(round(buy)) if buy else None,
+                "active_sell_amount": int(round(sell)) if sell else None,
+                "neutral_amount": int(round(neutral)) if neutral else None,
+                "active_net_amount": int(round(net)) if net is not None else None,
+                "active_buy_ratio": round(buy / directional * 100, 2) if directional else None,
+                "active_direction": direction,
+            }
 
         results = await asyncio.gather(*(fetch_one(code) for code in codes))
         minute_payloads: list[dict] = []
@@ -598,7 +709,16 @@ class TopicStrengthService:
             if vwap is None and bars:
                 total_amount = sum(_number(item.get("amount")) or 0 for item in bars)
                 total_volume = sum(_number(item.get("volume")) or 0 for item in bars)
-                vwap = total_amount / total_volume if total_amount > 0 and total_volume > 0 else None
+                if total_amount > 0 and total_volume > 0:
+                    vwap = total_amount / total_volume
+                elif total_volume > 0:
+                    # Tencent's minute fallback omits amount. A close*volume
+                    # weighted estimate is still useful for position context,
+                    # but is labelled as an estimate in the evidence payload.
+                    vwap = sum(
+                        (_number(item.get("close")) or 0) * (_number(item.get("volume")) or 0)
+                        for item in bars
+                    ) / total_volume
             distance = (
                 (last_price / vwap - 1) * 100
                 if last_price is not None and vwap not in (None, 0) else None
@@ -608,7 +728,10 @@ class TopicStrengthService:
                 latest_bar_at = datetime.fromisoformat(str(latest.get("bar_time") or "")).replace(tzinfo=None)
             except ValueError:
                 pass
-            active_direction = trades.get("active_direction") if trades.get("detail_count") else None
+            derived = derive_direction(bars)
+            has_trade_tape = bool(trades.get("detail_count"))
+            direction_values = trades if has_trade_tape else derived
+            direction_source = trades.get("source") if has_trade_tape else "minute_bar_derived"
             evidence = {
                 "stock_code": code,
                 "stock_name": str(minute.get("stock_name") or ""),
@@ -619,15 +742,17 @@ class TopicStrengthService:
                 "vwap_distance_pct": round(distance, 4) if distance is not None else None,
                 "above_vwap": last_price >= vwap if last_price is not None and vwap is not None else None,
                 "minute_bar_count": len(bars),
-                "active_buy_amount": _integer(trades.get("active_buy_amount")),
-                "active_sell_amount": _integer(trades.get("active_sell_amount")),
-                "neutral_amount": _integer(trades.get("neutral_amount")),
-                "active_net_amount": _integer(trades.get("active_net_amount")),
-                "active_buy_ratio": _number(trades.get("active_buy_ratio")),
-                "active_direction": active_direction,
+                "active_buy_amount": _integer(direction_values.get("active_buy_amount")),
+                "active_sell_amount": _integer(direction_values.get("active_sell_amount")),
+                "neutral_amount": _integer(direction_values.get("neutral_amount")),
+                "active_net_amount": _integer(direction_values.get("active_net_amount")),
+                "active_buy_ratio": _number(direction_values.get("active_buy_ratio")),
+                "active_direction": direction_values.get("active_direction"),
                 "trade_detail_count": int(trades.get("detail_count") or 0),
                 "trade_detail_complete": bool(trades.get("complete")),
-                "source": "+".join(filter(None, [minute.get("source"), trades.get("source")])) or "unavailable",
+                "source": "+".join(filter(None, [minute.get("source"), direction_source])) or "unavailable",
+                "direction_basis": "逐笔成交明细" if has_trade_tape else "分钟线价量代理" if bars else "未形成方向证据",
+                "vwap_basis": "源生分时均价" if minute.get("source") == "eastmoney" and vwap is not None else "分钟线成交量加权估算" if vwap is not None else "未形成均价证据",
                 "is_realtime": bool(minute.get("is_realtime") and target == now.date()),
                 "updated_at": datetime.utcnow(),
             }
@@ -647,7 +772,7 @@ class TopicStrengthService:
             "captured": len(merged),
             "vwap_covered": sum(item.get("vwap") is not None for item in merged.values()),
             "active_direction_covered": sum(item.get("active_direction") is not None for item in merged.values()),
-            "capture_scope": f"题材核心与前排最多{MAX_INTRADAY_STOCKS}只",
+            "capture_scope": f"本轮补全{len(codes)}只，候选共{len(candidate_codes)}只；实时用逐笔明细，闭市用分钟线价量代理并按最早证据轮换",
         }
 
     @staticmethod
@@ -1219,7 +1344,7 @@ class TopicStrengthService:
         snapshot_stocks = list(snapshot.get("stocks") or [])
 
         sentiment_task = self._cached_sentiment(effective)
-        if live_requested or latest_requested:
+        if live_requested:
             industry_task = self._safe(collector.fetch_industry_flow(page_size=100), [], 10.0)
         else:
             industry_task = self._cached_industry_flow(effective)
@@ -1233,8 +1358,20 @@ class TopicStrengthService:
         limit_down = self._verified_pool(limit_down, effective)
         failed = self._verified_pool(failed, effective)
 
-        if not industry_flow:
-            industry_flow = await self._cached_industry_flow(effective)
+        # The live endpoint is ranked and bounded.  Merge it with the complete
+        # date-aligned cache so a sector with negative flow is still represented
+        # instead of disappearing simply because it fell outside the top page.
+        cached_industry_flow = await self._cached_industry_flow(effective)
+        if cached_industry_flow:
+            by_code = {str(item.get("code") or item.get("name")): item for item in cached_industry_flow}
+            for item in industry_flow or []:
+                key = str(item.get("code") or item.get("name") or "")
+                if not key:
+                    continue
+                by_code[key] = {**by_code.get(key, {}), **item}
+            industry_flow = list(by_code.values())
+        elif not industry_flow:
+            industry_flow = []
         limit_rows = list(limit_up.get("stocks") or [])
         event_source = "eastmoney_limit_pool" if limit_up.get("verified") else "unavailable"
         if not limit_rows and not limit_up.get("verified") and snapshot_stocks:
