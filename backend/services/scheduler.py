@@ -149,6 +149,23 @@ async def refresh_market_decision_execution_gate():
         return None
 
 
+async def refresh_forecast_v5():
+    """Pre-compute the V5 forecast at each documented decision window."""
+    from services.forecast_v5 import forecast_v5_service
+
+    try:
+        payload = await forecast_v5_service.dashboard(force=True)
+        print(
+            "[Scheduler] V5前瞻预测已更新: "
+            f"{payload.get('forecast_date')} / {payload.get('phase')} / "
+            f"完整度{(payload.get('data_health') or {}).get('completeness_pct')}%"
+        )
+        return payload
+    except Exception as exc:
+        print(f"[Scheduler] V5前瞻预测更新失败: {type(exc).__name__}")
+        return None
+
+
 async def refresh_market_way_policy_source():
     """Keep official policy evidence warm before and during the trading day."""
     from services.market_way_v4 import market_way_v4_service
@@ -473,6 +490,28 @@ async def start_scheduler(data_collector=None, db_session=None):
         id="decision_2026_close_validation", name="2026工作台盘后错误归因", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
+    for minute, job_id, label in (
+        (5, "forecast_v5_premarket", "V5盘前预测"),
+        (40, "forecast_v5_morning", "V5早盘预测"),
+    ):
+        scheduler.add_job(
+            refresh_forecast_v5,
+            CronTrigger(hour=9 if minute == 5 else 10, minute=minute, day_of_week="mon-fri"),
+            id=job_id, name=label, replace_existing=True,
+            coalesce=True, max_instances=1, misfire_grace_time=600,
+        )
+    for hour, minute, job_id, label in (
+        (11, 30, "forecast_v5_midday", "V5午间预测"),
+        (13, 30, "forecast_v5_afternoon", "V5午后情景预测"),
+        (14, 40, "forecast_v5_tail", "V5尾盘前瞻预测"),
+        (15, 10, "forecast_v5_close", "V5收盘状态预测"),
+    ):
+        scheduler.add_job(
+            refresh_forecast_v5,
+            CronTrigger(hour=hour, minute=minute, day_of_week="mon-fri"),
+            id=job_id, name=label, replace_existing=True,
+            coalesce=True, max_instances=1, misfire_grace_time=900,
+        )
     scheduler.add_job(
         resume_incomplete_backfills,
         "interval",

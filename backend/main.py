@@ -7,6 +7,7 @@ from api.quant_routes import router as quant_router
 from api.personal_routes import router as personal_router
 from api.openclaw_routes import router as openclaw_router
 from api.research_routes import router as research_router
+from api.forecast_routes import router as forecast_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -53,6 +54,8 @@ app.add_middleware(
         "https://ai-buffett-quant.netlify.app",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
         "http://localhost:3100",
         "http://127.0.0.1:3100",
     ],
@@ -75,6 +78,7 @@ app.include_router(quant_router)
 app.include_router(personal_router)
 app.include_router(openclaw_router)
 app.include_router(research_router)
+app.include_router(forecast_router)
 
 
 @app.get("/")

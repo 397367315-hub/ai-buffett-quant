@@ -204,6 +204,96 @@ class MarketDataCache(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class FactorRegistryV5(Base):
+    """Versioned factor definitions used by the V5 forward-forecast layer."""
+
+    __tablename__ = "factor_registry"
+
+    factor_id = Column(String(100), primary_key=True)
+    name = Column(String(160), nullable=False)
+    layer = Column(String(30), nullable=False)
+    source = Column(String(200), nullable=False)
+    source_level = Column(String(1), nullable=False, default="B")
+    ttl_minutes = Column(Integer, nullable=False, default=1440)
+    lead_score = Column(Float, nullable=False, default=0.5)
+    causal_chain_ids = Column(JSON, nullable=False, default=list)
+    enabled = Column(Boolean, nullable=False, default=True)
+    definition = Column(JSON, nullable=False, default=dict)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ForecastSnapshotV5(Base):
+    """Replayable V5 forecast snapshot with model and data cut-off metadata."""
+
+    __tablename__ = "market_forecasts"
+    __table_args__ = (
+        UniqueConstraint(
+            "forecast_date", "phase", "forecast_version",
+            name="uq_market_forecasts_date_phase_version",
+        ),
+        Index("idx_market_forecasts_date", "forecast_date", "generated_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    forecast_date = Column(Date, nullable=False)
+    phase = Column(String(30), nullable=False)
+    forecast_version = Column(String(50), nullable=False)
+    model_version = Column(String(80), nullable=False)
+    data_cutoff_time = Column(DateTime, nullable=False)
+    data_completeness_pct = Column(Float, nullable=False, default=0.0)
+    confidence_ceiling_pct = Column(Float, nullable=False, default=0.0)
+    payload = Column(JSON, nullable=False)
+    generated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CausalChainActivationV5(Base):
+    """Persisted chain activations used to replay and validate resonance changes."""
+
+    __tablename__ = "chain_activations"
+    __table_args__ = (
+        UniqueConstraint(
+            "forecast_date", "phase", "chain_id", "forecast_version",
+            name="uq_chain_activations_date_phase_chain_version",
+        ),
+        Index("idx_chain_activations_date", "forecast_date", "generated_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    forecast_date = Column(Date, nullable=False)
+    phase = Column(String(30), nullable=False)
+    chain_id = Column(String(100), nullable=False)
+    forecast_version = Column(String(50), nullable=False)
+    activation_pct = Column(Float)
+    direction = Column(String(30), nullable=False)
+    payload = Column(JSON, nullable=False)
+    generated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class BehaviorSnapshotV5(Base):
+    """Point-in-time market psychology and observable behavior evidence."""
+
+    __tablename__ = "behavior_history"
+    __table_args__ = (
+        UniqueConstraint("behavior_date", "phase", name="uq_behavior_history_date_phase"),
+        Index("idx_behavior_history_date", "behavior_date", "generated_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    behavior_date = Column(Date, nullable=False)
+    phase = Column(String(30), nullable=False)
+    market_psychology_state = Column(String(30), nullable=False)
+    psychology_transition = Column(String(60))
+    behavior_imbalance = Column(Float)
+    crowding_state = Column(String(30))
+    panic_state = Column(String(30))
+    fomo_state = Column(String(30))
+    false_breakout_risk = Column(String(30))
+    payload = Column(JSON, nullable=False)
+    data_cutoff_time = Column(DateTime, nullable=False)
+    generated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class QuantStrategy(Base):
     """User-authored quantitative strategies stored outside the ephemeral app filesystem."""
 
