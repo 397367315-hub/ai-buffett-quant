@@ -1,8 +1,10 @@
 import unittest
 from datetime import datetime
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 from services.market_way_v4 import (
+    MarketWayV4Service,
     build_market_way_v4,
     build_momentum_state,
     build_truth_layer,
@@ -111,6 +113,36 @@ class MarketWayTests(unittest.TestCase):
         result = build_momentum_state(source, [])
         self.assertEqual(result["order_state"], "结构瓦解")
         self.assertEqual(result["state"], "退势")
+
+
+class MarketWayStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_data_status_reconciles_a_completed_backfill_warning(self):
+        service = MarketWayV4Service()
+        service._last_pipeline = {"market_history": {"status": "cache_incomplete"}}
+        service._refresh_status = {
+            "status": "completed_with_gaps",
+            "stage": "completed",
+            "progress": 100,
+            "message": "V4已更新，仍有数据源在后台重试",
+            "warnings": ["市场情绪历史正在补采，完成后自动重建"],
+            "history_backfill": {"run_id": 17, "status": "running"},
+        }
+        service._market_history_status = AsyncMock(return_value={
+            "status": "available",
+            "history_count": 30,
+            "amount_history_count": 30,
+            "turnover_history_count": 30,
+        })
+
+        with patch(
+            "services.history_cache.history_cache.latest_backfill_status",
+            new=AsyncMock(return_value={"run_id": 17, "status": "completed"}),
+        ):
+            result = await service.data_status()
+
+        self.assertEqual(result["refresh_job"]["status"], "completed")
+        self.assertEqual(result["refresh_job"]["warnings"], [])
+        self.assertEqual(result["refresh_job"]["history_backfill"]["status"], "completed")
 
 
 if __name__ == "__main__":

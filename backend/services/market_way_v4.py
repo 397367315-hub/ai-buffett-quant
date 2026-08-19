@@ -1755,10 +1755,29 @@ class MarketWayV4Service:
         except Exception:
             pass
         refresh_job = dict(self.refresh_status())
-        if persisted_backfill is not None and isinstance(pipeline.get("market_history"), dict) and pipeline["market_history"].get("status") != "available":
+        market_history = pipeline.get("market_history")
+        if persisted_backfill is not None and isinstance(market_history, dict) and market_history.get("status") != "available":
             # Older in-memory refresh objects can retain `running` after the
             # durable backfill row has reached partial/completed.
             refresh_job["history_backfill"] = persisted_backfill
+        elif isinstance(market_history, dict) and market_history.get("status") == "available":
+            # A background backfill can finish after the source refresh has
+            # already written its in-memory status. Reconcile that durable
+            # result and remove the now-resolved warning before the next poll.
+            if persisted_backfill is not None and refresh_job.get("history_backfill") is not None:
+                refresh_job["history_backfill"] = persisted_backfill
+            warnings = refresh_job.get("warnings")
+            if isinstance(warnings, list):
+                remaining = [
+                    item for item in warnings
+                    if "市场情绪历史正在补采" not in str(item)
+                ]
+                refresh_job["warnings"] = remaining
+                if refresh_job.get("status") == "completed_with_gaps" and not remaining:
+                    refresh_job.update({
+                        "status": "completed",
+                        "message": "V4数据源与缓存已更新",
+                    })
         pipeline["refresh_job"] = refresh_job
         return {"pipeline": pipeline, "refresh_job": refresh_job}
 
