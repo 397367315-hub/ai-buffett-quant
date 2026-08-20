@@ -19,6 +19,13 @@ from services.macro_policy_news import macro_policy_news_collector
 
 
 SINA_QUOTES_URL = "https://hq.sinajs.cn/list=gb_inx,gb_dji,gb_ixic,hf_GC,hf_CL,DINIW"
+# Eastmoney is used as a second public quote source when Sina is incomplete or
+# unreachable. It is an observed quote source, not a fabricated historical fill.
+EASTMONEY_GLOBAL_URL = (
+    "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&"
+    "fields=f1,f2,f3,f12,f13,f14,f124&secids=100.SPX,100.DJIA,100.NDX,"
+    "101.GC00Y,102.CL00Y,100.UDI"
+)
 ECONOMIC_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -37,6 +44,28 @@ def _change_pct(current: float | None, previous: float | None) -> float | None:
     if current is None or previous in (None, 0):
         return None
     return round((current / previous - 1) * 100, 2)
+
+
+def _source_age_minutes(source_time: object) -> float | None:
+    if not source_time:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(source_time).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=SHANGHAI_TZ)
+        return max(0.0, (shanghai_now() - parsed.astimezone(SHANGHAI_TZ)).total_seconds() / 60)
+    except (TypeError, ValueError):
+        return None
+
+
+def _quote_meta(source_time: object, source: str) -> dict:
+    age = _source_age_minutes(source_time)
+    return {
+        "is_realtime": bool(age is not None and age <= 60),
+        "data_age_minutes": round(age, 1) if age is not None else None,
+        "cache_used": False,
+        "source": source,
+    }
 
 
 def _parse_sina_lines(text: str) -> dict[str, list[str]]:
@@ -75,7 +104,7 @@ def parse_sina_market_payload(text: str) -> list[dict]:
             "currency": "USD",
             "source_time": values[3] if len(values) > 3 else None,
             "available": current is not None,
-            "source": "新浪财经",
+            **_quote_meta(values[3] if len(values) > 3 else None, "新浪财经"),
         })
 
     futures_config = {
@@ -95,7 +124,7 @@ def parse_sina_market_payload(text: str) -> list[dict]:
             "currency": unit,
             "source_time": source_time,
             "available": current is not None,
-            "source": "新浪财经",
+            **_quote_meta(source_time, "新浪财经"),
         })
 
     dxy = rows.get("DINIW") or []
@@ -109,8 +138,43 @@ def parse_sina_market_payload(text: str) -> list[dict]:
         "currency": "index",
         "source_time": f"{dxy[10]} {dxy[0]}" if len(dxy) > 10 else None,
         "available": current is not None,
-        "source": "新浪财经",
+        **_quote_meta(f"{dxy[10]} {dxy[0]}" if len(dxy) > 10 else None, "新浪财经"),
     })
+    return result
+
+
+def parse_eastmoney_market_payload(payload: object) -> list[dict]:
+    rows = payload.get("data", {}).get("diff", []) if isinstance(payload, dict) else []
+    configs = {
+        "SPX": ("sp500", "标普500", "USD"),
+        "DJIA": ("dow", "道琼斯", "USD"),
+        "NDX": ("nasdaq", "纳斯达克", "USD"),
+        "GC00Y": ("gold", "纽约黄金", "USD/盎司"),
+        "CL00Y": ("oil", "纽约原油", "USD/桶"),
+        "UDI": ("dxy", "美元指数", "index"),
+    }
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        symbol = str(row.get("f12") or "")
+        config = configs.get(symbol)
+        current = _float(row.get("f2"))
+        if not config or current is None:
+            continue
+        timestamp = row.get("f124")
+        source_time = None
+        try:
+            if timestamp:
+                source_time = datetime.fromtimestamp(float(timestamp), tz=SHANGHAI_TZ).isoformat()
+        except (TypeError, ValueError, OSError):
+            source_time = None
+        result.append({
+            "key": config[0], "label": config[1], "value": current,
+            "change_pct": _float(row.get("f3")), "currency": config[2],
+            "source_time": source_time, "available": True,
+            **_quote_meta(source_time, "东方财富全球行情"),
+        })
     return result
 
 
@@ -153,9 +217,24 @@ class MacroDashboardService:
             "Accept": "*/*",
         }
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
-            response = await client.get(SINA_QUOTES_URL, headers=headers)
-            response.raise_for_status()
-        return parse_sina_market_payload(response.content.decode("gb18030", errors="replace"))
+            async def fetch_sina() -> list[dict]:
+                response = await client.get(SINA_QUOTES_URL, headers=headers)
+                response.raise_for_status()
+                return parse_sina_market_payload(response.content.decode("gb18030", errors="replace"))
+
+            async def fetch_eastmoney() -> list[dict]:
+                response = await client.get(EASTMONEY_GLOBAL_URL, headers={"User-Agent": "Mozilla/5.0"})
+                response.raise_for_status()
+                return parse_eastmoney_market_payload(response.json())
+
+            sina_result, eastmoney_result = await asyncio.gather(fetch_sina(), fetch_eastmoney(), return_exceptions=True)
+            sina = [] if isinstance(sina_result, Exception) else sina_result
+            eastmoney = [] if isinstance(eastmoney_result, Exception) else eastmoney_result
+        by_key = {item.get("key"): item for item in sina if item.get("available")}
+        fallback_by_key = {item.get("key"): item for item in eastmoney if item.get("available")}
+        for key, item in fallback_by_key.items():
+            by_key.setdefault(key, item)
+        return [by_key[key] for key in ("sp500", "dow", "nasdaq", "gold", "oil", "dxy") if key in by_key]
 
     async def _economic_calendar(self) -> list[dict]:
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
@@ -335,10 +414,21 @@ class MacroDashboardService:
         global_from_cache = False
         calendar_from_cache = False
         policy_from_cache = False
-        if not global_markets and cached.get("global_markets"):
-            global_markets = list(cached["global_markets"])
+        cached_global = {item.get("key"): item for item in (cached.get("global_markets") or []) if isinstance(item, dict)}
+        current_global = {item.get("key"): item for item in global_markets if isinstance(item, dict) and item.get("key")}
+        for key, item in cached_global.items():
+            if key and key not in current_global:
+                current_global[key] = {
+                    **item,
+                    "cache_used": True,
+                    "is_realtime": False,
+                    "data_age_minutes": None,
+                    "source_status": "cache",
+                }
+                global_from_cache = True
+        global_markets = [current_global[key] for key in ("sp500", "dow", "nasdaq", "gold", "oil", "dxy") if key in current_global]
+        if global_from_cache:
             cache_used = True
-            global_from_cache = True
         if not calendar and cached.get("economic_calendar"):
             calendar = list(cached["economic_calendar"])
             cache_used = True
@@ -434,8 +524,12 @@ class MacroDashboardService:
                 "status": "warning" if any(item["impact"] == "高" for item in calendar[:3]) else "neutral",
             },
         ]
+        has_sina_live = any(item.get("source") == "新浪财经" and item.get("available") and not item.get("cache_used") for item in global_markets)
+        has_eastmoney_global = any(item.get("source") == "东方财富全球行情" and item.get("available") for item in global_markets)
         source_status = {
-            "新浪财经": "cache" if global_from_cache else "available" if any(item.get("available") for item in global_markets) else "unavailable",
+            "新浪财经": "available" if has_sina_live else "cache" if global_from_cache else "unavailable",
+            "东方财富全球行情": "available" if has_eastmoney_global else "unavailable",
+            "全球行情缓存": "cache" if global_from_cache else "unused",
             "经济日历": "cache" if calendar_from_cache else "available" if calendar else "unavailable",
             "东方财富资金": "cache" if north_from_cache or turnover_from_cache else "available" if north or turnover else "unavailable",
             **(policy.get("source_status") or {}),

@@ -201,6 +201,15 @@ interface MarketOverview {
   update_time?: string;
 }
 
+interface EventInterpretation {
+  interpretation: string;
+  generated_at?: string | null;
+  data_cutoff_time?: string | null;
+  snapshot_updated_at?: string | null;
+  cache_used?: boolean;
+  sources?: string[];
+}
+
 type BreadthSnapshot = {
   up?: NullableNumber;
   down?: NullableNumber;
@@ -306,6 +315,17 @@ function factorLabel(value: string): string {
   if (FACTOR_LABELS[value]) return FACTOR_LABELS[value];
   if (/^[a-z0-9_]+$/i.test(value)) return value.replace(/_/g, ' ') || '因子待核验';
   return value || '因子待核验';
+}
+
+function cleanAiText(value: string): string {
+  return String(value || '')
+    .replace(/```[a-zA-Z0-9_+-]*\s*/g, '')
+    .replace(/```/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function stateLabel(value: string | null | undefined): string {
@@ -570,12 +590,30 @@ function MarketStatePanel({ supplement, overview }: { supplement: MarketSuppleme
 }
 
 function EventMonitor({ forecast, supplement }: { forecast: ForecastSnapshot; supplement: MarketSupplement | null }) {
+  const [interpretation, setInterpretation] = useState<EventInterpretation | null>(null);
+  const [interpretationLoading, setInterpretationLoading] = useState(false);
+  const [interpretationError, setInterpretationError] = useState('');
   const events = [...(forecast.risk_preference.evidence || []), ...(forecast.turning_points.increase_defensive_probability || [])].slice(0, 5);
   const sourceCount = supplement?.audit?.data_sources?.length || forecast.data_health.sources?.length || 0;
+  const explain = async () => {
+    if (interpretationLoading) return;
+    setInterpretationLoading(true);
+    setInterpretationError('');
+    try {
+      const response = await apiFetch<{ code: number; data: EventInterpretation }>('/forecast/event-interpretation', { method: 'POST', timeoutMs: 60000, cache: 'no-store' });
+      setInterpretation(response.data);
+    } catch (error) {
+      setInterpretationError(friendlyApiError(error, '事件解读暂时不可用'));
+    } finally {
+      setInterpretationLoading(false);
+    }
+  };
   return (
     <section className="v5-panel">
-      <SectionHeader icon={Bell} title="重要事件监控" subtitle={`${sourceCount || '--'} 个已登记数据源`} />
+      <SectionHeader icon={Bell} title="重要事件监控" subtitle={`${sourceCount || '--'} 个已登记数据源`} action={<button type="button" onClick={() => void explain()} disabled={interpretationLoading} className="v5-mini-refresh" title="调用AI解读因子共振链">{interpretationLoading ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}AI解读</button>} />
       {events.length ? <div className="divide-y divide-border">{events.map((event, index) => <div key={`${event}-${index}`} className="v5-event-row"><span className="v5-event-tag">{index % 2 === 0 ? '市场' : '风险'}</span><span className="min-w-0 flex-1 truncate text-xs text-text" title={event}>{factorLabel(event)}</span><span className="shrink-0 text-[10px] text-text-secondary">{index === 0 ? '当前' : '监控'}</span></div>)}</div> : <EmptyState text="当前没有新增事件摘要" />}
+      {interpretation && <div className="v5-event-ai"><div className="v5-event-ai-title"><BrainCircuit size={13} />资深交易员解读</div><div className="v5-event-ai-copy">{cleanAiText(interpretation.interpretation)}</div><div className="v5-event-ai-meta">{interpretation.cache_used ? '部分沿用缓存' : '本轮数据'} · 因子截止 {localTime(interpretation.data_cutoff_time)} · 快照 {localTime(interpretation.snapshot_updated_at)}</div></div>}
+      {interpretationError && <div className="v5-event-ai-error">{interpretationError}</div>}
       <div className="border-t border-border px-4 py-2.5 text-[10px] leading-4 text-text-secondary">事件只作为因果链证据，不能单独生成买卖结论。</div>
     </section>
   );
@@ -762,7 +800,7 @@ export default function MarketDecisionWorkbenchPage() {
           <span className="min-w-0"><strong>AI多因子共振预测中枢 <b>V5.0</b></strong><small>进因势位时止 · 洞察先机 · 驭势而行</small></span>
         </Link>
             <nav className="v5-global-nav" aria-label="预测工作台功能导航">
-          <a className="active" href="#forecast">预测引擎</a><a href="#factors">因子监控</a><a href="#sectors">板块轮动</a><a href="#alpha">Alpha雷达</a><a href="#history">历史回溯</a><a href="#strategy">策略执行</a><a href="#system-status">系统状态</a>
+          <a className="active" href="#forecast">预测引擎</a><a href="#factors">因子监控</a><a href="#sectors">板块轮动</a><a href="#alpha">Alpha雷达</a><a href="#history">历史回溯</a><a href="#strategy">策略执行</a><a href="#system-status">系统状态</a><Link className="v5-global-utility" href="/market/v4">V4工作台</Link><Link className="v5-global-utility" href="/pro/research">研究中心</Link><Link className="v5-global-utility" href="/pro/personal">个人股票池</Link><Link className="v5-global-utility" href="/quant">量化策略</Link>
         </nav>
         <div className="v5-global-meta"><span className="v5-header-time">{localTime(forecast.generated_at)}</span><span className={`v5-trading-state ${supplement?.meta?.is_realtime ? 'live' : ''}`}><i />{supplement?.meta?.is_realtime ? '交易中' : '缓存快照'}</span><button type="button" className="v5-header-icon" title="刷新工作台" aria-label="刷新工作台" onClick={() => void load(true)} disabled={refreshing}>{refreshing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}</button><UserCircle size={22} className="v5-user-mark" aria-hidden="true" /></div>
         {refreshing && <div className="v5-refresh-progress" role="progressbar" aria-label="刷新工作台进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div>}

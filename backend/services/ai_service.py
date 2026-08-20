@@ -1,4 +1,5 @@
 import json
+import re
 from typing import AsyncGenerator, Optional
 from config import settings
 
@@ -7,6 +8,22 @@ try:
     _has_openai = True
 except ImportError:
     _has_openai = False
+
+
+def clean_ai_text(value: object) -> str:
+    """Return plain, readable Chinese text for terminal-style AI panels.
+
+    AI answers are rendered as plain text in this product. Removing formatting
+    markers centrally also keeps saved history and non-chat AI panels consistent.
+    """
+    text = str(value or "")
+    text = re.sub(r"```(?:[a-zA-Z0-9_+-]+)?\s*", "", text)
+    text = text.replace("```", "")
+    text = text.replace("**", "").replace("__", "")
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
+    text = re.sub(r"(?m)^\s*[-*+]\s+", "- ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 class AIService:
@@ -35,7 +52,7 @@ class AIService:
                 temperature=0.7,
                 max_tokens=2000,
             )
-            return response.choices[0].message.content or ""
+            return clean_ai_text(response.choices[0].message.content or "")
         except Exception as e:
             print(f"AI generate error: {e}")
             return f"[AI服务暂时不可用: {e}]"
@@ -48,7 +65,7 @@ class AIService:
         history: Optional[list[dict]] = None,
     ) -> AsyncGenerator[dict, None]:
         if not self.client:
-            yield {"type": "text", "content": "[AI服务未配置，请在.env中设置DEEPSEEK_API_KEY]"}
+            yield {"type": "text", "content": clean_ai_text("[AI服务未配置，请在.env中设置DEEPSEEK_API_KEY]")}
             yield {"type": "end", "content": ""}
             return
 
@@ -69,13 +86,25 @@ class AIService:
             )
 
             full_content = ""
+            emitted_content = ""
             async for chunk in stream:
                 if chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     full_content += content
-                    yield {"type": "text", "content": content}
+                    cleaned = clean_ai_text(full_content)
+                    # Keep a small tail pending so markers split across SSE
+                    # chunks do not flash in the browser.
+                    safe_length = max(0, len(cleaned) - 3) if cleaned.endswith(("*", "_", "`", "#")) else len(cleaned)
+                    safe = cleaned[:safe_length]
+                    if safe.startswith(emitted_content) and len(safe) > len(emitted_content):
+                        delta = safe[len(emitted_content):]
+                        emitted_content = safe
+                        yield {"type": "text", "content": delta}
 
-            yield {"type": "end", "content": full_content}
+            cleaned = clean_ai_text(full_content)
+            if cleaned.startswith(emitted_content) and len(cleaned) > len(emitted_content):
+                yield {"type": "text", "content": cleaned[len(emitted_content):]}
+            yield {"type": "end", "content": cleaned}
 
         except Exception as e:
             print(f"AI stream error: {e}")

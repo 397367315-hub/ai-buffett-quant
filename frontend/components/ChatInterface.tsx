@@ -13,6 +13,17 @@ const SUGGESTIONS = ['600519近一个月走势怎样？', '今天哪些板块资
 
 type Mode = 'beginner' | 'professional' | 'mao_strategy';
 
+function cleanAiText(value: string, trim = true): string {
+  const cleaned = String(value || '')
+    .replace(/```[a-zA-Z0-9_+-]*\s*/g, '')
+    .replace(/```/g, '')
+    .replace(/\*\*/g, '')
+    .replace(/__/g, '')
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/\n{3,}/g, '\n\n');
+  return trim ? cleaned.trim() : cleaned;
+}
+
 interface UIMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -45,7 +56,7 @@ export default function ChatInterface() {
         if (!active) return;
         const history = (response.data.messages || [])
           .filter((item) => item.role === 'user' || item.role === 'assistant')
-          .map((item) => ({ id: `history-${item.id}`, role: item.role, content: item.content }));
+          .map((item) => ({ id: `history-${item.id}`, role: item.role, content: cleanAiText(item.content) }));
         setMessages(history.length ? history : [{ id: 'welcome', role: 'assistant', content: WELCOME }]);
       } catch {
         if (active) setMessages([{ id: 'welcome', role: 'assistant', content: WELCOME }]);
@@ -94,7 +105,7 @@ export default function ChatInterface() {
           sources: Array.isArray(event.sources) ? event.sources : message.sources,
         }));
       } else if (event.type === 'text') {
-        updateLastAssistant((message) => ({ ...message, content: message.content + String(event.content || '') }));
+        updateLastAssistant((message) => ({ ...message, content: cleanAiText(message.content + String(event.content || ''), false) }));
       } else if (event.type === 'error') {
         updateLastAssistant((message) => ({ ...message, content: message.content || `AI服务暂时不可用：${event.content || '未知错误'}` }));
       }
@@ -158,7 +169,7 @@ export default function ChatInterface() {
     } catch (error) {
       updateLastAssistant((message) => ({
         ...message,
-        content: message.content || (error instanceof Error ? error.message : 'AI服务暂时不可用，请稍后再试。'),
+        content: cleanAiText(message.content || (error instanceof Error ? error.message : 'AI服务暂时不可用，请稍后再试。')),
       }));
     } finally {
       setStreaming(false);
