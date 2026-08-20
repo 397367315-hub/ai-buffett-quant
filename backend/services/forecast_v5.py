@@ -482,15 +482,15 @@ class ForecastV5Service:
             "us10y_change": (
                 _num(us10y.get("value")), _clamp(-us10y_change / 0.15), [], _parse_time(us10y.get("source_time")),
                 f"{us10y.get('source')} · {'缓存' if us10y.get('cache_used') else '最新发布'}", None,
-            ) if us10y_change is not None else (None, None, [], None, None, "FRED DGS10当前没有可核验的日变化值"),
+            ) if us10y_change is not None else (None, None, [], None, None, "美国10年期收益率当前没有可核验的日变化值"),
             "us2y_change": (
                 _num(us2y.get("value")), _clamp(-us2y_change / 0.15), [], _parse_time(us2y.get("source_time")),
                 f"{us2y.get('source')} · {'缓存' if us2y.get('cache_used') else '最新发布'}", None,
-            ) if us2y_change is not None else (None, None, [], None, None, "FRED DGS2当前没有可核验的日变化值"),
+            ) if us2y_change is not None else (None, None, [], None, None, "美国2年期收益率当前没有可核验的日变化值"),
             "vix_change": (
                 _num(vix.get("value")), _clamp(-vix_change / 12), [], _parse_time(vix.get("source_time")),
                 f"{vix.get('source')} · {'缓存' if vix.get('cache_used') else '最新发布'}", None,
-            ) if vix_change is not None else (None, None, [], None, None, "FRED VIXCLS当前没有可核验的日变化值"),
+            ) if vix_change is not None else (None, None, [], None, None, "VIX当前没有可核验的日变化值"),
             "credit_pulse": (
                 credit_value, _clamp(credit_value / 10), [], indicator_time(credit_pulse), indicator_source(credit_pulse), None,
             ) if credit_value is not None else (None, None, [], None, None, "社融信用脉冲代理当前没有可核验的最新发布值"),

@@ -29,6 +29,10 @@ EASTMONEY_GLOBAL_URL = (
 )
 ECONOMIC_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 FRED_MACRO_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10,DGS2,VIXCLS&cosd=2020-01-01"
+# FRED is the preferred consolidated series. These official/public series are
+# independent fallbacks for environments where the FRED host is unreachable.
+TREASURY_YIELD_URL = "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/daily-treasury-rates.csv/{year}/all?type=daily_treasury_yield_curve&field_tdr_date_value={year}&page&_format=csv"
+CBOE_VIX_URL = "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
 MOFCOM_SOCIAL_FINANCE_URL = "https://data.mofcom.gov.cn/datamofcom/front/gnmy/shrzgmQuery"
 EASTMONEY_DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -251,6 +255,72 @@ def parse_fred_macro_zip(content: bytes) -> list[dict]:
     return result
 
 
+def parse_treasury_yield_csv(text: str) -> list[dict]:
+    """Parse the US Treasury daily par-yield CSV as a FRED fallback."""
+    rows: list[tuple[str, float, float]] = []
+    for item in csv.DictReader(StringIO(text)):
+        stamp = str(item.get("Date") or "")
+        try:
+            parsed_date = datetime.strptime(stamp, "%m/%d/%Y").date()
+        except (TypeError, ValueError):
+            continue
+        two_year = _float(item.get("2 Yr"))
+        ten_year = _float(item.get("10 Yr"))
+        if two_year is not None and ten_year is not None:
+            rows.append((parsed_date.isoformat(), two_year, ten_year))
+    rows.sort(key=lambda item: item[0])
+    if not rows:
+        return []
+    current = rows[-1]
+    previous = rows[-2] if len(rows) > 1 else None
+    result = []
+    for key, label, index in (("us10y", "美国10年期收益率", 2), ("us2y", "美国2年期收益率", 1)):
+        value = current[index]
+        previous_value = previous[index] if previous else None
+        result.append({
+            "key": key,
+            "label": label,
+            "value": value,
+            "change_pct": round(value - previous_value, 3) if previous_value is not None else None,
+            "change_kind": "change_points",
+            "currency": "%",
+            "source_time": current[0],
+            "available": True,
+            **_official_series_meta(current[0], "美国财政部日收益率"),
+        })
+    return result
+
+
+def parse_cboe_vix_csv(text: str) -> list[dict]:
+    """Parse Cboe's public VIX history as a FRED fallback."""
+    rows: list[tuple[str, float]] = []
+    for item in csv.DictReader(StringIO(text)):
+        stamp = str(item.get("DATE") or "")
+        try:
+            parsed_date = datetime.strptime(stamp, "%m/%d/%Y").date()
+        except (TypeError, ValueError):
+            continue
+        close = _float(item.get("CLOSE"))
+        if close is not None:
+            rows.append((parsed_date.isoformat(), close))
+    rows.sort(key=lambda item: item[0])
+    if not rows:
+        return []
+    stamp, current = rows[-1]
+    previous = rows[-2][1] if len(rows) > 1 else None
+    return [{
+        "key": "vix",
+        "label": "VIX波动率",
+        "value": current,
+        "change_pct": round((current / previous - 1) * 100, 2) if previous not in (None, 0) else None,
+        "change_kind": "relative_pct",
+        "currency": "index",
+        "source_time": stamp,
+        "available": True,
+        **_official_series_meta(stamp, "Cboe公开VIX历史"),
+    }]
+
+
 def parse_mofcom_credit_payload(payload: object) -> dict:
     """Build a transparent credit-pulse proxy from PBOC social-finance flow.
 
@@ -391,6 +461,23 @@ class MacroDashboardService:
                 response.raise_for_status()
                 return parse_fred_macro_zip(response.content)
 
+            async def fetch_treasury() -> list[dict]:
+                year = shanghai_now().year
+                response = await client.get(
+                    TREASURY_YIELD_URL.format(year=year),
+                    headers={**headers, "Referer": "https://home.treasury.gov/"},
+                )
+                response.raise_for_status()
+                return parse_treasury_yield_csv(response.text)
+
+            async def fetch_cboe() -> list[dict]:
+                response = await client.get(
+                    CBOE_VIX_URL,
+                    headers={**headers, "Referer": "https://www.cboe.com/"},
+                )
+                response.raise_for_status()
+                return parse_cboe_vix_csv(response.text)
+
             async def fetch_credit() -> dict:
                 response = await client.post(
                     MOFCOM_SOCIAL_FINANCE_URL,
@@ -421,8 +508,10 @@ class MacroDashboardService:
                     raise ValueError(str(payload.get("message") or "东方财富数据中心未返回成功状态"))
                 return payload
 
-            fred_result, credit_result, price_result, capex_result = await asyncio.gather(
+            fred_result, treasury_result, cboe_result, credit_result, price_result, capex_result = await asyncio.gather(
                 fetch_fred(),
+                fetch_treasury(),
+                fetch_cboe(),
                 fetch_credit(),
                 fetch_eastmoney("RPT_ECONOMY_GOODS_INDEX"),
                 fetch_eastmoney("RPT_ECONOMY_ASSET_INVEST"),
@@ -430,6 +519,15 @@ class MacroDashboardService:
             )
 
         fred = [] if isinstance(fred_result, Exception) else fred_result
+        treasury = [] if isinstance(treasury_result, Exception) else treasury_result
+        cboe = [] if isinstance(cboe_result, Exception) else cboe_result
+        # Prefer the consolidated official FRED response, then fill only the
+        # missing series from independent public sources. Never overwrite a
+        # newer observed value with a fallback response.
+        macro_global = {item.get("key"): item for item in fred if item.get("key")}
+        for item in [*treasury, *cboe]:
+            if item.get("key") not in macro_global:
+                macro_global[item["key"]] = item
         credit = {} if isinstance(credit_result, Exception) else credit_result
         price = {} if isinstance(price_result, Exception) else _parse_eastmoney_indicator(
             price_result,
@@ -462,10 +560,12 @@ class MacroDashboardService:
             "capex": capex,
         }
         return {
-            "global_markets": fred,
+            "global_markets": list(macro_global.values()),
             "macro_indicators": macro_indicators,
             "source_status": {
-                "FRED公开序列": "available" if fred else "unavailable",
+                "FRED公开序列": "available" if fred else "fallback" if (treasury or cboe) else "unavailable",
+                "美国财政部日收益率": "available" if treasury else "unavailable",
+                "Cboe公开VIX历史": "available" if cboe else "unavailable",
                 "商务部数据中心/中国人民银行": "available" if credit else "unavailable",
                 "东方财富企业商品价格指数": "available" if price else "unavailable",
                 "东方财富/国家统计口径城镇固定资产投资": "available" if capex else "unavailable",
