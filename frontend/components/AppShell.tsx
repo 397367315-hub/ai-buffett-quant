@@ -12,6 +12,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
 
   const isLoginPage = pathname === '/login';
+  const isFullscreenWorkbench = pathname === '/market';
 
   useEffect(() => {
     if (isAuthReady && !isLoggedIn && !isLoginPage) {
@@ -31,6 +32,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
         <div className="animate-spin w-8 h-8 border-2 border-accent border-t-transparent rounded-full" />
       </div>
     );
+  }
+
+  // V5 owns its full terminal chrome. V4 and the remaining modules continue
+  // to use the shared application navigation so both workbenches stay isolated.
+  if (isFullscreenWorkbench) {
+    return <>{children}</>;
   }
 
   return (

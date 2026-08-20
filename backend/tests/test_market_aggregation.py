@@ -32,6 +32,7 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(routes, "shanghai_now", return_value=datetime(2026, 8, 8, 10, 0)),
             patch.object(routes, "_read_json_snapshot", new=AsyncMock(return_value=cached)) as read_snapshot,
+            patch.object(routes.collector, "fetch_tencent_index_quotes", new=AsyncMock(return_value={})),
             patch.object(routes.collector, "fetch_market_turnover", new=AsyncMock(side_effect=AssertionError("live call should not run"))),
         ):
             response = await routes.get_market_overview()
@@ -40,6 +41,46 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response["data"]["is_realtime"])
         self.assertEqual(response["data"]["data_date"], "2026-08-07")
         read_snapshot.assert_awaited_once_with("market_overview_v1")
+
+    async def test_closed_market_enriches_legacy_cache_with_tencent_indices(self):
+        cached = {
+            "market_index": {"sh_index": None, "sh_change_pct": None},
+            "market_breadth": {"全市场": {"up": 100, "down": 200}},
+            "data_date": "2026-08-19",
+        }
+        tencent = {
+            "indices": {
+                "shanghai": {"value": 3894.42, "change": -95.88, "change_pct": -2.40, "amount": 1_218_107_974_056, "volume": 572_191_213},
+                "chinext": {"value": 3473.49, "change_pct": -6.26},
+                "hs300": {"value": 4588.70, "change_pct": -2.90},
+            },
+            "data_date": "2026-08-19",
+            "source_updated_at": "2026-08-19T16:14:27+08:00",
+            "source": "tencent",
+            "is_realtime": False,
+        }
+        history = {
+            "index_series": {
+                "shanghai": [3990.30, 3894.42],
+                "chinext": [3705.56, 3473.49],
+                "hs300": [4725.81, 4588.70],
+            }
+        }
+
+        with (
+            patch.object(routes, "shanghai_now", return_value=datetime(2026, 8, 20, 8, 30)),
+            patch.object(routes, "_read_json_snapshot", new=AsyncMock(return_value=cached)),
+            patch.object(routes, "_write_json_snapshot", new=AsyncMock(return_value="2026-08-20T08:30:00+08:00")),
+            patch.object(routes.collector, "fetch_tencent_index_quotes", new=AsyncMock(return_value=tencent)),
+            patch.object(routes.collector, "fetch_tencent_index_history", new=AsyncMock(return_value=history)),
+        ):
+            response = await routes.get_market_overview()
+
+        index = response["data"]["market_index"]
+        self.assertEqual(index["sh_index"], 3894.42)
+        self.assertEqual(index["indices"]["chinext"]["value"], 3473.49)
+        self.assertEqual(index["index_series"]["hs300"], [4725.81, 4588.70])
+        self.assertTrue(response["data"]["cache_used"])
 
     async def test_overview_uses_the_actual_lowest_flow_ranking(self):
         async def fetch_concept_flow(*, sort_order=0, **kwargs):
@@ -67,6 +108,54 @@ class MarketAggregationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["data"]["fund_flow"]["top_inflow"][0]["name"], "高净额")
         self.assertEqual(response["data"]["fund_flow"]["top_outflow"][0]["name"], "低净额")
         self.assertEqual(response["data"]["limit_board"], {"limit_up": 0, "limit_down": 2})
+
+    async def test_auction_index_does_not_replace_complete_turnover_cache(self):
+        cached = {
+            "market_index": {
+                "sh_index": 3894.42,
+                "sh_change_pct": -2.40,
+                "sh_volume": 572_191_213,
+                "sh_amount": 1_218_107_974_056,
+            },
+            "fund_flow": {"top_inflow": [], "top_outflow": []},
+            "data_date": "2026-08-19",
+        }
+        auction_turnover = {
+            "sh_index": 3894.28,
+            "sh_change": -0.14,
+            "sh_change_pct": 0.0,
+            "sh_volume": 0,
+            "sh_amount": 0,
+            "data_date": "2026-08-20",
+            "is_realtime": True,
+            "source": "tencent",
+            "indices": {
+                "shanghai": {"value": 3894.28, "change_pct": 0.0},
+                "chinext": {"value": 3473.49, "change_pct": 0.0},
+                "hs300": {"value": 4588.61, "change_pct": 0.0},
+            },
+        }
+
+        with (
+            patch.object(routes, "shanghai_now", return_value=datetime(2026, 8, 20, 9, 21)),
+            patch.object(routes.collector, "fetch_north_bound_daily", new=AsyncMock(return_value=[])),
+            patch.object(routes.collector, "fetch_concept_flow", new=AsyncMock(return_value=[{"code": "BK0001", "name": "测试板块", "main_net_inflow": 1}])),
+            patch.object(routes.collector, "fetch_limit_up_pool", new=AsyncMock(return_value={"stocks": [], "total": 0, "trade_date": "2026-08-20"})),
+            patch.object(routes.collector, "fetch_limit_down_pool", new=AsyncMock(return_value={"stocks": [], "total": 0, "trade_date": "2026-08-20"})),
+            patch.object(routes.collector, "fetch_market_breadth", new=AsyncMock(return_value={})),
+            patch.object(routes.collector, "fetch_market_turnover", new=AsyncMock(return_value=auction_turnover)),
+            patch.object(routes.collector, "fetch_tencent_index_history", new=AsyncMock(return_value={})),
+            patch.object(routes, "_read_json_snapshot", new=AsyncMock(return_value=cached)),
+            patch.object(routes, "_write_json_snapshot", new=AsyncMock()) as write_snapshot,
+        ):
+            response = await routes.get_market_overview()
+
+        index = response["data"]["market_index"]
+        self.assertEqual(index["sh_index"], 3894.28)
+        self.assertEqual(index["sh_amount"], 1_218_107_974_056)
+        self.assertEqual(index["indices"]["hs300"]["value"], 4588.61)
+        self.assertEqual(response["data"]["refresh_status"], "partial_live_index")
+        write_snapshot.assert_not_awaited()
 
     async def test_concept_summary_combines_true_inflow_and_outflow_rankings(self):
         inflow_rows = [

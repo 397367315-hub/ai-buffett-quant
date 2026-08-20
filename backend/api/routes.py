@@ -99,6 +99,21 @@ async def _fetch_market_component(name: str, awaitable, fallback):
     return fallback
 
 
+async def _attach_tencent_index_history(turnover: dict) -> dict:
+    """Attach a short real close series when the index snapshot is available."""
+    if not isinstance(turnover, dict) or not turnover.get("indices") or turnover.get("index_series"):
+        return turnover
+    history = await _fetch_market_component(
+        "tencent-index-history",
+        collector.fetch_tencent_index_history(days=10),
+        {},
+    )
+    series = history.get("index_series") if isinstance(history, dict) else None
+    if not isinstance(series, dict) or not series:
+        return turnover
+    return {**turnover, "index_series": series}
+
+
 async def _latest_cached_trade_date(model) -> date | None:
     try:
         async with async_session() as session:
@@ -182,6 +197,61 @@ def _cached_market_overview_payload(payload: dict) -> dict:
         "cache_used": True,
     })
     return cached
+
+
+async def _enrich_cached_market_indices(payload: dict) -> tuple[dict, bool]:
+    """Backfill old cache rows with Tencent's dated index snapshot.
+
+    Older cache rows predate the three-index contract and may contain only a
+    null or partial Shanghai quote. Tencent is used here as the explicitly
+    supported 24-hour fallback; the existing breadth and flow rows stay tied
+    to the cache's own verified data date.
+    """
+    cached = _normalize_market_overview_payload(payload)
+    market_index = dict(cached.get("market_index") or {})
+    existing_indices = market_index.get("indices")
+    required = {"shanghai", "chinext", "hs300"}
+    if isinstance(existing_indices, dict) and required.issubset(existing_indices):
+        enriched_index = await _attach_tencent_index_history(market_index)
+        changed = enriched_index.get("index_series") != market_index.get("index_series")
+        return ({**cached, "market_index": enriched_index} if changed else cached), changed
+
+    snapshot = await _fetch_market_component(
+        "tencent-index-cache-enrichment",
+        collector.fetch_tencent_index_quotes(),
+        {},
+    )
+    indices = snapshot.get("indices") if isinstance(snapshot, dict) else None
+    if not isinstance(indices, dict) or not indices:
+        return cached, False
+
+    cached_date = _market_date(cached.get("data_date"))
+    quote_date = _market_date(snapshot.get("data_date"))
+    if cached_date and quote_date and quote_date < cached_date:
+        return cached, False
+
+    shanghai = indices.get("shanghai") or {}
+    merged_index = {
+        **market_index,
+        "indices": indices,
+        "data_date": quote_date or market_index.get("data_date"),
+        "source_updated_at": snapshot.get("source_updated_at"),
+        "source": snapshot.get("source") or "tencent",
+        "is_realtime": bool(snapshot.get("is_realtime")),
+    }
+    # Keep the legacy Shanghai fields populated for older consumers.
+    for target, source in (
+        ("sh_index", "value"),
+        ("sh_change", "change"),
+        ("sh_change_pct", "change_pct"),
+        ("sh_volume", "volume"),
+        ("sh_amount", "amount"),
+    ):
+        if merged_index.get(target) in (None, 0) and shanghai.get(source) is not None:
+            merged_index[target] = shanghai.get(source)
+    merged_index = await _attach_tencent_index_history(merged_index)
+    enriched = {**cached, "market_index": merged_index}
+    return enriched, True
 
 
 def _market_date(value: object) -> str | None:
@@ -1874,7 +1944,12 @@ async def _build_market_overview(
     if not bypass_cache and not is_a_share_market_session(shanghai_now()):
         cached = await _read_json_snapshot(cache_key)
         if cached:
-            return {"code": 0, "data": _cached_market_overview_payload(cached)}
+            enriched, changed = await _enrich_cached_market_indices(cached)
+            if changed:
+                saved_at = await _write_json_snapshot(cache_key, enriched)
+                if saved_at:
+                    enriched["snapshot_saved_at"] = saved_at
+            return {"code": 0, "data": _cached_market_overview_payload(enriched)}
 
     expected_data_date = _market_date(expected_data_date)
     target_date = date.fromisoformat(expected_data_date) if expected_data_date else None
@@ -1888,6 +1963,7 @@ async def _build_market_overview(
         _fetch_market_component("breadth", collector.fetch_market_breadth(), {}),
         _fetch_market_component("turnover", collector.fetch_market_turnover(), {}),
     )
+    turnover = await _attach_tencent_index_history(turnover)
     top_inflow = sorted(concept_inflow, key=lambda row: as_int(row.get("main_net_inflow")), reverse=True)[:3]
     top_outflow = sorted(concept_outflow, key=lambda row: as_int(row.get("main_net_inflow")))[:3]
     latest_north = north[-1] if north else {}
@@ -1998,7 +2074,7 @@ async def _build_market_overview(
                 available=available,
                 data_date=data_date if available else None,
                 is_realtime=is_realtime,
-                source="eastmoney",
+                source=turnover.get("source") or "eastmoney",
             ),
             "source_updated_at": turnover.get("source_updated_at"),
             "cache_used": False,
@@ -2008,7 +2084,7 @@ async def _build_market_overview(
     turnover_complete = all(
         key in turnover
         for key in ("sh_index", "sh_change", "sh_change_pct", "sh_amount")
-    )
+    ) and as_float(turnover.get("sh_index")) > 0 and as_float(turnover.get("sh_amount")) > 0
     cacheable = (
         source_status["concept_inflow"]
         and source_status["concept_outflow"]
@@ -2022,6 +2098,19 @@ async def _build_market_overview(
     cached = await _read_json_snapshot(cache_key)
     if cached:
         payload = _cached_market_overview_payload(cached)
+        live_index = response["data"].get("market_index") or {}
+        live_indices = live_index.get("indices") if isinstance(live_index, dict) else None
+        if isinstance(live_indices, dict) and live_indices:
+            cached_index = payload.get("market_index") or {}
+            merged_index = {**cached_index, **live_index}
+            # Auction snapshots have valid prices but no full-session amount;
+            # retain the last complete amount until the close snapshot arrives.
+            if as_float(live_index.get("sh_amount")) <= 0 and as_float(cached_index.get("sh_amount")) > 0:
+                merged_index["sh_amount"] = cached_index["sh_amount"]
+            if as_float(live_index.get("sh_volume")) <= 0 and as_float(cached_index.get("sh_volume")) > 0:
+                merged_index["sh_volume"] = cached_index["sh_volume"]
+            payload["market_index"] = merged_index
+            payload["refresh_status"] = "partial_live_index"
         if bypass_cache:
             payload["refresh_status"] = "unchanged"
             payload["data_warnings"] = list(dict.fromkeys([

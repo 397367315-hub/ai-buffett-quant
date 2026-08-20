@@ -1122,28 +1122,206 @@ class EastMoneyDataCollector:
             }
         return output
 
+    async def fetch_tencent_index_quotes(self) -> dict:
+        """Fetch the three dashboard indices from Tencent's always-on quote feed."""
+        symbols = ("sh000001", "sz399006", "sh000300")
+        specs = {
+            "sh000001": ("shanghai", "上证指数"),
+            "sz399006": ("chinext", "创业板指"),
+            "sh000300": ("hs300", "沪深300"),
+        }
+        try:
+            if settings.data_proxy_base_url:
+                headers: dict[str, str] = {}
+                if settings.data_proxy_token:
+                    headers["X-Data-Proxy-Token"] = settings.data_proxy_token
+                async with httpx.AsyncClient(timeout=self._request_timeout()) as client:
+                    response = await client.post(
+                        f"{settings.data_proxy_base_url.rstrip('/')}/tencent-quotes",
+                        json={"symbols": list(symbols)},
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    text = str(response.json().get("text") or "")
+            else:
+                async with httpx.AsyncClient(timeout=self._request_timeout()) as client:
+                    response = await client.get(
+                        self.TENCENT_QUOTE_URL + ",".join(symbols),
+                        headers=self.TENCENT_HEADERS,
+                    )
+                    response.raise_for_status()
+                    text = response.content.decode("gb18030", errors="replace")
+        except Exception as exc:
+            print(f"Error fetching Tencent index quotes: {type(exc).__name__}")
+            return {}
+
+        indices: dict[str, dict] = {}
+        latest_quote_at: datetime | None = None
+        pattern = re.compile(r'v_((?:sh|sz)\d{6})="([^"]*)"')
+        for symbol, payload in pattern.findall(text):
+            spec = specs.get(symbol)
+            if spec is None:
+                continue
+            values = payload.split("~")
+            if len(values) < 35:
+                continue
+            price = as_optional_float(values[3])
+            if price is None or price <= 0:
+                continue
+            quote_at = None
+            try:
+                quote_at = datetime.strptime(values[30], "%Y%m%d%H%M%S").replace(
+                    tzinfo=ZoneInfo("Asia/Shanghai")
+                )
+            except (TypeError, ValueError):
+                pass
+            if quote_at and (latest_quote_at is None or quote_at > latest_quote_at):
+                latest_quote_at = quote_at
+            amount = None
+            if len(values) > 35:
+                quote_summary = str(values[35] or "").split("/")
+                if len(quote_summary) >= 3:
+                    amount = as_optional_float(quote_summary[2])
+            key, default_name = spec
+            indices[key] = {
+                "name": str(values[1] or default_name),
+                "value": price,
+                "change": as_optional_float(values[31]),
+                "change_pct": as_optional_float(values[32]),
+                "volume": as_optional_float(values[6]),
+                "amount": int(amount) if amount is not None else None,
+                "data_date": quote_at.date().isoformat() if quote_at else None,
+                "source_updated_at": quote_at.isoformat() if quote_at else None,
+                "source": "tencent",
+            }
+
+        if not indices:
+            return {}
+        now = shanghai_now()
+        age_seconds = (now - latest_quote_at).total_seconds() if latest_quote_at else None
+        return {
+            "indices": indices,
+            "data_date": latest_quote_at.date().isoformat() if latest_quote_at else None,
+            "source_updated_at": latest_quote_at.isoformat() if latest_quote_at else None,
+            "is_realtime": bool(
+                latest_quote_at
+                and latest_quote_at.date() == now.date()
+                and age_seconds is not None
+                and 0 <= age_seconds <= 15 * 60
+                and is_a_share_market_session(now)
+            ),
+            "source": "tencent",
+        }
+
+    async def fetch_tencent_index_history(self, days: int = 10) -> dict:
+        """Fetch short, real index close series for the dashboard sparklines."""
+        specs = {
+            "sh000001": "shanghai",
+            "sz399006": "chinext",
+            "sh000300": "hs300",
+        }
+        count = min(max(int(days) + 5, 5), 60)
+
+        async def fetch_one(symbol: str) -> tuple[str, list[float], str | None]:
+            last_error: Exception | None = None
+            for source_url, params in (
+                (
+                    self.TENCENT_COMPLETE_KLINE_URL,
+                    {"_var": "kline_dayqfq", "param": f"{symbol},day,,,{count},qfq"},
+                ),
+                (self.TENCENT_KLINE_URL, {"param": f"{symbol},day,,,{count},qfq"}),
+            ):
+                try:
+                    data = await self.fetch_json(source_url, params, self.TENCENT_HEADERS)
+                    payload = ((data.get("data") or {}).get(symbol) or {})
+                    rows = payload.get("qfqday") or payload.get("day") or []
+                    values: list[tuple[str, float]] = []
+                    for row in rows:
+                        if not isinstance(row, list) or len(row) < 3:
+                            continue
+                        raw_date = str(row[0] or "")[:10]
+                        try:
+                            date.fromisoformat(raw_date)
+                        except ValueError:
+                            continue
+                        close = as_optional_float(row[2])
+                        if close is not None and close > 0:
+                            values.append((raw_date, close))
+                    if values:
+                        values = values[-int(days):]
+                        return specs[symbol], [close for _, close in values], values[-1][0]
+                    raise RuntimeError("Tencent returned empty index history")
+                except Exception as exc:
+                    last_error = exc
+            if last_error:
+                print(f"Tencent index history unavailable for {symbol}: {type(last_error).__name__}")
+            return specs[symbol], [], None
+
+        results = await asyncio.gather(*(fetch_one(symbol) for symbol in specs))
+        series = {key: values for key, values, _ in results if values}
+        dates = [raw_date for _, _, raw_date in results if raw_date]
+        if not series:
+            return {}
+        return {
+            "index_series": series,
+            "data_date": max(dates) if dates else None,
+            "source": "tencent",
+        }
+
     async def fetch_market_turnover(self) -> dict:
         url = "https://push2.eastmoney.com/api/qt/stock/get"
         params = {
             "secid": "1.000001", "fields": "f43,f47,f48,f57,f58,f124,f169,f170", "ut": EASTMONEY_UT,
         }
+        tencent_task = asyncio.create_task(self.fetch_tencent_index_quotes())
         try:
             data = await self.fetch_json(url, params)
         except Exception as exc:
             print(f"Error fetching market turnover: {type(exc).__name__}")
-            return {}
+            data = {}
         row = data.get("data") or {}
-        if not row:
-            return {}
-        quote_at = self._quote_timestamp_datetime(row.get("f124"))
+        tencent = await tencent_task
         now = shanghai_now()
+        shanghai = (tencent.get("indices") or {}).get("shanghai") or {}
+        east_price = as_optional_float(row.get("f43")) if row else None
+        east_amount = as_optional_float(row.get("f48")) if row else None
+        east_quote_at = self._quote_timestamp_datetime(row.get("f124")) if row else None
+        # EastMoney can return a non-empty object before the session starts,
+        # while its amount/timestamp fields are still zero. Treat that as an
+        # incomplete quote so the Tencent snapshot remains authoritative.
+        eastmoney_complete = bool(
+            east_price is not None
+            and east_price > 0
+            and east_amount is not None
+            and east_amount > 0
+            and east_quote_at is not None
+        )
+        if not eastmoney_complete:
+            if not shanghai:
+                return {}
+            return {
+                "sh_index": shanghai.get("value"),
+                "sh_change": shanghai.get("change"),
+                "sh_change_pct": shanghai.get("change_pct"),
+                "sh_volume": shanghai.get("volume"),
+                "sh_amount": shanghai.get("amount"),
+                **tencent,
+            }
+
+        quote_at = east_quote_at
         quote_age_seconds = (now - quote_at).total_seconds() if quote_at else None
+        tencent_date = str(tencent.get("data_date") or "")[:10]
+        same_date_indices = (
+            tencent.get("indices") or {}
+            if tencent_date and quote_at and tencent_date == quote_at.date().isoformat()
+            else {}
+        )
         return {
-            "sh_index": round(as_float(row.get("f43")) / 100, 2),
+            "sh_index": round(east_price / 100, 2),
             "sh_change": round(as_float(row.get("f169")) / 100, 2),
             "sh_change_pct": round(as_float(row.get("f170")) / 100, 2),
             "sh_volume": as_int(row.get("f47")),
-            "sh_amount": as_int(row.get("f48")),
+            "sh_amount": int(east_amount),
             "data_date": quote_at.date().isoformat() if quote_at else None,
             "source_updated_at": quote_at.isoformat() if quote_at else None,
             "is_realtime": bool(
@@ -1154,6 +1332,7 @@ class EastMoneyDataCollector:
                 and is_a_share_market_session(now)
             ),
             "source": "eastmoney",
+            "indices": same_date_indices,
         }
 
     async def fetch_dragon_board(

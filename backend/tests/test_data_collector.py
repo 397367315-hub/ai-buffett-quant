@@ -328,6 +328,7 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
             }
 
         collector.fetch_json = fake_fetch_json
+        collector.fetch_tencent_index_quotes = AsyncMock(return_value={})
         with patch(
             "services.data_collector.shanghai_now",
             return_value=datetime(2026, 8, 12, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
@@ -339,6 +340,81 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sh_change_pct"], -0.62)
         self.assertEqual(result["data_date"], "2026-08-12")
         self.assertTrue(result["is_realtime"])
+
+    async def test_market_turnover_uses_tencent_index_snapshot_when_eastmoney_is_empty(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_json = AsyncMock(return_value={})
+        collector.fetch_tencent_index_quotes = AsyncMock(return_value={
+            "indices": {
+                "shanghai": {"value": 3894.42, "change": -95.88, "change_pct": -2.40, "amount": 1_218_107_974_056},
+                "chinext": {"value": 3473.49, "change": -232.07, "change_pct": -6.26, "amount": 633_622_296_415},
+                "hs300": {"value": 4588.70, "change": -137.11, "change_pct": -2.90, "amount": 705_253_505_411},
+            },
+            "data_date": "2026-08-19",
+            "source": "tencent",
+            "is_realtime": False,
+        })
+
+        result = await collector.fetch_market_turnover()
+
+        self.assertEqual(result["source"], "tencent")
+        self.assertEqual(result["sh_index"], 3894.42)
+        self.assertEqual(result["indices"]["chinext"]["value"], 3473.49)
+
+    async def test_market_turnover_rejects_eastmoney_premarket_zero_snapshot(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_json = AsyncMock(return_value={
+            "data": {
+                "f43": 389428,
+                "f47": 0,
+                "f48": 0,
+                "f124": 0,
+                "f169": -14,
+                "f170": 0,
+            }
+        })
+        collector.fetch_tencent_index_quotes = AsyncMock(return_value={
+            "indices": {
+                "shanghai": {
+                    "value": 3894.42,
+                    "change": -95.88,
+                    "change_pct": -2.40,
+                    "amount": 1_218_107_974_056,
+                    "volume": 572_191_213,
+                },
+                "chinext": {"value": 3473.49, "change_pct": -6.26},
+                "hs300": {"value": 4588.70, "change_pct": -2.90},
+            },
+            "data_date": "2026-08-19",
+            "source_updated_at": "2026-08-19T16:14:27+08:00",
+            "source": "tencent",
+            "is_realtime": False,
+        })
+
+        result = await collector.fetch_market_turnover()
+
+        self.assertEqual(result["source"], "tencent")
+        self.assertEqual(result["data_date"], "2026-08-19")
+        self.assertEqual(result["sh_amount"], 1_218_107_974_056)
+
+    async def test_tencent_index_history_returns_named_close_series(self):
+        collector = EastMoneyDataCollector()
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            symbol = params["param"].split(",", 1)[0]
+            return {"data": {symbol: {"day": [
+                ["2026-08-18", "10", "11", "12", "9", "100"],
+                ["2026-08-19", "11", "12", "13", "10", "120"],
+            ]}}}
+
+        collector.fetch_json = fake_fetch_json
+        result = await collector.fetch_tencent_index_history(days=5)
+
+        self.assertEqual(result["data_date"], "2026-08-19")
+        self.assertEqual(result["index_series"]["shanghai"], [11.0, 12.0])
+        self.assertEqual(result["index_series"]["chinext"], [11.0, 12.0])
+        self.assertEqual(result["index_series"]["hs300"], [11.0, 12.0])
 
     async def test_security_directory_retries_a_timed_out_first_page(self):
         collector = EastMoneyDataCollector()
