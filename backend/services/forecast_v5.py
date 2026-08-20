@@ -428,6 +428,35 @@ class ForecastV5Service:
         alpha_candidates = [item for item in workbench.get("candidates") or [] if not item.get("stale")]
         alpha_signal = _clamp((len(alpha_candidates) - 5) / 10) if alpha_candidates else None
         observed_at = market_updated
+        macro_indicators = macro.get("macro_indicators") or {}
+
+        def indicator(key: str) -> dict[str, Any] | None:
+            item = macro_indicators.get(key)
+            return item if isinstance(item, dict) and item.get("available") else None
+
+        def indicator_source(item: dict[str, Any] | None) -> str | None:
+            if not item:
+                return None
+            source = str(item.get("source") or "")
+            return f"{source} · 缓存" if item.get("cache_used") else source
+
+        def indicator_time(item: dict[str, Any] | None) -> datetime | None:
+            return _parse_time(item.get("source_time")) if item else None
+
+        us10y = macro_items.get("us10y") or {}
+        us2y = macro_items.get("us2y") or {}
+        vix = macro_items.get("vix") or {}
+        credit_pulse = indicator("credit_pulse")
+        industry_price = indicator("industry_price")
+        capex = indicator("capex")
+        us10y_change = _num(us10y.get("change_pct"))
+        us2y_change = _num(us2y.get("change_pct"))
+        vix_change = _num(vix.get("change_pct"))
+        credit_value = _num((credit_pulse or {}).get("value"))
+        industry_yoy = _num((industry_price or {}).get("yoy_pct"))
+        industry_mom = _num((industry_price or {}).get("mom_pct"))
+        capex_yoy = _num((capex or {}).get("yoy_pct"))
+        capex_mom = _num((capex or {}).get("mom_pct"))
         definitions = {item["id"]: item for item in FACTOR_DEFINITIONS}
         values: dict[str, tuple[float | None, float | None, list[float], datetime | None, str | None, str | None]] = {
             "market_breadth": (breadth, _clamp((breadth - 50) / 50) if breadth is not None else None, breadth_series, observed_at, None, None),
@@ -450,12 +479,27 @@ class ForecastV5Service:
             "dxy_change": (_num((macro_items.get("dxy") or {}).get("change_pct")), _clamp(-(_num((macro_items.get("dxy") or {}).get("change_pct")) or 0) / 2) if (macro_items.get("dxy") or {}).get("change_pct") is not None else None, [], _parse_time((macro_items.get("dxy") or {}).get("source_time")) or _parse_time(macro.get("updated_at")), None, "新浪全球行情暂未返回"),
             "oil_change": (_num((macro_items.get("oil") or {}).get("change_pct")), _clamp(-(_num((macro_items.get("oil") or {}).get("change_pct")) or 0) / 4) if (macro_items.get("oil") or {}).get("change_pct") is not None else None, [], _parse_time((macro_items.get("oil") or {}).get("source_time")) or _parse_time(macro.get("updated_at")), None, "新浪全球行情暂未返回"),
             "gold_change": (_num((macro_items.get("gold") or {}).get("change_pct")), _clamp(-(_num((macro_items.get("gold") or {}).get("change_pct")) or 0) / 4) if (macro_items.get("gold") or {}).get("change_pct") is not None else None, [], _parse_time((macro_items.get("gold") or {}).get("source_time")) or _parse_time(macro.get("updated_at")), None, "新浪全球行情暂未返回"),
-            "us10y_change": (None, None, [], None, None, "专业全球宏观API未配置；不能用其他利率字段替代"),
-            "us2y_change": (None, None, [], None, None, "专业全球宏观API未配置；不能用其他利率字段替代"),
-            "vix_change": (None, None, [], None, None, "专业全球行情API未配置；不能用黄金涨跌替代VIX"),
-            "credit_pulse": (None, None, [], None, None, "人民银行/国家统计局信用脉冲序列尚未接入"),
-            "industry_price_signal": (None, None, [], None, None, "行业价格序列尚未接入"),
-            "capex_signal": (None, None, [], None, None, "资本开支PIT字段尚未形成独立序列"),
+            "us10y_change": (
+                _num(us10y.get("value")), _clamp(-us10y_change / 0.15), [], _parse_time(us10y.get("source_time")),
+                f"{us10y.get('source')} · {'缓存' if us10y.get('cache_used') else '最新发布'}", None,
+            ) if us10y_change is not None else (None, None, [], None, None, "FRED DGS10当前没有可核验的日变化值"),
+            "us2y_change": (
+                _num(us2y.get("value")), _clamp(-us2y_change / 0.15), [], _parse_time(us2y.get("source_time")),
+                f"{us2y.get('source')} · {'缓存' if us2y.get('cache_used') else '最新发布'}", None,
+            ) if us2y_change is not None else (None, None, [], None, None, "FRED DGS2当前没有可核验的日变化值"),
+            "vix_change": (
+                _num(vix.get("value")), _clamp(-vix_change / 12), [], _parse_time(vix.get("source_time")),
+                f"{vix.get('source')} · {'缓存' if vix.get('cache_used') else '最新发布'}", None,
+            ) if vix_change is not None else (None, None, [], None, None, "FRED VIXCLS当前没有可核验的日变化值"),
+            "credit_pulse": (
+                credit_value, _clamp(credit_value / 10), [], indicator_time(credit_pulse), indicator_source(credit_pulse), None,
+            ) if credit_value is not None else (None, None, [], None, None, "社融信用脉冲代理当前没有可核验的最新发布值"),
+            "industry_price_signal": (
+                industry_yoy, _clamp(((industry_yoy or 0) * 0.7 + (industry_mom or 0) * 0.3) / 10), [], indicator_time(industry_price), indicator_source(industry_price), None,
+            ) if industry_yoy is not None else (None, None, [], None, None, "企业商品价格指数当前没有可核验的最新发布值"),
+            "capex_signal": (
+                capex_yoy, _clamp(((capex_yoy or 0) * 0.7 + (capex_mom or 0) * 0.3) / 15), [], indicator_time(capex), indicator_source(capex), None,
+            ) if capex_yoy is not None else (None, None, [], None, None, "城镇固定资产投资宏观代理当前没有可核验的最新发布值"),
         }
         result = []
         for factor_id, definition in definitions.items():

@@ -57,6 +57,7 @@ class MacroDashboardCacheTests(unittest.IsolatedAsyncioTestCase):
             patch.object(service, "_load_cache", new_callable=AsyncMock, return_value=cached),
             patch.object(service, "_save_cache", save),
             patch.object(service, "_global_markets", new_callable=AsyncMock, side_effect=RuntimeError),
+            patch.object(service, "_supplemental_indicators", new_callable=AsyncMock, side_effect=RuntimeError),
             patch.object(service, "_economic_calendar", new_callable=AsyncMock, side_effect=RuntimeError),
             patch.object(macro_collector, "fetch_north_bound_daily", new_callable=AsyncMock, side_effect=RuntimeError),
             patch.object(macro_collector, "fetch_market_turnover", new_callable=AsyncMock, side_effect=RuntimeError),

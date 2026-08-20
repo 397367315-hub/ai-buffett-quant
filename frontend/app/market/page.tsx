@@ -210,6 +210,11 @@ interface EventInterpretation {
   sources?: string[];
 }
 
+interface AiInterpretationSection {
+  title: string;
+  body: string;
+}
+
 type BreadthSnapshot = {
   up?: NullableNumber;
   down?: NullableNumber;
@@ -326,6 +331,27 @@ function cleanAiText(value: string): string {
     .replace(/^\s{0,3}#{1,6}\s*/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function splitAiInterpretation(value: string): AiInterpretationSection[] {
+  const headings = new Set(['当前事实', '因子共振链', '主要矛盾', '发展方向与风险', '下一观察条件']);
+  const sections: AiInterpretationSection[] = [];
+  let current: AiInterpretationSection | null = null;
+  for (const rawLine of cleanAiText(value).split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(/^(?:\d+[.)、]\s*)?(当前事实|因子共振链|主要矛盾|发展方向与风险|下一观察条件)\s*[:：]?\s*(.*)$/);
+    if (match && headings.has(match[1])) {
+      current = { title: match[1], body: match[2] || '' };
+      sections.push(current);
+    } else if (current) {
+      current.body = current.body ? `${current.body}\n${line}` : line;
+    } else {
+      current = { title: '综合判断', body: line };
+      sections.push(current);
+    }
+  }
+  return sections.length ? sections : [{ title: '综合判断', body: '当前没有返回可读解读。' }];
 }
 
 function stateLabel(value: string | null | undefined): string {
@@ -612,7 +638,7 @@ function EventMonitor({ forecast, supplement }: { forecast: ForecastSnapshot; su
     <section className="v5-panel">
       <SectionHeader icon={Bell} title="重要事件监控" subtitle={`${sourceCount || '--'} 个已登记数据源`} action={<button type="button" onClick={() => void explain()} disabled={interpretationLoading} className="v5-mini-refresh" title="调用AI解读因子共振链">{interpretationLoading ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}AI解读</button>} />
       {events.length ? <div className="divide-y divide-border">{events.map((event, index) => <div key={`${event}-${index}`} className="v5-event-row"><span className="v5-event-tag">{index % 2 === 0 ? '市场' : '风险'}</span><span className="min-w-0 flex-1 truncate text-xs text-text" title={event}>{factorLabel(event)}</span><span className="shrink-0 text-[10px] text-text-secondary">{index === 0 ? '当前' : '监控'}</span></div>)}</div> : <EmptyState text="当前没有新增事件摘要" />}
-      {interpretation && <div className="v5-event-ai"><div className="v5-event-ai-title"><BrainCircuit size={13} />资深交易员解读</div><div className="v5-event-ai-copy">{cleanAiText(interpretation.interpretation)}</div><div className="v5-event-ai-meta">{interpretation.cache_used ? '部分沿用缓存' : '本轮数据'} · 因子截止 {localTime(interpretation.data_cutoff_time)} · 快照 {localTime(interpretation.snapshot_updated_at)}</div></div>}
+      {interpretation && <div className="v5-event-ai v5-event-monitor-expanded"><div className="v5-event-ai-title"><BrainCircuit size={14} />资深交易员解读 <span>已按事实、矛盾和观察条件整理</span></div><div className="v5-event-ai-grid">{splitAiInterpretation(interpretation.interpretation).map((section) => <article key={section.title} className="v5-event-ai-section"><h3>{section.title}</h3><p>{section.body}</p></article>)}</div><div className="v5-event-ai-meta">{interpretation.cache_used ? '部分沿用缓存' : '本轮数据'} · 因子截止 {localTime(interpretation.data_cutoff_time)} · 快照 {localTime(interpretation.snapshot_updated_at)}</div></div>}
       {interpretationError && <div className="v5-event-ai-error">{interpretationError}</div>}
       <div className="border-t border-border px-4 py-2.5 text-[10px] leading-4 text-text-secondary">事件只作为因果链证据，不能单独生成买卖结论。</div>
     </section>

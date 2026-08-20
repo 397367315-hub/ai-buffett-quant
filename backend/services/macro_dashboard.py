@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import csv
 import math
+import zipfile
 from datetime import datetime, timedelta
-from io import StringIO
+from io import BytesIO, StringIO
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -27,6 +28,9 @@ EASTMONEY_GLOBAL_URL = (
     "101.GC00Y,102.CL00Y,100.UDI"
 )
 ECONOMIC_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+FRED_MACRO_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10,DGS2,VIXCLS&cosd=2020-01-01"
+MOFCOM_SOCIAL_FINANCE_URL = "https://data.mofcom.gov.cn/datamofcom/front/gnmy/shrzgmQuery"
+EASTMONEY_DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 
@@ -62,6 +66,17 @@ def _quote_meta(source_time: object, source: str) -> dict:
     age = _source_age_minutes(source_time)
     return {
         "is_realtime": bool(age is not None and age <= 60),
+        "data_age_minutes": round(age, 1) if age is not None else None,
+        "cache_used": False,
+        "source": source,
+    }
+
+
+def _official_series_meta(source_time: object, source: str) -> dict:
+    """Metadata for daily/monthly official series, which are never intraday live."""
+    age = _source_age_minutes(source_time)
+    return {
+        "is_realtime": False,
         "data_age_minutes": round(age, 1) if age is not None else None,
         "cache_used": False,
         "source": source,
@@ -178,6 +193,128 @@ def parse_eastmoney_market_payload(payload: object) -> list[dict]:
     return result
 
 
+def _series_rows(text: str, field: str) -> list[tuple[str, float]]:
+    rows: list[tuple[str, float]] = []
+    for item in csv.DictReader(StringIO(text)):
+        stamp = str(item.get("observation_date") or "")[:10]
+        value = _float(item.get(field))
+        if stamp and value is not None:
+            rows.append((stamp, value))
+    return rows
+
+
+def parse_fred_macro_zip(content: bytes) -> list[dict]:
+    """Parse the public FRED graph export without requiring an API key."""
+    with zipfile.ZipFile(BytesIO(content)) as archive:
+        daily = archive.read("daily.csv").decode("utf-8-sig")
+        vix_name = next(name for name in archive.namelist() if name.endswith("_close.csv"))
+        vix = archive.read(vix_name).decode("utf-8-sig")
+
+    result: list[dict] = []
+    configs = (
+        ("DGS10", "us10y", "美国10年期收益率", "%", "change_points"),
+        ("DGS2", "us2y", "美国2年期收益率", "%", "change_points"),
+    )
+    for field, key, label, currency, change_kind in configs:
+        rows = _series_rows(daily, field)
+        if not rows:
+            continue
+        stamp, current = rows[-1]
+        previous = rows[-2][1] if len(rows) > 1 else None
+        result.append({
+            "key": key,
+            "label": label,
+            "value": current,
+            "change_pct": round(current - previous, 3) if previous is not None else None,
+            "change_kind": change_kind,
+            "currency": currency,
+            "source_time": stamp,
+            "available": True,
+            **_official_series_meta(stamp, "FRED公开序列"),
+        })
+
+    rows = _series_rows(vix, "VIXCLS")
+    if rows:
+        stamp, current = rows[-1]
+        previous = rows[-2][1] if len(rows) > 1 else None
+        result.append({
+            "key": "vix",
+            "label": "VIX波动率",
+            "value": current,
+            "change_pct": round((current / previous - 1) * 100, 2) if previous not in (None, 0) else None,
+            "change_kind": "relative_pct",
+            "currency": "index",
+            "source_time": stamp,
+            "available": True,
+            **_official_series_meta(stamp, "FRED公开序列"),
+        })
+    return result
+
+
+def parse_mofcom_credit_payload(payload: object) -> dict:
+    """Build a transparent credit-pulse proxy from PBOC social-finance flow.
+
+    Credit impulse is represented as the year-over-year change in the
+    12-month rolling total of monthly social-financing increments. This is a
+    flow-based proxy, not a claim that the raw monthly increment is credit
+    impulse itself.
+    """
+    rows = payload if isinstance(payload, list) else []
+    parsed = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        stamp = str(item.get("date") or "")
+        total = _float(item.get("tiosfs"))
+        if len(stamp) != 6 or total is None:
+            continue
+        parsed.append({"date": f"{stamp[:4]}-{stamp[4:]}-01", "total": total})
+    parsed.sort(key=lambda item: item["date"])
+    if len(parsed) < 13:
+        return {}
+    current = sum(item["total"] for item in parsed[-12:])
+    previous = sum(item["total"] for item in parsed[-13:-1])
+    if previous == 0:
+        return {}
+    pulse_pct = round((current / previous - 1) * 100, 2)
+    latest = parsed[-1]
+    return {
+        "key": "credit_pulse",
+        "label": "信用脉冲（社融12个月滚动变化）",
+        "value": pulse_pct,
+        "pulse_pct": pulse_pct,
+        "latest_monthly_increment": latest["total"],
+        "rolling_12m_increment": current,
+        "previous_rolling_12m_increment": previous,
+        "currency": "percent",
+        "source_time": latest["date"],
+        "available": True,
+        "method": "社融增量12个月滚动总额同比变化；原始数据来源中国人民银行，商务部数据中心发布。",
+        **_official_series_meta(latest["date"], "商务部数据中心/中国人民银行"),
+    }
+
+
+def _parse_eastmoney_indicator(payload: object, *, key: str, label: str, value_field: str, yoy_field: str, mom_field: str | None, source: str) -> dict:
+    rows = (payload.get("result") or {}).get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    usable = [item for item in rows if isinstance(item, dict) and _float(item.get(value_field)) is not None]
+    if not usable:
+        return {}
+    item = usable[0]
+    stamp = str(item.get("REPORT_DATE") or "")[:10]
+    return {
+        "key": key,
+        "label": label,
+        "value": _float(item.get(value_field)),
+        "yoy_pct": _float(item.get(yoy_field)),
+        "mom_pct": _float(item.get(mom_field)) if mom_field else None,
+        "source_time": stamp,
+        "available": bool(stamp),
+        **_official_series_meta(stamp, source),
+    } if stamp else {}
+
+
 class MacroDashboardService:
     _CACHE_KEY = "macro_dashboard_v1"
 
@@ -235,6 +372,105 @@ class MacroDashboardService:
         for key, item in fallback_by_key.items():
             by_key.setdefault(key, item)
         return [by_key[key] for key in ("sp500", "dow", "nasdaq", "gold", "oil", "dxy") if key in by_key]
+
+    async def _supplemental_indicators(self) -> dict:
+        """Fetch macro series that are separate from the intraday quote feed.
+
+        FRED and the domestic macro feeds publish daily or monthly
+        observations. They stay labelled as latest-published data instead of
+        being presented as intraday real-time quotes.
+        """
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/plain,*/*",
+        }
+
+        async with httpx.AsyncClient(timeout=self._timeout()) as client:
+            async def fetch_fred() -> list[dict]:
+                response = await client.get(FRED_MACRO_URL, headers=headers)
+                response.raise_for_status()
+                return parse_fred_macro_zip(response.content)
+
+            async def fetch_credit() -> dict:
+                response = await client.post(
+                    MOFCOM_SOCIAL_FINANCE_URL,
+                    headers={**headers, "Content-Type": "application/json"},
+                    json={},
+                )
+                response.raise_for_status()
+                return parse_mofcom_credit_payload(response.json())
+
+            async def fetch_eastmoney(report_name: str) -> dict:
+                response = await client.get(
+                    EASTMONEY_DATACENTER_URL,
+                    params={
+                        "reportName": report_name,
+                        "columns": "ALL",
+                        "pageNumber": "1",
+                        "pageSize": "24",
+                        "sortTypes": "-1",
+                        "sortColumns": "REPORT_DATE",
+                        "source": "WEB",
+                        "client": "WEB",
+                    },
+                    headers={**headers, "Referer": "https://data.eastmoney.com/"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not payload.get("success"):
+                    raise ValueError(str(payload.get("message") or "东方财富数据中心未返回成功状态"))
+                return payload
+
+            fred_result, credit_result, price_result, capex_result = await asyncio.gather(
+                fetch_fred(),
+                fetch_credit(),
+                fetch_eastmoney("RPT_ECONOMY_GOODS_INDEX"),
+                fetch_eastmoney("RPT_ECONOMY_ASSET_INVEST"),
+                return_exceptions=True,
+            )
+
+        fred = [] if isinstance(fred_result, Exception) else fred_result
+        credit = {} if isinstance(credit_result, Exception) else credit_result
+        price = {} if isinstance(price_result, Exception) else _parse_eastmoney_indicator(
+            price_result,
+            key="industry_price",
+            label="企业商品价格指数",
+            value_field="BASE",
+            yoy_field="BASE_SAME",
+            mom_field="BASE_SEQUENTIAL",
+            source="东方财富企业商品价格指数",
+        )
+        capex = {} if isinstance(capex_result, Exception) else _parse_eastmoney_indicator(
+            capex_result,
+            key="capex",
+            label="城镇固定资产投资（宏观资本开支代理）",
+            value_field="BASE",
+            yoy_field="BASE_SAME",
+            mom_field="BASE_SEQUENTIAL",
+            source="东方财富/国家统计口径城镇固定资产投资",
+        )
+        if credit:
+            credit["note"] = "这是社融增量滚动变化的信用脉冲代理，不等同于单月社融，也不代表上市公司真实信用投放。"
+        if price:
+            price["note"] = "价格端信号只表示企业商品价格变化，不等同于上市公司盈利已经确认。"
+        if capex:
+            capex["note"] = "这是国家统计口径固定资产投资的宏观代理，不等同于上市公司财报中的真实CAPEX。"
+
+        macro_indicators = {
+            "credit_pulse": credit,
+            "industry_price": price,
+            "capex": capex,
+        }
+        return {
+            "global_markets": fred,
+            "macro_indicators": macro_indicators,
+            "source_status": {
+                "FRED公开序列": "available" if fred else "unavailable",
+                "商务部数据中心/中国人民银行": "available" if credit else "unavailable",
+                "东方财富企业商品价格指数": "available" if price else "unavailable",
+                "东方财富/国家统计口径城镇固定资产投资": "available" if capex else "unavailable",
+            },
+        }
 
     async def _economic_calendar(self) -> list[dict]:
         async with httpx.AsyncClient(timeout=self._timeout()) as client:
@@ -395,8 +631,9 @@ class MacroDashboardService:
 
     async def dashboard(self) -> dict:
         cached = await self._load_cache()
-        global_result, calendar_result, north_result, turnover_result, policy_result = await asyncio.gather(
+        global_result, supplemental_result, calendar_result, north_result, turnover_result, policy_result = await asyncio.gather(
             self._global_markets(),
+            self._supplemental_indicators(),
             self._economic_calendar(),
             collector.fetch_north_bound_daily(days=10),
             collector.fetch_market_turnover(),
@@ -404,6 +641,9 @@ class MacroDashboardService:
             return_exceptions=True,
         )
         global_markets = [] if isinstance(global_result, Exception) else global_result
+        supplemental = supplemental_result if isinstance(supplemental_result, dict) else {}
+        supplemental_global = list(supplemental.get("global_markets") or []) if isinstance(supplemental, dict) else []
+        supplemental_indicators = dict(supplemental.get("macro_indicators") or {}) if isinstance(supplemental, dict) else {}
         calendar = [] if isinstance(calendar_result, Exception) else calendar_result
         north = [] if isinstance(north_result, Exception) else north_result
         turnover = {} if isinstance(turnover_result, Exception) else turnover_result
@@ -415,7 +655,11 @@ class MacroDashboardService:
         calendar_from_cache = False
         policy_from_cache = False
         cached_global = {item.get("key"): item for item in (cached.get("global_markets") or []) if isinstance(item, dict)}
-        current_global = {item.get("key"): item for item in global_markets if isinstance(item, dict) and item.get("key")}
+        current_global = {
+            item.get("key"): item
+            for item in [*global_markets, *supplemental_global]
+            if isinstance(item, dict) and item.get("key")
+        }
         for key, item in cached_global.items():
             if key and key not in current_global:
                 current_global[key] = {
@@ -426,7 +670,7 @@ class MacroDashboardService:
                     "source_status": "cache",
                 }
                 global_from_cache = True
-        global_markets = [current_global[key] for key in ("sp500", "dow", "nasdaq", "gold", "oil", "dxy") if key in current_global]
+        global_markets = [current_global[key] for key in ("sp500", "dow", "nasdaq", "gold", "oil", "dxy", "us10y", "us2y", "vix") if key in current_global]
         if global_from_cache:
             cache_used = True
         if not calendar and cached.get("economic_calendar"):
@@ -437,6 +681,24 @@ class MacroDashboardService:
             policy = {**cached["policy"], "source_status": {"宏观政策快照": "cache"}}
             cache_used = True
             policy_from_cache = True
+
+        cached_indicators = {
+            key: value for key, value in (cached.get("macro_indicators") or {}).items()
+            if isinstance(value, dict) and value
+        }
+        indicators_from_cache = False
+        for key, item in cached_indicators.items():
+            if not supplemental_indicators.get(key):
+                supplemental_indicators[key] = {
+                    **item,
+                    "cache_used": True,
+                    "is_realtime": False,
+                    "data_age_minutes": None,
+                    "source_status": "cache",
+                }
+                indicators_from_cache = True
+        if indicators_from_cache:
+            cache_used = True
 
         north_available = [item for item in north if item.get("net_inflow") is not None]
         latest_north = north_available[-1] if north_available else (north[-1] if north else None)
@@ -534,12 +796,18 @@ class MacroDashboardService:
             "东方财富资金": "cache" if north_from_cache or turnover_from_cache else "available" if north or turnover else "unavailable",
             **(policy.get("source_status") or {}),
         }
+        source_status.update(supplemental.get("source_status") or {})
+        if indicators_from_cache:
+            for item in supplemental_indicators.values():
+                if item.get("cache_used"):
+                    source_status[item.get("source", "宏观指标")] = "cache"
         if policy_from_cache:
             source_status["宏观政策快照"] = "cache"
         updated_at = shanghai_now().isoformat()
         output = {
             "updated_at": updated_at,
             "global_markets": global_markets,
+            "macro_indicators": supplemental_indicators,
             "economic_calendar": calendar,
             "domestic_liquidity": domestic,
             "policy": {

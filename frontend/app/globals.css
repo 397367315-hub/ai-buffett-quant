@@ -829,8 +829,15 @@ body {
 .v5-event-row span:nth-child(2) { font-size: 10px; line-height: 1.5; }
 .v5-event-row span:last-child { color: #65717f; font-family: Inter, sans-serif; font-size: 8px; }
 .v5-event-ai { border-top: 1px solid #202d3a; background: #0e1822; padding: 10px 11px 9px; }
-.v5-event-ai-title { display: flex; align-items: center; gap: 5px; color: #b9d4ff; font-size: 10px; font-weight: 600; }
+.v5-dashboard-grid > #events:has(.v5-event-monitor-expanded) { grid-column: 1 / -1; }
+.v5-event-ai-title { display: flex; align-items: center; gap: 6px; color: #b9d4ff; font-size: 12px; font-weight: 600; }
+.v5-event-ai-title span { color: #748191; font-size: 10px; font-weight: 400; }
 .v5-event-ai-copy { max-height: 240px; overflow-y: auto; margin-top: 7px; color: #c1cbd6; font-size: 10px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.v5-event-monitor-expanded { padding: 14px 16px 12px; }
+.v5-event-ai-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.v5-event-ai-section { min-width: 0; border: 1px solid #263746; border-radius: 5px; background: #121d28; padding: 11px 12px; }
+.v5-event-ai-section h3 { color: #f2f4f7; font-size: 12px; font-weight: 600; line-height: 1.5; }
+.v5-event-ai-section p { margin-top: 7px; color: #c1cbd6; font-size: 12px; line-height: 1.8; white-space: pre-line; overflow-wrap: anywhere; }
 .v5-event-ai-meta { margin-top: 7px; color: #748191; font-family: Inter, 'PingFang SC', sans-serif; font-size: 8px; line-height: 1.4; }
 .v5-event-ai-error { border-top: 1px solid #3e2d25; background: #1a1712; color: #d9a441; padding: 8px 11px; font-size: 9px; line-height: 1.5; }
 .v5-global-utility { display: none !important; }
@@ -1059,6 +1066,7 @@ body {
   .v5-horizon-signal strong { font-size: 23px; }
   .v5-direction { font-size: 26px; }
   .v5-current-horizon .v5-current-orbit { width: 58px; height: 58px; }
+  .v5-event-ai-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 560px) {
@@ -1068,4 +1076,7 @@ body {
   .v5-horizon-signal strong { font-size: 22px; }
   .v5-direction { font-size: 25px; }
   .v5-event-row span:nth-child(2) { font-size: 10px; }
+  .v5-event-ai-grid { grid-template-columns: 1fr; gap: 8px; }
+  .v5-event-monitor-expanded { padding: 12px 11px 10px; }
+  .v5-event-ai-title span { display: none; }
 }
