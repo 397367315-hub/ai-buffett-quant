@@ -880,7 +880,22 @@ class ForecastV5Service:
             factors = self._build_factor_values(workbench, macro, history, sectors_raw, now)
             sectors = self._sector_forecasts(sectors_raw)
             behavior = await behavior_analysis_v5_service.evaluate(workbench, factors, sectors, now, target)
-            factors.extend(behavior.get("factors") or [])
+            # The registry contains the public definitions for behavior
+            # factors, while the behavior layer contains their observed
+            # values. Replace the registry placeholders instead of appending
+            # a second copy with the same ID; duplicate IDs made the health
+            # report show already-computed behavior data as missing.
+            behavior_factors = {
+                str(item.get("id")): item
+                for item in (behavior.get("factors") or [])
+                if item.get("id")
+            }
+            factors = [behavior_factors.get(str(item.get("id")), item) for item in factors]
+            registered_ids = {str(item.get("id")) for item in factors}
+            factors.extend(
+                item for item in (behavior.get("factors") or [])
+                if item.get("id") and str(item.get("id")) not in registered_ids
+            )
             # Convert the private normalized signal to a response field only
             # while computing the model; it is not a raw market fact.
             for factor in factors:
