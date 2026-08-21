@@ -316,6 +316,50 @@ class TradingSkillScanSnapshot(Base):
     generated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class BehaviorReflexivitySnapshot(Base):
+    """Auditable per-stock Skill 10 diagnosis at a point-in-time cutoff.
+
+    The denormalised headline fields support history/ranking queries while the
+    full payload preserves the six-dimensional evidence and missing-data
+    policy used to produce the snapshot.
+    """
+
+    __tablename__ = "behavior_reflexivity_snapshots"
+    __table_args__ = (
+        Index("idx_reflexivity_stock_time", "stock_code", "snapshot_time"),
+        Index("idx_reflexivity_candidate_time", "candidate_type", "snapshot_time"),
+        Index("idx_reflexivity_trade_date", "trade_date", "selection_score"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    trade_date = Column(Date, nullable=False)
+    snapshot_time = Column(DateTime, nullable=False, default=datetime.utcnow)
+    forced_buy_pressure = Column(Float)
+    forced_sell_pressure = Column(Float)
+    nearest_up_liquidity = Column(JSON)
+    nearest_down_liquidity = Column(JSON)
+    liquidity_asymmetry = Column(Float)
+    capital_price_efficiency = Column(Float)
+    capital_price_efficiency_delta = Column(Float)
+    absorption_score = Column(Float)
+    pressure_score = Column(Float)
+    psychology_state = Column(String(30))
+    psychology_transition = Column(JSON)
+    reflexivity_state = Column(String(50))
+    reflexivity_score = Column(Float)
+    crowding_score = Column(Float)
+    selection_score = Column(Float)
+    diagnosis_level = Column(String(10))
+    candidate_type = Column(String(80))
+    data_cutoff_time = Column(DateTime)
+    model_version = Column(String(80), nullable=False)
+    skill_version = Column(String(30), nullable=False)
+    payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class RejectedTradingKnowledge(Base):
     """External trading claims that are explicitly barred from model priors."""
 

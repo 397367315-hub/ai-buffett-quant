@@ -976,6 +976,7 @@ class ForecastV5Service:
                 "data_cutoff_time": skills.get("data_cutoff_time"),
                 "cache_used": skills.get("cache_used", False),
                 "filters": skills.get("filters") or {},
+                "reflexivity": skills.get("reflexivity") or {},
             }}
         except Exception as exc:
             return {**data, "trading_skills": {"action": "UNAVAILABLE", "error": type(exc).__name__, "active_skills": [], "candidates": []}}

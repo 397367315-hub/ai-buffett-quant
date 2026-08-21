@@ -20,6 +20,7 @@ from models import (
     TradingSkillScanSnapshot,
 )
 from quant.market_cache import load_quant_market_snapshot
+from quant.reflexivity_skill import build_reflexivity_diagnosis
 from quant.trading_skill_features import build_skill_features
 from quant.trading_skills import evaluate_all_skills, evaluate_skill
 from services.data_collector import collector, is_a_share_market_session, shanghai_now
@@ -76,6 +77,12 @@ def _date(raw: Any) -> date | None:
 
 def _clamp(value: float, low: float = 0, high: float = 100) -> float:
     return max(low, min(high, value))
+
+
+def _pct_field_to_decimal(value: Any) -> float | None:
+    """Convert snapshot percentage points to the feature engine's decimal return."""
+    parsed = _num(value)
+    return parsed / 100 if parsed is not None else None
 
 
 def _json_hash(payload: Any) -> str:
@@ -226,15 +233,15 @@ class TradingSkillService:
         state = str((forecast.get("risk_preference") or {}).get("state") or "")
         psychology = str(behavior.get("market_psychology_state") or "")
         if permission.get("code") == "BLOCK":
-            return ["skill_08_behavior_imbalance", "skill_03_abnormal_turnover"]
+            return ["skill_08_behavior_imbalance", "skill_03_abnormal_turnover", "skill_10_behavior_reflexivity"]
         if psychology in {"恐慌", "绝望"} or "contraction" in state:
-            return ["skill_02_absorption_pressure", "skill_04_false_breakdown_reclaim", "skill_06_low_position_relaunch", "skill_08_behavior_imbalance"]
+            return ["skill_02_absorption_pressure", "skill_04_false_breakdown_reclaim", "skill_06_low_position_relaunch", "skill_08_behavior_imbalance", "skill_10_behavior_reflexivity"]
         if psychology in {"亢奋", "追逐"} or "enhancement" not in state:
-            return ["skill_01_price_volume_efficiency", "skill_03_abnormal_turnover", "skill_07_breakout_quality", "skill_08_behavior_imbalance"]
+            return ["skill_01_price_volume_efficiency", "skill_03_abnormal_turnover", "skill_07_breakout_quality", "skill_08_behavior_imbalance", "skill_10_behavior_reflexivity"]
         return [
             "skill_01_price_volume_efficiency", "skill_02_absorption_pressure", "skill_03_abnormal_turnover",
             "skill_05_trend_reacceleration", "skill_06_low_position_relaunch", "skill_07_breakout_quality",
-            "skill_08_behavior_imbalance", "skill_09_auction_intraday_confirm",
+            "skill_08_behavior_imbalance", "skill_09_auction_intraday_confirm", "skill_10_behavior_reflexivity",
         ]
 
     @staticmethod
@@ -315,7 +322,7 @@ class TradingSkillService:
             avg_change = sum(changes) / len(changes) if changes else None
             flow = sum(flows) if flows else None
             sector_context[name] = {
-                "sector_return_1d": avg_change, "sector_return_20d": None,
+                "sector_return_1d": _pct_field_to_decimal(avg_change), "sector_return_20d": None,
                 "sector_breadth": breadth, "sector_strength": _clamp(50 + (avg_change or 0) * 8 + ((breadth or 50) - 50) * 0.35),
                 "sector_flow": flow, "sector_state": _sector_state(avg_change, breadth, flow),
                 "alpha_density": sum((_num(item.get("change_pct")) or 0) > (avg_change or 0) for item in members) / len(members) * 100 if members else None,
@@ -334,9 +341,18 @@ class TradingSkillService:
             sector = str(stock.get("sector") or "").strip() or "未分类"
             context = {
                 **behavior_context, **sector_context.get(sector, {}),
-                "market_return_1d": market_return,
+                "market_return_1d": _pct_field_to_decimal(market_return),
                 "market_return_20d": None,
                 "sector_state": sector_context.get(sector, {}).get("sector_state"),
+                # The live quote has no cross-sectional Alpha model of its
+                # own yet.  Keep this as a transparent relative-strength
+                # proxy rather than labelling it institutional Alpha.
+                "stock_alpha_score": _clamp(
+                    50 + (
+                        (_pct_field_to_decimal(stock.get("change_pct")) or 0)
+                        - (sector_context.get(sector, {}).get("sector_return_1d") or 0)
+                    ) * 1200
+                ),
             }
             rows = list(bars.get(code) or [])
             # A live quote is an observation at the cutoff. Add it only when it
@@ -354,11 +370,26 @@ class TradingSkillService:
                         "turnover": _num(stock.get("turnover")), "available_time": snapshot.get("fetched_at") or snapshot.get("cached_at") or now.isoformat(),
                     })
             features = build_skill_features(rows, as_of=target, context=context, auction=auctions.get(code))
+            reflexivity = None
+            if "skill_10_behavior_reflexivity" in selected_ids:
+                reflexivity = build_reflexivity_diagnosis(
+                    rows,
+                    as_of=target,
+                    context=context,
+                    auction=auctions.get(code),
+                    symbol=code,
+                    name=stock.get("name") or code,
+                )
+                features["reflexivity_diagnosis"] = reflexivity
             results = evaluate_all_skills(features, selected_ids)
             detected = [item for item in results if item.get("detected")]
             if detected:
                 best = max(detected, key=lambda item: item.get("score") or 0)
-                sector_ok = permission.get("code") != "BLOCK" and context.get("sector_state") not in {"退潮", "未验证", "分歧"}
+                skill10_risk = bool(
+                    best.get("skill_id") == "skill_10_behavior_reflexivity"
+                    and best.get("signal_type") == "RISK"
+                )
+                sector_ok = permission.get("code") != "BLOCK" and not skill10_risk and context.get("sector_state") not in {"退潮", "未验证", "分歧"}
                 if permission.get("code") == "CAUTION":
                     sector_ok = sector_ok and best["skill_id"] in {"skill_02_absorption_pressure", "skill_04_false_breakdown_reclaim", "skill_06_low_position_relaunch", "skill_08_behavior_imbalance"}
                 record = {
@@ -371,6 +402,10 @@ class TradingSkillService:
                     "skill_score": best.get("score"), "skill_confidence_pct": best.get("confidence_pct"),
                     "skills": results, "data_date": features.get("data_date"),
                     "history_sessions": features.get("history_sessions", 0),
+                    "reflexivity": reflexivity,
+                    "candidate_type": (reflexivity or {}).get("candidate_type"),
+                    "candidate_label": (reflexivity or {}).get("candidate_label"),
+                    "diagnosis_level": (reflexivity or {}).get("diagnosis_level"),
                     "source": snapshot.get("source") or "cache",
                     "invalidation_conditions": best.get("invalidation_conditions") or [],
                     "action": "CANDIDATE" if sector_ok and permission.get("code") != "BLOCK" else "WATCH_ONLY",
@@ -424,6 +459,14 @@ class TradingSkillService:
             "is_realtime": bool(snapshot.get("is_realtime")), "snapshot_data_date": snapshot.get("data_date"),
             "market_state": market_state, "behavior": behavior_context,
             "missing_factors": missing,
+            "reflexivity": {
+                "skill_id": "skill_10_behavior_reflexivity",
+                "candidate_count": sum(1 for item in observed_results if item.get("candidate_type") in {"PANIC_ABSORPTION_CANDIDATE", "ALPHA_SEED_REFLEXIVITY", "POSITIVE_REFLEXIVITY_CANDIDATE"}),
+                "risk_count": sum(1 for item in observed_results if item.get("candidate_type") in {"HIGH_LEVEL_REFLEXIVITY_DECAY", "NEGATIVE_REFLEXIVITY_ACCELERATION"}),
+                "short_cover_policy": "disabled_without_verified_short_series",
+                "l2_policy": "not_inferred",
+                "model_version": "reflexivity-daily-v1",
+            },
             "data_quality": {
                 "history_coverage": sum(bool(bars.get(code)) for code in codes),
                 "auction_coverage": len(auctions), "auction_history_is_forward_only": True,

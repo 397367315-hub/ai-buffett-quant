@@ -43,7 +43,7 @@ def test_all_skills_share_non_order_output_contract():
         context={"sector_return_1d": 0.001, "market_return_1d": 0.0, "sector_state": "顺势", "sector_strength": 65, "sector_breadth": 60},
     )
     results = evaluate_all_skills(features)
-    assert len(results) == 9
+    assert len(results) == 10
     for result in results:
         assert {"skill_id", "stage", "confidence_pct", "evidence", "invalidation_conditions", "direct_order"} <= set(result)
         assert result["direct_order"] is False

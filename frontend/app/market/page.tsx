@@ -157,7 +157,7 @@ interface ForecastSnapshot {
     action?: string;
     market_permission?: { code?: string; label?: string; reasons?: string[] };
     active_skills?: Array<{ skill_id: string; skill_name: string; lifecycle_state: string; validation_status: string; runtime: string; data_level?: string }>;
-    candidates?: Array<{ code: string; name: string; sector?: string; market_segment?: string; best_skill?: string; best_stage?: string; best_stage_label?: string; skill_score?: NullableNumber; action?: string }>;
+    candidates?: Array<{ code: string; name: string; sector?: string; market_segment?: string; best_skill?: string; best_stage?: string; best_stage_label?: string; candidate_type?: string; candidate_label?: string; diagnosis_level?: string; skill_score?: NullableNumber; action?: string }>;
     scanned_count?: number;
     data_cutoff_time?: string | null;
     cache_used?: boolean;
@@ -167,6 +167,7 @@ interface ForecastSnapshot {
       excluded_counts?: Record<string, number>;
       description?: string;
     };
+    reflexivity?: { candidate_count?: number; risk_count?: number; model_version?: string; short_cover_policy?: string; l2_policy?: string };
   };
 }
 
@@ -216,6 +217,11 @@ const TRADING_STAGE_LABELS: Record<string, string> = {
   CONFIRM: '竞价与分时确认',
   WEAK_CONFIRM: '弱确认，仍需观察',
   REJECT: '竞价/分时确认未通过',
+  PANIC_ABSORPTION_CANDIDATE: '恐慌吸收候选',
+  ALPHA_SEED_REFLEXIVITY: 'Alpha萌芽反身性',
+  POSITIVE_REFLEXIVITY_CANDIDATE: '正向反身候选',
+  HIGH_LEVEL_REFLEXIVITY_DECAY: '高位反身性衰减',
+  NEGATIVE_REFLEXIVITY_ACCELERATION: '负向反身性加速',
 };
 
 function readableTradingStage(code?: string, label?: string): string {
@@ -669,10 +675,10 @@ function SkillRuntimeStrip({
       {busy && <Loader2 size={12} className="animate-spin text-accent" aria-label="正在重新扫描" />}
     </div>
     <div className="v5-skill-runtime-body">
-      <div className="v5-skill-list">{(skills.active_skills || []).slice(0, 6).map((item) => <span key={item.skill_id} className={`v5-skill-chip ${item.runtime === 'ON' ? 'is-on' : 'is-off'}`} title={`${item.skill_name} · ${item.lifecycle_state} · ${item.validation_status}`}><i />{item.skill_name}</span>)}{!(skills.active_skills || []).length && <span className="text-[10px] text-text-secondary">暂无满足许可的运行技能</span>}</div>
-      <div className="v5-skill-candidates">{candidates.slice(0, 3).map((item) => { const stage = readableTradingStage(item.best_stage, item.best_stage_label); return <div key={item.code} className="v5-skill-candidate"><span className="font-mono text-[10px] text-text">{item.code}</span><span className="min-w-0 truncate text-[10px] text-text-secondary">{item.name}</span><span className="min-w-0 truncate text-[9px] text-accent" title={stage}>{stage}</span></div>; })}{!candidates.length && <span className="text-[10px] text-text-secondary">当前没有通过市场/板块许可的候选，系统保持观察。</span>}</div>
+      <div className="v5-skill-list">{(skills.active_skills || []).slice(0, 10).map((item) => <span key={item.skill_id} className={`v5-skill-chip ${item.runtime === 'ON' ? 'is-on' : 'is-off'}`} title={`${item.skill_name} · ${item.lifecycle_state} · ${item.validation_status}`}><i />{item.skill_name}</span>)}{!(skills.active_skills || []).length && <span className="text-[10px] text-text-secondary">暂无满足许可的运行技能</span>}</div>
+      <div className="v5-skill-candidates">{candidates.slice(0, 3).map((item) => { const stage = item.candidate_label || readableTradingStage(item.best_stage, item.best_stage_label); return <div key={item.code} className="v5-skill-candidate"><span className="font-mono text-[10px] text-text">{item.code}</span><span className="min-w-0 truncate text-[10px] text-text-secondary">{item.name}</span><span className="min-w-0 truncate text-[9px] text-accent" title={`${stage}${item.diagnosis_level ? ` · ${item.diagnosis_level}` : ''}`}>{stage}</span></div>; })}{!candidates.length && <span className="text-[10px] text-text-secondary">当前没有通过市场/板块许可的候选，系统保持观察。</span>}</div>
     </div>
-    <div className="v5-skill-runtime-foot">已扫描 {skills.scanned_count ?? '--'} 只 · 数据截止 {skills.data_cutoff_time ? localTime(skills.data_cutoff_time) : '--'} · 技能只提供研究候选，不连接下单</div>
+    <div className="v5-skill-runtime-foot">已扫描 {skills.scanned_count ?? '--'} 只 · 反身性候选 {skills.reflexivity?.candidate_count ?? '--'} / 风险 {skills.reflexivity?.risk_count ?? '--'} · 数据截止 {skills.data_cutoff_time ? localTime(skills.data_cutoff_time) : '--'} · 技能只提供研究候选，不连接下单</div>
   </div>;
 }
 

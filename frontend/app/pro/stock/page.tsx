@@ -197,6 +197,70 @@ function EmptyVerified({ children }: { children: React.ReactNode }) {
   return <div className="border-y border-border py-6 text-center text-xs text-text-secondary">{children}</div>;
 }
 
+function reflexivityTone(value: unknown): string {
+  const normalized = String(value || '');
+  if (normalized.includes('衰减') || normalized.includes('负向') || normalized.includes('风险') || normalized.includes('加速')) return 'text-down';
+  if (normalized.includes('正向') || normalized.includes('增强') || normalized.includes('萌芽') || normalized.includes('修复')) return 'text-up';
+  return 'text-warn';
+}
+
+function ReflexivityPanel({ diagnosis, onExplain, explaining, narrative }: { diagnosis: AnyMap; onExplain: () => void; explaining: boolean; narrative: string }) {
+  const forced = diagnosis.forced_trading || {};
+  const efficiency = diagnosis.capital_price_efficiency || {};
+  const pressure = diagnosis.absorption_pressure || {};
+  const psychology = diagnosis.psychology || {};
+  const reflexivity = diagnosis.reflexivity || {};
+  const liquidity = diagnosis.liquidity_map || {};
+  const gate = diagnosis.gate || {};
+  const upZone = liquidity.nearest_up_liquidity_zone || {};
+  const downZone = liquidity.nearest_down_liquidity_zone || {};
+  return (
+    <section className="border-b border-border py-5">
+      <SectionTitle icon={BrainCircuit} title="行为反身性诊断" meta={`Skill 10 · ${diagnosis.data_date || '最近交易日'} · ${diagnosis.model_version || '日线模型'}`} />
+      <div className="border-l-2 border-accent bg-card px-3 py-3 sm:px-4">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className={`text-sm font-semibold ${reflexivityTone(diagnosis.candidate_label || reflexivity.reflexivity_label)}`}>{diagnosis.candidate_label || '暂无明确候选'}</span>
+          <span className="text-xs text-text-secondary">{diagnosis.diagnosis_level || 'S0'} · 评分 {number(diagnosis.selection_score, 1)}</span>
+          <span className={`text-xs ${reflexivityTone(reflexivity.reflexivity_label)}`}>{reflexivity.reflexivity_label || '反身性暂未形成'}</span>
+          <span className="text-[10px] text-text-secondary">{gate.label || '等待结构确认'}</span>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
+          <Metric label="心理阶段" value={psychology.transition || psychology.psychology_state || '未形成'} detail={`置信 ${number(psychology.state_confidence, 1, '%')}`} />
+          <Metric label="潜在被迫买盘" value={number(forced.forced_buy_pressure, 1)} detail={forced.buy_pressure_trend || '序列不足'} valueClass="text-up" />
+          <Metric label="潜在被迫卖盘" value={number(forced.forced_sell_pressure, 1)} detail={forced.sell_pressure_trend || '序列不足'} valueClass={forced.forced_sell_pressure >= 60 ? 'text-down' : 'text-text'} />
+          <Metric label="承接 / 抛压" value={`${number(pressure.absorption_score, 1)} / ${number(pressure.pressure_score, 1)}`} detail={`${pressure.absorption_trend || '未形成'} · ${pressure.pressure_trend || '未形成'}`} />
+          <Metric label="资金价格效率" value={efficiency.state || '未形成'} detail={`边际 ${number(efficiency.efficiency_delta_1d, 4)}`} valueClass={reflexivityTone(efficiency.state)} />
+          <Metric label="拥挤代理" value={diagnosis.crowding?.state || '未提供'} detail={number(diagnosis.crowding?.score, 1)} valueClass={reflexivityTone(diagnosis.crowding?.state)} />
+        </div>
+      </div>
+      <div className="mt-4 grid gap-5 lg:grid-cols-2">
+        <div className="min-w-0 border-t border-border pt-3">
+          <div className="text-xs font-medium text-text">流动性位置</div>
+          <div className="mt-2 grid grid-cols-2 gap-4 text-xs">
+            <div className="min-w-0"><div className="text-[10px] text-text-secondary">上方已观测区域</div><div className="mt-1 break-words text-text">{upZone.label || '未发现已观测区域'}</div><div className="mt-1 font-mono text-text-secondary">{finite(upZone.price) ? number(upZone.price) : '--'} · 距离 {number(liquidity.distance_to_up_liquidity, 2, '%')}</div></div>
+            <div className="min-w-0"><div className="text-[10px] text-text-secondary">下方已观测区域</div><div className="mt-1 break-words text-text">{downZone.label || '未发现已观测区域'}</div><div className="mt-1 font-mono text-text-secondary">{finite(downZone.price) ? number(downZone.price) : '--'} · 距离 {number(liquidity.distance_to_down_liquidity, 2, '%')}</div></div>
+          </div>
+          <div className="mt-3 text-[10px] leading-4 text-text-secondary">{liquidity.interpretation || '流动性位置按历史高低点、成交分布和可观测VWAP计算'} · 不代表未来必然到达。</div>
+        </div>
+        <div className="min-w-0 border-t border-border pt-3">
+          <div className="text-xs font-medium text-text">验证与失效</div>
+          <div className="mt-2 grid gap-2 text-[11px] leading-5 text-text-secondary sm:grid-cols-2">
+            <div><div className="mb-1 text-up">继续成立</div>{(diagnosis.validation_conditions || []).slice(0, 3).map((item: string) => <div key={item}>· {item}</div>)}</div>
+            <div><div className="mb-1 text-down">需要推翻</div>{(diagnosis.invalidation_conditions || []).slice(0, 3).map((item: string) => <div key={item}>· {item}</div>)}</div>
+          </div>
+        </div>
+      </div>
+      {(diagnosis.data_quality?.warnings || []).length > 0 && <div className="mt-3 text-[10px] leading-4 text-text-secondary">数据边界：{diagnosis.data_quality.warnings.slice(0, 2).join('；')}</div>}
+      <div className="mt-4 flex flex-col gap-3 border-t border-border pt-3 sm:flex-row sm:items-start">
+        <button type="button" onClick={onExplain} disabled={explaining} className="inline-flex h-8 shrink-0 items-center justify-center gap-2 rounded-md border border-accent/50 bg-accent/10 px-3 text-[11px] font-medium text-accent hover:bg-accent/20 disabled:opacity-50">
+          {explaining ? <RefreshCw size={13} className="animate-spin" /> : <Sparkles size={13} />}{explaining ? '解读中' : '解释行为链'}
+        </button>
+        {narrative && <div className="whitespace-pre-wrap break-words text-xs leading-5 text-text-secondary">{narrative}</div>}
+      </div>
+    </section>
+  );
+}
+
 export default function StockPage() {
   const [stockCode, setStockCode] = useState('');
   const [asOf, setAsOf] = useState('');
@@ -210,6 +274,8 @@ export default function StockPage() {
   const [klineLoading, setKlineLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiNarrative, setAiNarrative] = useState('');
+  const [reflexivityNarrative, setReflexivityNarrative] = useState('');
+  const [reflexivityLoading, setReflexivityLoading] = useState(false);
   const [error, setError] = useState('');
   const [queryHistory, setQueryHistory] = useState<QueryHistoryItem[]>([]);
   const [loadedFromHistory, setLoadedFromHistory] = useState(false);
@@ -295,6 +361,7 @@ export default function StockPage() {
     setProgress(8);
     setError('');
     setAiNarrative('');
+    setReflexivityNarrative('');
     setLoadedFromHistory(fromHistory);
     setCategory(4);
     const profileQuery = new URLSearchParams();
@@ -431,6 +498,20 @@ export default function StockPage() {
       setAiNarrative(friendlyApiError(caught, 'AI解释本次未完成'));
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const explainReflexivity = async () => {
+    if (!profile || reflexivityLoading) return;
+    setReflexivityLoading(true);
+    try {
+      const query = asOf ? `?as_of=${encodeURIComponent(asOf)}` : '';
+      const response = await apiFetch<{ data: AnyMap }>(`/skills/reflexivity/${encodeURIComponent(stockCode)}/explain${query}`, { timeoutMs: 30000 });
+      setReflexivityNarrative(String(response.data.narrative || '当前没有形成可读的行为链解释。'));
+    } catch (caught) {
+      setReflexivityNarrative(friendlyApiError(caught, '行为链解释暂时不可用'));
+    } finally {
+      setReflexivityLoading(false);
     }
   };
 
@@ -624,6 +705,8 @@ export default function StockPage() {
               {aiNarrative && <div className="whitespace-pre-wrap text-xs leading-5 text-text-secondary">{aiNarrative}</div>}
             </div>
           </section>
+
+          {profile.behavior_reflexivity && <ReflexivityPanel diagnosis={profile.behavior_reflexivity} onExplain={() => void explainReflexivity()} explaining={reflexivityLoading} narrative={reflexivityNarrative} />}
 
           <section className="border-b border-border py-5">
             <SectionTitle icon={Building2} title="公司本体" meta={company.source} />

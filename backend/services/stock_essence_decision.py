@@ -39,9 +39,10 @@ from services.fqe_reference_data import fqe_reference_data
 from services.ftshare_mcp import ftshare_mcp_client
 from services.macro_policy_news import macro_policy_news_collector
 from services.market_decision_workbench import market_decision_workbench_service
+from quant.reflexivity_skill import build_reflexivity_diagnosis
 
 
-CONTRACT_VERSION = "stock-essence-decision-v2.5.0"
+CONTRACT_VERSION = "stock-essence-decision-v2.6.0"
 F10_URL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 QUOTE_DETAIL_URL = "https://push2.eastmoney.com/api/qt/stock/get"
 DECISION_STATES = ("EXECUTE", "CAUTION", "OBSERVE", "AVOID", "NO_TRADE")
@@ -56,6 +57,12 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return parsed if math.isfinite(parsed) else None
+
+
+def _pct_field_to_decimal(value: Any) -> float | None:
+    """Convert quote/board ``change_pct`` percentage points to a return."""
+    parsed = _number(value)
+    return parsed / 100 if parsed is not None else None
 
 
 def _integer(value: Any) -> int | None:
@@ -2090,6 +2097,54 @@ class StockEssenceDecisionService:
             sector_dependency = self._build_dependency(stock_rows, sector_history, relative)
             sector_dependency["benchmark"] = relative["sector_benchmark"]
             emotion = self._build_emotion(stock_rows, fund_rows, quote, relative)
+            market_context_for_reflexivity = raw["market_context"]["value"] or {}
+            # Skill 10 consumes the same PIT daily bars already loaded for the
+            # individual profile.  Current constituent breadth is deliberately
+            # omitted in historical mode because the live constituent list is
+            # not a point-in-time universe.
+            if historical_mode:
+                historical_sector_return = (
+                    _number(sector_history[-1].get("change_pct"))
+                    if sector_history else None
+                )
+                reflexivity_context = {
+                    "market_state": "历史模式（仅使用截止日观察）",
+                    "sector_state": "历史板块状态按日线核验",
+                    "sector_return_1d": _pct_field_to_decimal(historical_sector_return),
+                    "stock_alpha_score": relative.get("individual_alpha_score"),
+                }
+            else:
+                member_changes = [_number(item.get("change_pct")) for item in members]
+                member_changes = [value for value in member_changes if value is not None]
+                member_average = sum(member_changes) / len(member_changes) if member_changes else None
+                member_breadth = sum(value > 0 for value in member_changes) / len(member_changes) * 100 if member_changes else None
+                member_flows = [_number(item.get("main_net_inflow")) for item in members]
+                member_flows = [value for value in member_flows if value is not None]
+                sector_strength = _clamp(50 + (sector_change or 0) * 8 + ((member_breadth or 50) - 50) * 0.35 + _clamp((sum(member_flows) if member_flows else 0) / 1e8, -15, 15))
+                sector_state = "强化" if sector_strength >= 72 else "启势" if sector_strength >= 58 else "退潮" if sector_strength <= 34 else "分歧" if sector_strength <= 46 else "震荡"
+                latest_market_return = _number(market_rows[-1].get("change_pct")) if market_rows else None
+                reflexivity_context = {
+                    "market_state": (market_context_for_reflexivity.get("market_state") or {}).get("state_label") if isinstance(market_context_for_reflexivity, dict) else None,
+                    "sector_state": sector_state,
+                    "sector_return_1d": _pct_field_to_decimal(sector_change),
+                    "sector_breadth": member_breadth,
+                    "sector_strength": sector_strength,
+                    "alpha_density": sum(value > (member_average or 0) for value in member_changes) / len(member_changes) * 100 if member_changes else None,
+                    "stock_alpha_score": relative.get("individual_alpha_score"),
+                    # Emotion score is a local participation/crowding proxy,
+                    # not an assertion about a specific participant.
+                    "crowding_score": emotion.get("score"),
+                    "fomo_score": emotion.get("score") if emotion.get("level") in {"偏热", "过热"} else None,
+                    "panic_score": _clamp(60 - (emotion.get("score") or 60)) if emotion.get("score") is not None else None,
+                    "market_return_1d": _pct_field_to_decimal(latest_market_return),
+                }
+            behavior_reflexivity = build_reflexivity_diagnosis(
+                stock_rows,
+                as_of=decision_date,
+                context=reflexivity_context,
+                symbol=code,
+                name=stock_name,
+            )
             consensus = raw["consensus"]["value"] or {}
             consensus_for_analysis = (
                 {"_coverage_status": "historical_excluded"}
@@ -2124,6 +2179,22 @@ class StockEssenceDecisionService:
                 code, stock_name, quote, indicators, stock_rows, financials, valuation,
                 relative, risk_reward, market_context, now,
             )
+            reflexivity_gate = behavior_reflexivity.get("gate") or {}
+            strategy_fit["behavior_reflexivity_gate"] = reflexivity_gate
+            tail_1455 = strategy_fit.get("tail_1455") or {}
+            tail_conditions = list(tail_1455.get("conditions") or [])
+            tail_conditions.append({
+                "key": "behavior_reflexivity",
+                "label": "行为反身性不处于高位衰减/负向加速",
+                "passed": reflexivity_gate.get("status") != "BLOCK",
+                "value": behavior_reflexivity.get("candidate_type"),
+            })
+            tail_1455["conditions"] = tail_conditions
+            tail_1455["all_conditions_passed"] = all(bool(item.get("passed")) for item in tail_conditions)
+            tail_1455["score"] = _round(sum(bool(item.get("passed")) for item in tail_conditions) / len(tail_conditions) * 100, 1) if tail_conditions else None
+            if reflexivity_gate.get("status") == "BLOCK":
+                tail_1455["fit"] = "不适配"
+            strategy_fit["tail_1455"] = tail_1455
             is_realtime = bool(
                 not historical_mode
                 and quote.get("is_realtime")
@@ -2193,6 +2264,7 @@ class StockEssenceDecisionService:
                     "sector": sector_role.get("role"),
                     "alpha": relative.get("individual_alpha_score"),
                     "emotion": emotion.get("level"),
+                    "reflexivity": behavior_reflexivity.get("candidate_label"),
                     "expectation": expectation.get("state"),
                 },
             }
@@ -2217,6 +2289,7 @@ class StockEssenceDecisionService:
                 ("sector_history", "板块历史", len(sector_history) >= 15, sector_history_payload.get("source") or "东方财富行业板块/FTShare", str(sector_history[-1].get("trade_date"))[:10] if sector_history else None, f"{len(sector_history)}条，基准{benchmark_name}({sector_history_payload.get('benchmark_code') or benchmark_code or '--'})"),
                 ("sector_members", "板块成分", bool(members), "东方财富行业成分", decision_date.isoformat(), f"{len(members)}只"),
                 ("sector_recommendations", "板块推荐", bool(sector_recommendations.get("available")), "板块成分多因子排序", sector_recommendations.get("data_date"), f"龙头{len(sector_recommendations.get('leader') or [])}只、优秀{len(sector_recommendations.get('excellent') or [])}只、潜力{len(sector_recommendations.get('potential') or [])}只"),
+                ("behavior_reflexivity", "行为反身性", bool(behavior_reflexivity.get("available")), "Skill 10 PIT日线诊断", behavior_reflexivity.get("data_date"), f"{behavior_reflexivity.get('candidate_label') or '暂无明确候选'} · {behavior_reflexivity.get('diagnosis_level') or 'S0'}"),
                 ("valuation_history", "三年估值", bool(valuation_history.get("history")), valuation_history.get("source") or "东方财富", valuation_history.get("history_end"), f"{valuation.get('pe_history_samples')}条正PE样本"),
                 ("consensus", "一致预期", raw["consensus"].get("error") is None, "东方财富分析师一致预期/PIT约束", now.date().isoformat(), consensus_detail),
                 ("announcements", "公司公告", bool((announcement_payload.get("status") or {}).get(code, {}).get("available")), "东方财富公告/FTShare", decision_date.isoformat(), f"{len(announcements)}条最新公告"),
@@ -2262,6 +2335,7 @@ class StockEssenceDecisionService:
                 },
                 {"nature": "calculation", "category": "capital", "statement": f"5日资金状态：{capital_impact.get('persistence')}", "source": capital_impact.get("source"), "data_date": capital_impact.get("latest_data_date")},
                 {"nature": "calculation", "category": "alpha", "statement": f"个股Alpha评分{relative.get('individual_alpha_score')}，板块依赖{sector_dependency.get('dependency_level')}", "source": "个股/板块/上证日收益OLS", "data_date": decision_date.isoformat()},
+                {"nature": "calculation", "category": "behavior_reflexivity", "statement": f"{behavior_reflexivity.get('candidate_label') or '暂无明确候选'}；反身性{(behavior_reflexivity.get('reflexivity') or {}).get('reflexivity_label') or '未形成'}；评分{behavior_reflexivity.get('selection_score')}", "source": "Skill 10六维PIT日线诊断", "data_date": behavior_reflexivity.get("data_date")},
                 {"nature": "scenario", "category": "risk", "statement": f"潜在上行{risk_reward.get('potential_upside_pct')}%，下行{risk_reward.get('potential_downside_pct')}%，RR={risk_reward.get('risk_reward_ratio')}", "source": "20日高低点+ATR情景", "data_date": decision_date.isoformat()},
             ]
             payload = {
@@ -2287,6 +2361,7 @@ class StockEssenceDecisionService:
                 "sector_role": sector_role,
                 "sector_recommendations": sector_recommendations,
                 "sector_dependency": sector_dependency,
+                "behavior_reflexivity": behavior_reflexivity,
                 "emotion": emotion,
                 "catalysts": catalysts,
                 "expectation_gap": expectation,

@@ -65,7 +65,11 @@ def _skill(
         "reject_gate": reject,
         "exit_logic": exit_logic,
         "lifecycle_state": "EXPERIMENTAL",
-        "validation_status": "REALTIME_SHADOW" if skill_id == "skill_09_auction_intraday_confirm" else "NOT_TESTED",
+        "validation_status": (
+            "REALTIME_SHADOW" if skill_id == "skill_09_auction_intraday_confirm"
+            else "EXPERIMENTAL" if skill_id == "skill_10_behavior_reflexivity"
+            else "NOT_TESTED"
+        ),
         "enabled": True,
         "definition": {
             "initial_logic_rating": initial_rating,
@@ -179,6 +183,38 @@ SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
         reject={"rule": "missing real auction observation, limit-price non-fill, or opening structure failure"},
         exit_logic={"rule": "opening confirmation fails; never substitute daily bars for missing auction history"}, initial_rating="B+",
     ),
+    _skill(
+        "skill_10_behavior_reflexivity", "行为反身性与资金博弈", "behavior_reflexivity",
+        "从被迫交易压力、流动性位置、资金价格效率、承接/抛压、心理状态和反身性方向识别可验证的短期结构。",
+        regimes=["蓄势", "启势", "顺势", "盛势", "分势", "退势", "返势"],
+        sectors=["全部"], horizons=["1d", "3d", "1w", "1m"],
+        required=[
+            "forced_buy_pressure", "forced_sell_pressure", "liquidity_map",
+            "capital_price_efficiency", "absorption_score", "pressure_score",
+            "psychology_state", "reflexivity_state",
+        ],
+        optional=[
+            "auction_snapshot", "minute_vwap", "stock_alpha", "sector_breadth",
+            "crowding_score", "verified_short_series", "level2_order_flow",
+        ], data_level="DAILY",
+        entry={
+            "rule": "六维可观测结构形成候选或风险状态；权重只用于排序，不代表预测确定性",
+            "states": [
+                "PANIC_ABSORPTION_CANDIDATE", "ALPHA_SEED_REFLEXIVITY",
+                "POSITIVE_REFLEXIVITY_CANDIDATE", "HIGH_LEVEL_REFLEXIVITY_DECAY",
+                "NEGATIVE_REFLEXIVITY_ACCELERATION", "NEUTRAL",
+            ],
+        },
+        confirm={
+            "rule": "价格变化继续得到成交、板块宽度、Alpha和承接确认；竞价仅使用真实前向快照",
+        },
+        reject={
+            "rule": "不从日线推断主力意图、空头回补、订单簿队列或撤单；高位衰减/负向加速不得作为追涨候选",
+        },
+        exit_logic={
+            "rule": "关键流动性区失守、承接下降、效率转负或板块Alpha持续衰减",
+        }, initial_rating="EXPERIMENTAL",
+    ),
 )
 
 
@@ -242,8 +278,11 @@ async def ensure_trading_skill_registry() -> None:
                 continue
             for field in definition_fields:
                 setattr(row, field, deepcopy(definition[field]))
-            if definition["skill_id"] == "skill_09_auction_intraday_confirm" and not row.sample_size:
-                row.validation_status = "REALTIME_SHADOW"
+            if not row.sample_size:
+                if definition["skill_id"] == "skill_09_auction_intraday_confirm":
+                    row.validation_status = "REALTIME_SHADOW"
+                elif definition["skill_id"] == "skill_10_behavior_reflexivity":
+                    row.validation_status = "EXPERIMENTAL"
             row.updated_at = datetime.utcnow()
         rejected = {
             row.knowledge_id: row

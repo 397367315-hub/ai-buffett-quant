@@ -53,6 +53,14 @@ STAGE_LABELS: dict[str, str] = {
     "CONFIRM": "竞价与分时确认",
     "WEAK_CONFIRM": "弱确认，仍需观察",
     "REJECT": "竞价/分时确认未通过",
+    "PANIC_ABSORPTION_CANDIDATE": "恐慌吸收候选",
+    "ALPHA_SEED_REFLEXIVITY": "Alpha萌芽反身性",
+    "POSITIVE_REFLEXIVITY_CANDIDATE": "正向反身候选",
+    "HIGH_LEVEL_REFLEXIVITY_DECAY": "高位反身性衰减",
+    "NEGATIVE_REFLEXIVITY_ACCELERATION": "负向反身性加速",
+    "POSITIVE_REFLEXIVITY": "正向反身性增强",
+    "NEGATIVE_REFLEXIVITY": "负向反身性",
+    "NEUTRAL": "反身性暂未形成",
 }
 
 
@@ -572,6 +580,19 @@ def auction_intraday_confirm(features: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def behavior_reflexivity(features: dict[str, Any]) -> dict[str, Any]:
+    """Skill 10 adapter shared by live scans and the PIT validator.
+
+    The full daily diagnosis is attached by the runtime scanner.  The lazy
+    import avoids a module cycle because the full calculator reuses Skill 02
+    from this file.  Historical validation receives a conservative adapter
+    when only the legacy feature vector is available.
+    """
+    from quant.reflexivity_skill import basic_reflexivity_result
+
+    return basic_reflexivity_result(features)
+
+
 SKILL_CALCULATORS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "skill_01_price_volume_efficiency": price_volume_efficiency,
     "skill_02_absorption_pressure": absorption_pressure,
@@ -582,6 +603,7 @@ SKILL_CALCULATORS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "skill_07_breakout_quality": breakout_quality,
     "skill_08_behavior_imbalance": behavior_imbalance,
     "skill_09_auction_intraday_confirm": auction_intraday_confirm,
+    "skill_10_behavior_reflexivity": behavior_reflexivity,
 }
 
 

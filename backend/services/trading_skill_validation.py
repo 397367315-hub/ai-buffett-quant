@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from database import async_session
 from models import StockDailyBar, StockUniverseSnapshot, TradingSkillValidationRun
 from quant.jobs import create_job, get_job, latest_running_job, spawn, update_job
+from quant.reflexivity_skill import build_reflexivity_diagnosis
 from quant.trading_skill_features import build_skill_features, normalize_daily_bars
 from quant.trading_skills import evaluate_skill
 from services.data_collector import shanghai_now
@@ -37,9 +38,14 @@ HORIZONS = {
     "skill_07_breakout_quality": 5,
     "skill_08_behavior_imbalance": 3,
     "skill_09_auction_intraday_confirm": 1,
+    "skill_10_behavior_reflexivity": 5,
 }
 RISK_SKILLS = {"skill_08_behavior_imbalance"}
-RISK_STAGES = {"INEFFICIENT_UP", "EFFICIENT_DOWN", "DISTRIBUTION_RISK", "SELL_PRESSURE", "FALSE_BREAKOUT_RISK", "PANIC_EXCHANGE", "PANIC"}
+RISK_STAGES = {
+    "INEFFICIENT_UP", "EFFICIENT_DOWN", "DISTRIBUTION_RISK", "SELL_PRESSURE",
+    "FALSE_BREAKOUT_RISK", "PANIC_EXCHANGE", "PANIC", "HIGH_LEVEL_REFLEXIVITY_DECAY",
+    "NEGATIVE_REFLEXIVITY_ACCELERATION",
+}
 
 
 def _num(value: Any) -> float | None:
@@ -283,8 +289,25 @@ class TradingSkillValidationService:
             for index in range(min_sessions, len(rows) - horizon):
                 as_of = rows[index]["trade_date"]
                 context = {"market_return_1d": market_returns.get(as_of), "market_state": "historical_unavailable"}
-                features = build_skill_features(rows[:index + 1], as_of=as_of, context=context)
-                result = evaluate_skill(skill_id, features)
+                point_rows = rows[:index + 1]
+                if skill_id == "skill_10_behavior_reflexivity":
+                    # Use the complete six-dimensional PIT calculator for
+                    # Skill 10.  The legacy feature adapter remains useful
+                    # for the generic registry, but it cannot validate the
+                    # liquidity map, psychology transition or pressure
+                    # dynamics promised by this skill.
+                    diagnosis = build_reflexivity_diagnosis(
+                        point_rows,
+                        as_of=as_of,
+                        context=context,
+                        symbol=code,
+                    )
+                    result = diagnosis.get("skill_result") or {}
+                    result["diagnosis_level"] = diagnosis.get("diagnosis_level")
+                    result["candidate_type"] = diagnosis.get("candidate_type")
+                else:
+                    features = build_skill_features(point_rows, as_of=as_of, context=context)
+                    result = evaluate_skill(skill_id, features)
                 if result.get("signal_type") == "INSUFFICIENT_DATA" or result.get("score") is None:
                     continue
                 outcome = _future_label(rows, index, horizon, market_returns, code)
@@ -301,7 +324,7 @@ class TradingSkillValidationService:
                     "date": as_of.isoformat(), "code": code, "predicted": predicted,
                     "actual_positive": actual_positive, "score": result.get("score"),
                     "excess": outcome["excess"], "mfe": outcome["mfe"], "mae": outcome["mae"],
-                    "stage": result.get("stage"),
+                    "stage": result.get("stage"), "diagnosis_level": result.get("diagnosis_level"),
                 })
         if progress:
             await progress(72, "walk_forward", f"已生成{len(cases)}个点时评估样本")
