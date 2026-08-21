@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertCircle,
@@ -153,6 +153,73 @@ interface ForecastSnapshot {
     increase_defensive_probability: string[];
     falsify_current_path: string[];
   };
+  trading_skills?: {
+    action?: string;
+    market_permission?: { code?: string; label?: string; reasons?: string[] };
+    active_skills?: Array<{ skill_id: string; skill_name: string; lifecycle_state: string; validation_status: string; runtime: string; data_level?: string }>;
+    candidates?: Array<{ code: string; name: string; sector?: string; market_segment?: string; best_skill?: string; best_stage?: string; best_stage_label?: string; skill_score?: NullableNumber; action?: string }>;
+    scanned_count?: number;
+    data_cutoff_time?: string | null;
+    cache_used?: boolean;
+    filters?: {
+      exclude_star_market?: boolean;
+      exclude_gem?: boolean;
+      excluded_counts?: Record<string, number>;
+      description?: string;
+    };
+  };
+}
+
+interface SkillFilterState {
+  exclude_star_market: boolean;
+  exclude_gem: boolean;
+}
+
+const TRADING_STAGE_LABELS: Record<string, string> = {
+  INSUFFICIENT_DATA: '数据不足，暂不能判断',
+  EFFICIENT_UP: '量价效率改善',
+  INEFFICIENT_UP: '上涨但量价效率下降',
+  EFFICIENT_DOWN: '下跌中的量价效率',
+  ABSORBED_DOWN: '下跌但承接较强',
+  ABSORPTION: '承接增强',
+  SELL_PRESSURE: '抛压增强',
+  BALANCED: '承接与抛压平衡',
+  VOLUME_SHOCK: '成交异常触发',
+  NO_RECENT_EVENT: '暂无近期异常成交',
+  DISTRIBUTION_RISK: '异常成交后失守风险',
+  TREND_CONFIRMATION: '异常成交后趋势确认',
+  PANIC_EXCHANGE: '恐慌放量换手',
+  NOISE: '异常成交未形成明确结构',
+  RECLAIM_PENDING_CONFIRM: '假跌破回收，待确认',
+  NO_RECLAIM: '未形成回收结构',
+  REACCEL_CONFIRMED: '二次启动确认',
+  REACCEL_FORMING: '二次启动形成',
+  BASE: '缩量整理',
+  PULLBACK: '趋势回调',
+  FAILED: '趋势回调失效',
+  NO_PRIOR_TREND: '前期趋势不足',
+  NONE: '未形成低位异动',
+  FIRST_SHOCK: '首次成交异动',
+  CONTRACTION: '异动后成交收敛',
+  SECOND_LAUNCH_CONFIRMED: '二次启动确认',
+  SECOND_LAUNCH_FORMING: '二次启动形成',
+  HIGH_QUALITY: '高质量突破',
+  MEDIUM: '中等质量突破',
+  FALSE_BREAKOUT_RISK: '疑似假突破风险',
+  LOW_QUALITY: '突破质量偏低',
+  NO_BREAKOUT: '尚未形成突破',
+  FOMO: '追涨行为风险',
+  PANIC: '恐慌行为风险',
+  FAKE_BREAKOUT: '假突破行为风险',
+  BEHAVIORAL_OVERSHOOT: '行为过冲',
+  WAIT: '等待竞价/分时数据',
+  CONFIRM: '竞价与分时确认',
+  WEAK_CONFIRM: '弱确认，仍需观察',
+  REJECT: '竞价/分时确认未通过',
+};
+
+function readableTradingStage(code?: string, label?: string): string {
+  return label || TRADING_STAGE_LABELS[code || ''] || (code ? `阶段：${code}` : '观察');
 }
 
 interface MarketSupplement {
@@ -524,7 +591,19 @@ function EmptyState({ text = '暂无可核验数据' }: { text?: string }) {
   return <div className="py-8 text-center text-xs text-text-secondary">{text}</div>;
 }
 
-function ForecastTimeline({ forecast, onRefresh }: { forecast: ForecastSnapshot; onRefresh: () => void }) {
+function ForecastTimeline({
+  forecast,
+  onRefresh,
+  skillFilters,
+  onSkillFilterChange,
+  skillFilterBusy,
+}: {
+  forecast: ForecastSnapshot;
+  onRefresh: () => void;
+  skillFilters: SkillFilterState;
+  onSkillFilterChange: (next: SkillFilterState) => void;
+  skillFilterBusy: boolean;
+}) {
   const timeline = (forecast.timeline || []).slice(0, 4);
   return (
     <section id="forecast" className="v5-panel v5-forecast-panel">
@@ -552,8 +631,49 @@ function ForecastTimeline({ forecast, onRefresh }: { forecast: ForecastSnapshot;
         <div className="v5-resonance-item"><div className="flex justify-between text-[10px]"><span className="text-text-secondary">进攻共振形成度</span><b className="font-mono text-up">{percent(forecast.resonance.offensive_resonance_pct)}</b></div><ThinBar value={forecast.resonance.offensive_resonance_pct} color="up" /></div>
         <div className="v5-resonance-summary"><span className="text-text-secondary">多周期共振</span><strong className="text-text">{forecast.resonance.risk_preference_label || '状态核验中'}</strong></div>
       </div>
+      <SkillRuntimeStrip
+        skills={forecast.trading_skills}
+        filters={skillFilters}
+        onFilterChange={onSkillFilterChange}
+        busy={skillFilterBusy}
+      />
     </section>
   );
+}
+
+function SkillRuntimeStrip({
+  skills,
+  filters,
+  onFilterChange,
+  busy,
+}: {
+  skills?: ForecastSnapshot['trading_skills'];
+  filters: SkillFilterState;
+  onFilterChange: (next: SkillFilterState) => void;
+  busy: boolean;
+}) {
+  if (!skills) return null;
+  const permission = skills.market_permission;
+  const candidates = skills.candidates || [];
+  const update = (key: keyof SkillFilterState) => onFilterChange({ ...filters, [key]: !filters[key] });
+  return <div className="v5-skill-runtime">
+    <div className="v5-skill-runtime-head">
+      <div><span className="v5-skill-kicker">交易技能漏斗</span><strong>当前运行技能与可观测苗头</strong></div>
+      <span className={`v5-skill-permission ${permission?.code === 'ALLOW' ? 'is-up' : permission?.code === 'BLOCK' ? 'is-down' : 'is-warn'}`}>{permission?.label || skills.action || '核验中'}</span>
+    </div>
+    <div className="v5-skill-filter-row" aria-label="可交易板块筛选">
+      <span className="v5-skill-filter-title">可交易范围</span>
+      <label><input type="checkbox" checked={filters.exclude_star_market} disabled={busy} onChange={() => update('exclude_star_market')} />排除科创板</label>
+      <label><input type="checkbox" checked={filters.exclude_gem} disabled={busy} onChange={() => update('exclude_gem')} />排除创业板</label>
+      <span className="v5-skill-filter-hint">默认按主板权限扫描；取消勾选后纳入对应板块研究</span>
+      {busy && <Loader2 size={12} className="animate-spin text-accent" aria-label="正在重新扫描" />}
+    </div>
+    <div className="v5-skill-runtime-body">
+      <div className="v5-skill-list">{(skills.active_skills || []).slice(0, 6).map((item) => <span key={item.skill_id} className={`v5-skill-chip ${item.runtime === 'ON' ? 'is-on' : 'is-off'}`} title={`${item.skill_name} · ${item.lifecycle_state} · ${item.validation_status}`}><i />{item.skill_name}</span>)}{!(skills.active_skills || []).length && <span className="text-[10px] text-text-secondary">暂无满足许可的运行技能</span>}</div>
+      <div className="v5-skill-candidates">{candidates.slice(0, 3).map((item) => { const stage = readableTradingStage(item.best_stage, item.best_stage_label); return <div key={item.code} className="v5-skill-candidate"><span className="font-mono text-[10px] text-text">{item.code}</span><span className="min-w-0 truncate text-[10px] text-text-secondary">{item.name}</span><span className="min-w-0 truncate text-[9px] text-accent" title={stage}>{stage}</span></div>; })}{!candidates.length && <span className="text-[10px] text-text-secondary">当前没有通过市场/板块许可的候选，系统保持观察。</span>}</div>
+    </div>
+    <div className="v5-skill-runtime-foot">已扫描 {skills.scanned_count ?? '--'} 只 · 数据截止 {skills.data_cutoff_time ? localTime(skills.data_cutoff_time) : '--'} · 技能只提供研究候选，不连接下单</div>
+  </div>;
 }
 
 function MarketStatePanel({ supplement, overview }: { supplement: MarketSupplement | null; overview: MarketOverview | null }) {
@@ -731,13 +851,20 @@ export default function MarketDecisionWorkbenchPage() {
   const [judgmentAction, setJudgmentAction] = useState('WAIT');
   const [judgmentNote, setJudgmentNote] = useState('');
   const [judgmentBusy, setJudgmentBusy] = useState(false);
+  const [skillFilters, setSkillFilters] = useState<SkillFilterState>({ exclude_star_market: true, exclude_gem: true });
+  const [skillFilterBusy, setSkillFilterBusy] = useState(false);
+  const skillFiltersRef = useRef<SkillFilterState>({ exclude_star_market: true, exclude_gem: true });
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true); else setLoading(true);
     setError('');
     setNotice('');
     setProgress(8);
-    const forecastPath = `/forecast/dashboard${force ? '?refresh=true' : ''}`;
+    const forecastParams = new URLSearchParams();
+    if (force) forecastParams.set('refresh', 'true');
+    forecastParams.set('exclude_star_market', String(skillFiltersRef.current.exclude_star_market));
+    forecastParams.set('exclude_gem', String(skillFiltersRef.current.exclude_gem));
+    const forecastPath = `/forecast/dashboard?${forecastParams.toString()}`;
     const supplementPath = `/market/workbench${force ? '?refresh=true' : ''}`;
     const overviewPath = `/market/overview${force ? '?refresh=true' : ''}`;
     try {
@@ -748,6 +875,15 @@ export default function MarketDecisionWorkbenchPage() {
       ]);
       if (forecastResult.status === 'fulfilled' && forecastResult.value.code === 0 && forecastResult.value.data) {
         setForecast(forecastResult.value.data);
+        const returnedFilters = forecastResult.value.data.trading_skills?.filters;
+        if (returnedFilters) {
+          const nextFilters = {
+            exclude_star_market: returnedFilters.exclude_star_market !== false,
+            exclude_gem: returnedFilters.exclude_gem !== false,
+          };
+          skillFiltersRef.current = nextFilters;
+          setSkillFilters(nextFilters);
+        }
         window.localStorage.setItem(FORECAST_CACHE_KEY, JSON.stringify(forecastResult.value.data));
       } else {
         throw forecastResult.status === 'rejected' ? forecastResult.reason : new Error('前瞻预测返回无效数据');
@@ -785,6 +921,29 @@ export default function MarketDecisionWorkbenchPage() {
       setRefreshing(false);
     }
   }, []);
+
+  const refreshSkillScope = useCallback(async (next: SkillFilterState) => {
+    if (skillFilterBusy) return;
+    skillFiltersRef.current = next;
+    setSkillFilters(next);
+    setSkillFilterBusy(true);
+    setError('');
+    try {
+      const params = new URLSearchParams({
+        refresh: 'true',
+        exclude_star_market: String(next.exclude_star_market),
+        exclude_gem: String(next.exclude_gem),
+      });
+      const response = await apiFetch<{ code: number; data: ForecastSnapshot['trading_skills'] }>(`/trading-skills/dashboard?${params.toString()}`, { cache: 'no-store', timeoutMs: 45000 });
+      if (response.code !== 0 || !response.data) throw new Error('板块筛选扫描返回无效数据');
+      setForecast((current) => current ? { ...current, trading_skills: response.data } : current);
+      setNotice(`已按当前可交易范围重新扫描：${next.exclude_star_market ? '排除科创板' : '包含科创板'}，${next.exclude_gem ? '排除创业板' : '包含创业板'}`);
+    } catch (caught) {
+      setNotice(friendlyApiError(caught, '板块筛选扫描失败，已保留上一份结果'));
+    } finally {
+      setSkillFilterBusy(false);
+    }
+  }, [skillFilterBusy]);
 
   useEffect(() => { void load(false); const timer = window.setInterval(() => void load(false), 60_000); return () => window.clearInterval(timer); }, [load]);
   useEffect(() => { if (!loading && !refreshing) return undefined; const timer = window.setInterval(() => setProgress((current) => Math.min(92, current + Math.max(1, Math.ceil((92 - current) / 8)))), 350); return () => window.clearInterval(timer); }, [loading, refreshing]);
@@ -841,7 +1000,7 @@ export default function MarketDecisionWorkbenchPage() {
           {(notice || error) && <div className={`v5-notice ${error ? 'error' : ''}`}><span>{error || notice}</span><button type="button" onClick={() => { setNotice(''); setError(''); }} aria-label="关闭提示"><X size={13} /></button></div>}
 
           <div className="v5-content">
-            <div className="v5-dashboard-grid"><div className="min-w-0"><ForecastTimeline forecast={forecast} onRefresh={() => void load(true)} /></div><MarketStatePanel supplement={supplement} overview={overview} /><div id="events" className="min-w-0"><EventMonitor forecast={forecast} supplement={supplement} /></div></div>
+            <div className="v5-dashboard-grid"><div className="min-w-0"><ForecastTimeline forecast={forecast} onRefresh={() => void load(true)} skillFilters={skillFilters} onSkillFilterChange={(next) => void refreshSkillScope(next)} skillFilterBusy={skillFilterBusy} /></div><MarketStatePanel supplement={supplement} overview={overview} /><div id="events" className="min-w-0"><EventMonitor forecast={forecast} supplement={supplement} /></div></div>
 
             <div className="v5-research-grid"><div id="sectors"><SectorResonance sectors={forecast.sector_forecasts || []} supplement={supplement} /></div><div id="alpha"><AlphaRadar seeds={forecast.alpha_seeds || []} /></div><div><CapitalFlow forecast={forecast} supplement={supplement} overview={overview} /></div><BehaviorPanel behavior={forecast.behavior} /></div>
 

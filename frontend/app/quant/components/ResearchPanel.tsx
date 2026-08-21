@@ -23,6 +23,7 @@ import type {
   ResearchReport,
   ResearchWorkspace,
 } from '../types';
+import SkillValidationPanel from './SkillValidationPanel';
 
 function signed(value: number | undefined, digits = 2): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '--';
@@ -263,6 +264,8 @@ export default function ResearchPanel() {
     {error && <div className="border border-down/50 bg-[#EF535022] rounded-md p-3 text-xs text-down flex gap-2"><AlertTriangle size={14} className="shrink-0" />{error}</div>}
 
     {report && <ReportView report={report} />}
+
+    <SkillValidationPanel />
 
     <FactorCatalog factors={workspace.factor_catalog} />
 

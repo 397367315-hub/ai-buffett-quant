@@ -946,8 +946,39 @@ class ForecastV5Service:
             self._memory = payload
             return payload
 
-    async def dashboard(self, *, force: bool = False) -> dict[str, Any]:
-        return await self.build(force=force)
+    async def dashboard(
+        self,
+        *,
+        force: bool = False,
+        include_skills: bool = True,
+        exclude_star_market: bool = True,
+        exclude_gem: bool = True,
+    ) -> dict[str, Any]:
+        data = await self.build(force=force)
+        if not include_skills:
+            return data
+        # Keep the skill layer downstream of the forecast layer. The runtime
+        # service calls dashboard(include_skills=False), preventing a cycle
+        # while allowing the V5 cockpit to show the current funnel state.
+        try:
+            from services.trading_skill_service import trading_skill_service
+            skills = await trading_skill_service.dashboard(
+                force=force,
+                exclude_star_market=exclude_star_market,
+                exclude_gem=exclude_gem,
+            )
+            return {**data, "trading_skills": {
+                "action": skills.get("action"),
+                "market_permission": skills.get("market_permission"),
+                "active_skills": skills.get("active_skills") or [],
+                "candidates": (skills.get("candidates") or [])[:8],
+                "scanned_count": skills.get("scanned_count"),
+                "data_cutoff_time": skills.get("data_cutoff_time"),
+                "cache_used": skills.get("cache_used", False),
+                "filters": skills.get("filters") or {},
+            }}
+        except Exception as exc:
+            return {**data, "trading_skills": {"action": "UNAVAILABLE", "error": type(exc).__name__, "active_skills": [], "candidates": []}}
 
     async def factors(self, *, kind: str = "market", factor_id: str | None = None, force: bool = False) -> dict[str, Any]:
         data = await self.build(force=force)

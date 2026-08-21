@@ -8,6 +8,7 @@ from api.personal_routes import router as personal_router
 from api.openclaw_routes import router as openclaw_router
 from api.research_routes import router as research_router
 from api.forecast_routes import router as forecast_router
+from api.trading_skill_routes import router as trading_skill_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -24,7 +25,9 @@ async def lifespan(app: FastAPI):
     from services.scheduler import scheduler, start_scheduler
     from services.midday_research import midday_research_service
     from services.weekend_research import weekend_research_service
+    from services.trading_skill_registry import ensure_trading_skill_registry
     await seed()
+    await ensure_trading_skill_registry()
     from quant.persistence import hydrate_strategy_store
     await hydrate_strategy_store()
     await history_cache.resume_incomplete_runs()
@@ -79,6 +82,7 @@ app.include_router(personal_router)
 app.include_router(openclaw_router)
 app.include_router(research_router)
 app.include_router(forecast_router)
+app.include_router(trading_skill_router)
 
 
 @app.get("/")

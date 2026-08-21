@@ -149,6 +149,30 @@ class ResearchDslValidateRequest(BaseModel):
     definition: dict[str, Any]
 
 
+class TradingSkillScanRequest(BaseModel):
+    skill_ids: list[str] = Field(default_factory=list, max_length=9)
+    force: bool = False
+    # Personal trading permissions: enabled by default because some users
+    # cannot trade STAR or ChiNext securities.
+    exclude_star_market: bool = True
+    exclude_gem: bool = True
+
+
+class TradingSkillValidationRequest(BaseModel):
+    skill_id: str = Field(min_length=1, max_length=80)
+    start_date: date = Field(default_factory=lambda: date.today() - timedelta(days=365))
+    end_date: date = Field(default_factory=date.today)
+    max_stocks: int = Field(default=150, ge=20, le=500)
+
+    @model_validator(mode="after")
+    def validate_period(self):
+        if self.end_date <= self.start_date:
+            raise ValueError("Skill验证结束日期必须晚于开始日期")
+        if (self.end_date - self.start_date).days > 1825:
+            raise ValueError("Skill验证区间最长支持五年")
+        return self
+
+
 class BacktestRequest(BaseModel):
     start_date: date = Field(default_factory=lambda: date.today() - timedelta(days=365))
     end_date: date = Field(default_factory=date.today)

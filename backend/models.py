@@ -222,6 +222,115 @@ class FactorRegistryV5(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class TradingSkillRegistry(Base):
+    """Versioned, auditable microstructure skills used by the V5 selection funnel."""
+
+    __tablename__ = "trading_skill_registry"
+    __table_args__ = (
+        Index("idx_trading_skill_state", "lifecycle_state", "enabled"),
+        Index("idx_trading_skill_category", "category", "updated_at"),
+    )
+
+    skill_id = Column(String(80), primary_key=True)
+    skill_name = Column(String(120), nullable=False)
+    skill_version = Column(String(30), nullable=False)
+    category = Column(String(50), nullable=False)
+    description = Column(Text, nullable=False)
+    applicable_market_regimes = Column(JSON, nullable=False, default=list)
+    applicable_sector_states = Column(JSON, nullable=False, default=list)
+    applicable_horizons = Column(JSON, nullable=False, default=list)
+    required_factors = Column(JSON, nullable=False, default=list)
+    optional_factors = Column(JSON, nullable=False, default=list)
+    required_data_level = Column(String(20), nullable=False, default="DAILY")
+    entry_gate = Column(JSON, nullable=False, default=dict)
+    confirm_gate = Column(JSON, nullable=False, default=dict)
+    reject_gate = Column(JSON, nullable=False, default=dict)
+    exit_logic = Column(JSON, nullable=False, default=dict)
+    lifecycle_state = Column(String(20), nullable=False, default="EXPERIMENTAL")
+    validation_status = Column(String(30), nullable=False, default="NOT_TESTED")
+    sample_size = Column(Integer, nullable=False, default=0)
+    precision = Column(Float)
+    recall = Column(Float)
+    hit_rate = Column(Float)
+    avg_excess_return = Column(Float)
+    profit_loss_ratio = Column(Float)
+    max_drawdown = Column(Float)
+    brier_score = Column(Float)
+    last_backtest_at = Column(DateTime)
+    last_recalibrated_at = Column(DateTime)
+    enabled = Column(Boolean, nullable=False, default=True)
+    definition = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TradingSkillValidationRun(Base):
+    """One immutable PIT/walk-forward validation report for a registered skill."""
+
+    __tablename__ = "trading_skill_validation_runs"
+    __table_args__ = (
+        Index("idx_skill_validation_skill_time", "skill_id", "completed_at"),
+        Index("idx_skill_validation_status", "status", "completed_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    experiment_id = Column(String(80), nullable=False, unique=True)
+    skill_id = Column(String(80), ForeignKey("trading_skill_registry.skill_id"), nullable=False)
+    skill_version = Column(String(30), nullable=False)
+    status = Column(String(30), nullable=False)
+    lifecycle_before = Column(String(20), nullable=False)
+    lifecycle_after = Column(String(20), nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    data_cutoff_time = Column(DateTime, nullable=False)
+    sample_size = Column(Integer, nullable=False, default=0)
+    parameters = Column(JSON, nullable=False, default=dict)
+    metrics = Column(JSON, nullable=False, default=dict)
+    partitions = Column(JSON, nullable=False, default=dict)
+    walk_forward = Column(JSON, nullable=False, default=list)
+    decay_monitor = Column(JSON, nullable=False, default=dict)
+    audit = Column(JSON, nullable=False, default=dict)
+    report_hash = Column(String(64), nullable=False)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class TradingSkillScanSnapshot(Base):
+    """Bounded candidate output after market and sector permission checks."""
+
+    __tablename__ = "trading_skill_scan_snapshots"
+    __table_args__ = (
+        Index("idx_skill_scan_date", "trade_date", "generated_at"),
+        Index("idx_skill_scan_permission", "market_permission", "generated_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    phase = Column(String(30), nullable=False)
+    market_permission = Column(String(20), nullable=False)
+    data_cutoff_time = Column(DateTime, nullable=False)
+    source = Column(String(120), nullable=False)
+    scanned_count = Column(Integer, nullable=False, default=0)
+    candidate_count = Column(Integer, nullable=False, default=0)
+    payload = Column(JSON, nullable=False, default=dict)
+    generated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class RejectedTradingKnowledge(Base):
+    """External trading claims that are explicitly barred from model priors."""
+
+    __tablename__ = "rejected_trading_knowledge"
+
+    knowledge_id = Column(String(80), primary_key=True)
+    claim = Column(Text, nullable=False)
+    rejection_reason = Column(Text, nullable=False)
+    category = Column(String(50), nullable=False)
+    source = Column(String(200))
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class ForecastSnapshotV5(Base):
     """Replayable V5 forecast snapshot with model and data cut-off metadata."""
 

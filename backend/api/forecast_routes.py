@@ -16,8 +16,16 @@ router = APIRouter(prefix="/api/v1")
 
 
 @router.get("/forecast/dashboard")
-async def get_forecast_dashboard(refresh: bool = Query(False)):
-    return {"code": 0, "data": await forecast_v5_service.dashboard(force=refresh)}
+async def get_forecast_dashboard(
+    refresh: bool = Query(False),
+    exclude_star_market: bool = Query(True, description="排除科创板"),
+    exclude_gem: bool = Query(True, description="排除创业板"),
+):
+    return {"code": 0, "data": await forecast_v5_service.dashboard(
+        force=refresh,
+        exclude_star_market=exclude_star_market,
+        exclude_gem=exclude_gem,
+    )}
 
 
 @router.post("/forecast/event-interpretation")
