@@ -664,7 +664,7 @@ function SkillRuntimeStrip({
     <div className="v5-skill-filter-row" aria-label="可交易板块筛选">
       <span className="v5-skill-filter-title">可交易范围</span>
       <label><input type="checkbox" checked={filters.exclude_star_market} disabled={busy} onChange={() => update('exclude_star_market')} />排除科创板</label>
-      <label><input type="checkbox" checked={filters.exclude_gem} disabled={busy} onChange={() => update('exclude_gem')} />排除创业板</label>
+      <label><input type="checkbox" checked={filters.exclude_gem} disabled={busy} onChange={() => update('exclude_gem')} />排除创业板（300/301/302）</label>
       <span className="v5-skill-filter-hint">默认按主板权限扫描；取消勾选后纳入对应板块研究</span>
       {busy && <Loader2 size={12} className="animate-spin text-accent" aria-label="正在重新扫描" />}
     </div>

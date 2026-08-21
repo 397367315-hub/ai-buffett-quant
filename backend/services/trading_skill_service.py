@@ -42,7 +42,7 @@ def _market_segment(code: Any) -> str:
     normalized = str(code or "").upper().replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
     if normalized.startswith(("688", "689")):
         return "科创板"
-    if normalized.startswith(("300", "301")):
+    if normalized.startswith(("300", "301", "302")):
         return "创业板"
     if normalized.startswith(("8", "4")):
         return "北交所"

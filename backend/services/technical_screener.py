@@ -192,7 +192,7 @@ class TechnicalScreenerService:
                 reasons.append("special")
             if config["exclude_star_market"] and code.startswith(("688", "689")):
                 reasons.append("star_market")
-            if config["exclude_gem"] and code.startswith(("300", "301")):
+            if config["exclude_gem"] and code.startswith(("300", "301", "302")):
                 reasons.append("gem")
             if config["exclude_bse"] and code.startswith(("4", "8", "920")):
                 reasons.append("bse")

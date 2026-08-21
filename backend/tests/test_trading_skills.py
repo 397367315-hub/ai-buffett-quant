@@ -75,16 +75,17 @@ def test_board_scope_can_exclude_star_and_gem():
     stocks = [
         {"code": "688001", "name": "科创样本", "change_pct": 3},
         {"code": "300001", "name": "创业样本", "change_pct": 2},
+        {"code": "302132", "name": "新创业样本", "change_pct": 2},
         {"code": "600001", "name": "主板样本", "change_pct": 1},
     ]
     filtered, counts = TradingSkillService._rank_snapshot(stocks)
     assert [item["code"] for item in filtered] == ["600001"]
     assert counts["科创板"] == 1
-    assert counts["创业板"] == 1
+    assert counts["创业板"] == 2
 
     included, counts = TradingSkillService._rank_snapshot(
         stocks, exclude_star_market=False, exclude_gem=False
     )
-    assert {item["code"] for item in included} == {"688001", "300001", "600001"}
+    assert {item["code"] for item in included} == {"688001", "300001", "302132", "600001"}
     assert counts["科创板"] == 0
     assert counts["创业板"] == 0
