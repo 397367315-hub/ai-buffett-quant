@@ -76,6 +76,13 @@ def test_reflexivity_preserves_pressure_dynamics_and_skill_contract():
     assert isinstance(skill["missing_factors"], list)
 
 
+def test_reflexivity_short_history_is_explicitly_unavailable_not_an_exception():
+    result = build_reflexivity_diagnosis(_bars(3), symbol="920059", name="新上市标的")
+    assert result["available"] is False
+    assert result["data_quality"]["history_sessions"] == 3
+    assert result["candidate_type"] == "NO_CLEAR_CANDIDATE"
+
+
 def test_legacy_feature_vector_can_validate_skill_ten_without_fabricating_l2():
     features = build_skill_features(_bars(), context={"sector_return_1d": 0.001})
     result = evaluate_skill("skill_10_behavior_reflexivity", features)
@@ -83,4 +90,3 @@ def test_legacy_feature_vector_can_validate_skill_ten_without_fabricating_l2():
     assert result["direct_order"] is False
     assert result["data_level"] == "DAILY"
     assert "full_liquidity_map" in result["missing_factors"]
-

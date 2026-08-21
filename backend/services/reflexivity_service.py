@@ -26,6 +26,7 @@ from quant.reflexivity_skill import (
     SKILL_VERSION,
     build_reflexivity_diagnosis,
 )
+from quant.trading_skill_features import normalize_daily_bars
 from services.data_collector import collector, is_a_share_market_session, normalize_stock_code, shanghai_now
 
 
@@ -421,15 +422,29 @@ class ReflexivityService:
             except Exception:
                 pass
         diagnoses: list[dict[str, Any]] = []
+        insufficient_history: list[dict[str, Any]] = []
+        full_history_count = 0
         for stock in filtered:
             code = str(stock.get("code"))
             bars = bars_by_code.get(code) or []
             if not bars:
                 continue
             bars = self._append_live_bar(bars, stock, target, snapshot)
+            # New listings can have a few cached sessions but not enough
+            # point-in-time history for the six-dimensional model. Keep the
+            # observation in the quality report without scoring it.
+            valid_bars = normalize_daily_bars(bars, as_of=target)
+            if len(valid_bars) < 21:
+                insufficient_history.append({
+                    "code": code,
+                    "name": stock.get("name") or code,
+                    "history_sessions": len(valid_bars),
+                })
+                continue
+            full_history_count += 1
             context = _context_for_stock(stock, filtered, market_return)
             context["market_state"] = "实时快照" if snapshot.get("is_realtime") else "最近完整交易日"
-            diagnosis = build_reflexivity_diagnosis(bars, as_of=target, context=context, symbol=code, name=stock.get("name") or code, horizon=horizon)
+            diagnosis = build_reflexivity_diagnosis(valid_bars, as_of=target, context=context, symbol=code, name=stock.get("name") or code, horizon=horizon)
             diagnosis["price"] = _num(stock.get("price"))
             diagnosis["change_pct"] = _num(stock.get("change_pct"))
             diagnosis["sector"] = stock.get("sector") or "未分类"
@@ -460,6 +475,9 @@ class ReflexivityService:
             "universe_count": len(source_stocks),
             "data_quality": {
                 "history_coverage": len(bars_by_code),
+                "full_diagnosis_coverage": full_history_count,
+                "insufficient_history_count": len(insufficient_history),
+                "insufficient_history_examples": insufficient_history[:20],
                 "minimum_history_sessions": 21,
                 "is_realtime": bool(snapshot.get("is_realtime")),
                 "warnings": [

@@ -488,8 +488,8 @@ def _point_snapshot(rows: list[dict[str, Any]], context: dict[str, Any] | None =
     ]
     forced_buy, buy_weight = _weighted(fomo_parts)
     local_panic = _weighted([
-        (_scale(-r1, 0.015, 0.08), 0.15),
-        (_scale(-r3, 0.03, 0.15), 0.15),
+        (_scale(-r1 if r1 is not None else None, 0.015, 0.08), 0.15),
+        (_scale(-r3 if r3 is not None else None, 0.03, 0.15), 0.15),
         (_scale(turnover_ratio, 1.0, 3.0), 0.14),
         (_scale(pressure, 55, 95), 0.16),
         (_scale(panic, 45, 95), 0.16),

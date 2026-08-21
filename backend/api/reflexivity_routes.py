@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 
 from services.reflexivity_service import reflexivity_service
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/v1/trading-skills/reflexivity", tags=["Skill 10行为反身性"])
@@ -39,7 +43,7 @@ async def scan_reflexivity(
         )
         return {"code": 0, "data": data}
     except Exception as exc:
-        print(f"Reflexivity scan failed: {type(exc).__name__}")
+        logger.exception("Reflexivity scan failed")
         raise HTTPException(status_code=503, detail="行为反身性扫描暂时不可用，请稍后重试") from exc
 
 
@@ -92,7 +96,7 @@ async def get_reflexivity(symbol: str, as_of: str | None = Query(None), refresh:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        print(f"Reflexivity diagnosis failed for {symbol}: {type(exc).__name__}")
+        logger.exception("Reflexivity diagnosis failed for %s", symbol)
         raise HTTPException(status_code=503, detail="行为反身性诊断暂时不可用，请稍后重试") from exc
 
 
@@ -108,4 +112,3 @@ for _route in router.routes:
             name=f"skills_alias_{_route.name}",
             operation_id=f"skills_alias_{_route.operation_id}" if _route.operation_id else None,
         )
-
