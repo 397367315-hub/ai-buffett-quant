@@ -240,6 +240,90 @@ interface MiddaySession extends ResearchSessionSummary {
   }>;
 }
 
+function isRecord(value: unknown): value is Record<string, any> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function arrayValue<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+function normalizeMiddayReport(value: unknown): MiddayReport {
+  const source = isRecord(value) ? value : {};
+  const anomalies = isRecord(source.stock_anomalies) ? source.stock_anomalies : {};
+  const quality = isRecord(source.data_quality) ? source.data_quality : {};
+  const validation = isRecord(source.validation) ? source.validation : {};
+  const preview = isRecord(source.tail_preview) ? source.tail_preview : {};
+  const tracking = isRecord(source.tracking) ? source.tracking : {};
+  const fund = isRecord(source.fund_behaviour) ? source.fund_behaviour : {};
+  const ai = isRecord(source.ai_synthesis) ? source.ai_synthesis : {};
+
+  return {
+    meta: isRecord(source.meta) ? source.meta as MiddayReport['meta'] : {},
+    conclusion: isRecord(source.conclusion) ? source.conclusion as MiddayReport['conclusion'] : {},
+    morning_autopsy: isRecord(source.morning_autopsy) ? source.morning_autopsy as MiddayReport['morning_autopsy'] : {},
+    principal_conflict: isRecord(source.principal_conflict) ? source.principal_conflict as MiddayReport['principal_conflict'] : {},
+    sector_structures: arrayValue<SectorStructure>(source.sector_structures),
+    stock_anomalies: {
+      contrarian_strength: arrayValue<StockRow>(anomalies.contrarian_strength),
+      alpha_strengthening: arrayValue<StockRow>(anomalies.alpha_strengthening),
+      beta_weak: arrayValue<StockRow>(anomalies.beta_weak),
+      high_position_negative_feedback: arrayValue<StockRow>(anomalies.high_position_negative_feedback),
+      counts: isRecord(anomalies.counts) ? anomalies.counts as Record<AnomalyKey, number> : {
+        contrarian_strength: 0,
+        alpha_strengthening: 0,
+        beta_weak: 0,
+        high_position_negative_feedback: 0,
+      },
+    },
+    fund_behaviour: {
+      patterns: arrayValue<FundBehaviour & { count: number }>(fund.patterns) as Array<{ state: string; label: string; count: number }>,
+      notable: arrayValue<StockRow>(fund.notable),
+      method: typeof fund.method === 'string' ? fund.method : undefined,
+    },
+    afternoon_scenarios: arrayValue<Scenario>(source.afternoon_scenarios),
+    tail_preview: {
+      ...preview,
+      candidates: arrayValue<PreviewStock>(preview.candidates),
+    } as MiddayReport['tail_preview'],
+    tracking: {
+      ...tracking,
+      checkpoints: arrayValue<Checkpoint>(tracking.checkpoints),
+    },
+    validation: validation as MiddayReport['validation'],
+    research_chain: arrayValue<ResearchChainItem>(source.research_chain),
+    data_quality: {
+      ...quality,
+      missing_fields: arrayValue<string>(quality.missing_fields),
+    },
+    agent_runs: arrayValue<{ agent: string; status: string; output: string }>(source.agent_runs),
+    ai_synthesis: {
+      ...ai,
+      narrative: typeof ai.narrative === 'string' ? ai.narrative : null,
+    },
+  };
+}
+
+function normalizeMiddaySession(value: unknown): MiddaySession | null {
+  if (!isRecord(value) || typeof value.id !== 'string') return null;
+  const report = isRecord(value.report) && Object.keys(value.report).length
+    ? normalizeMiddayReport(value.report)
+    : undefined;
+  return {
+    ...(value as MiddaySession),
+    mode: typeof value.mode === 'string' ? value.mode : 'midday',
+    status: typeof value.status === 'string' ? value.status : 'DRAFT',
+    stage: typeof value.stage === 'string' ? value.stage : '等待午间研究任务',
+    progress: finite(value.progress) ? value.progress : 0,
+    source_data_date: typeof value.source_data_date === 'string' ? value.source_data_date : null,
+    created_at: typeof value.created_at === 'string' ? value.created_at : null,
+    completed_at: typeof value.completed_at === 'string' ? value.completed_at : null,
+    error: typeof value.error === 'string' ? value.error : null,
+    report,
+    hypotheses: arrayValue<MiddaySession['hypotheses'] extends Array<infer T> ? T : never>(value.hypotheses),
+  };
+}
+
 const STATUS_LABELS: Record<string, string> = {
   DRAFT: '等待运行', RUNNING: '研究中', COMPLETED: '研究完成', FAILED: '运行失败',
   CORRECT: '符合', PARTIAL: '部分符合', WRONG: '不符合', PENDING: '待盘后验证',
@@ -321,8 +405,10 @@ export default function MiddayResearchPage() {
     if (showLoader) setDetailLoading(true);
     try {
       const response = await apiFetch<{ data: MiddaySession }>(`/research/midday/${encodeURIComponent(id)}`);
-      setSession(response.data);
-      return response.data;
+      const normalized = normalizeMiddaySession(response.data);
+      if (!normalized) throw new Error('午间研究记录为空或格式已失效');
+      setSession(normalized);
+      return normalized;
     } finally {
       if (showLoader) setDetailLoading(false);
     }
@@ -330,7 +416,7 @@ export default function MiddayResearchPage() {
 
   const loadHistory = useCallback(async () => {
     const response = await apiFetch<{ data: { sessions: ResearchSessionSummary[] } }>('/research/midday?limit=40');
-    setSessions(response.data.sessions || []);
+    setSessions(arrayValue<ResearchSessionSummary>(response.data?.sessions));
   }, []);
 
   const bootstrap = useCallback(async () => {
@@ -341,8 +427,8 @@ export default function MiddayResearchPage() {
         apiFetch<{ data: MiddaySession | null }>('/research/midday/latest'),
         apiFetch<{ data: { sessions: ResearchSessionSummary[] } }>('/research/midday?limit=40'),
       ]);
-      setSession(latest.data || null);
-      setSessions(history.data.sessions || []);
+      setSession(normalizeMiddaySession(latest.data));
+      setSessions(arrayValue<ResearchSessionSummary>(history.data?.sessions));
     } catch (caught) {
       setError(friendlyApiError(caught, '午间研究台加载失败'));
     } finally {
@@ -376,7 +462,9 @@ export default function MiddayResearchPage() {
         body: JSON.stringify({ force }),
         timeoutMs: 60000,
       });
-      setSession(response.data);
+      const normalized = normalizeMiddaySession(response.data);
+      if (!normalized) throw new Error('午间研究任务返回为空');
+      setSession(normalized);
       await loadHistory();
     } catch (caught) {
       setError(friendlyApiError(caught, '午间研究启动失败'));
@@ -463,7 +551,15 @@ export default function MiddayResearchPage() {
       {report && tab === 'sectors' && <SectorView sectors={report.sector_structures || []} />}
       {report && tab === 'stocks' && <StockView anomalies={report.stock_anomalies} fund={report.fund_behaviour} />}
       {report && tab === 'preview' && <PreviewView preview={report.tail_preview} tracking={report.tracking} validation={report.validation} />}
-      {tab === 'history' && <HistoryView sessions={sessions} activeId={session?.id} onSelect={async (id) => { setError(''); await loadSession(id, true); setTab('overview'); }} />}
+      {tab === 'history' && <HistoryView sessions={sessions} activeId={session?.id} onSelect={async (id) => {
+        setError('');
+        try {
+          await loadSession(id, true);
+          setTab('overview');
+        } catch (caught) {
+          setError(friendlyApiError(caught, '历史午间研究读取失败'));
+        }
+      }} />}
 
       <style jsx global>{`
         .command-button,.command-button-primary{display:inline-flex;min-height:34px;align-items:center;justify-content:center;gap:6px;border-radius:5px;padding:7px 11px;font-size:12px;transition:color .15s,background .15s,border-color .15s}.command-button{border:1px solid #30363D;color:#C9D1D9;background:#161B22}.command-button:hover{border-color:#58A6FF;color:#58A6FF}.command-button-primary{border:1px solid #1F6FEB;color:#fff;background:#1F6FEB}.command-button:disabled,.command-button-primary:disabled{cursor:not-allowed;opacity:.5}.icon-button{display:grid;width:34px;height:34px;place-items:center;border:1px solid #30363D;border-radius:5px;color:#8B949E}.icon-button:hover{border-color:#58A6FF;color:#58A6FF}

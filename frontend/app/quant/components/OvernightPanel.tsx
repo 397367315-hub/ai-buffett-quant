@@ -35,6 +35,12 @@ interface Candidate {
   tail_qualified?: boolean;
   awaiting_auction?: boolean;
   auction_passed?: boolean | null;
+  research_only?: boolean;
+  research_qualified?: boolean;
+  research_status?: string;
+  source_strategy_id?: string;
+  source_strategy_name?: string;
+  source_entry_run_id?: number;
   failed_reasons: string[];
   unavailable_reasons: string[];
   conditions: Condition[];
@@ -69,6 +75,7 @@ interface OvernightRun {
   error: string | null;
   created_at: string | null;
   finished_at: string | null;
+  research_only?: boolean;
 }
 
 interface Position {
@@ -101,10 +108,12 @@ interface Dashboard {
     factor_schema: Array<Record<string, any>>;
     validation_note: string;
   };
+  auction_strategy?: Record<string, any>;
   active_run: OvernightRun | null;
   latest_entry_run: OvernightRun | null;
   latest_auction_run: OvernightRun | null;
   latest_preliminary_run: OvernightRun | null;
+  latest_research_run?: OvernightRun | null;
   runs: OvernightRun[];
   positions: Position[];
   open_positions: Position[];
@@ -190,10 +199,17 @@ export default function OvernightPanel() {
     return () => window.clearInterval(timer);
   }, [data?.active_run?.id, data?.active_run?.status, load]);
 
-  const run = async (stage: string) => {
+  const run = async (stage: string, options: { strategyId?: string; researchOnly?: boolean } = {}) => {
     setSubmitting(stage); setError(null);
     try {
-      await apiFetch('/quant/overnight/runs', { method: 'POST', body: JSON.stringify({ stage, strategy_id: data?.strategy.id }) });
+      await apiFetch('/quant/overnight/runs', {
+        method: 'POST',
+        body: JSON.stringify({
+          stage,
+          strategy_id: options.strategyId ?? data?.strategy.id,
+          research_only: Boolean(options.researchOnly),
+        }),
+      });
       await load(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '策略任务提交失败');
@@ -253,7 +269,7 @@ export default function OvernightPanel() {
     return { ...current, [key]: values };
   });
 
-  const latest = [data?.latest_auction_run, data?.latest_entry_run, data?.latest_preliminary_run]
+  const latest = [data?.latest_research_run, data?.latest_auction_run, data?.latest_entry_run, data?.latest_preliminary_run]
     .filter((item): item is OvernightRun => Boolean(item))
     .sort((left, right) => right.id - left.id)[0];
   const candidates = useMemo(() => latest?.candidates || [], [latest]);
@@ -267,8 +283,9 @@ export default function OvernightPanel() {
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={() => run('preliminary')} disabled={Boolean(active) || Boolean(submitting)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-border text-text-secondary rounded-md hover:border-accent hover:text-text disabled:opacity-50"><RefreshCw size={14} className={submitting === 'preliminary' ? 'animate-spin' : ''} />预扫描</button>
         <button type="button" onClick={() => run('entry')} disabled={Boolean(active) || Boolean(submitting)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs bg-accent text-white rounded-md disabled:opacity-50"><Play size={14} />尾盘复核</button>
-        <button type="button" onClick={() => run('auction')} disabled={Boolean(active) || Boolean(submitting) || !data?.strategy.requires_auction_confirmation} title="仅竞价确认版可用" className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-accent/60 text-accent rounded-md disabled:opacity-40"><Clock3 size={14} className={submitting === 'auction' ? 'animate-pulse' : ''} />AI竞价盯盘</button>
+        <button type="button" onClick={() => run('auction', { strategyId: data?.auction_strategy?.id || 'overnight_auction_confirm_v1' })} disabled={Boolean(submitting)} title="独立于当前一夜策略的竞价 Agent" className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-accent/60 text-accent rounded-md disabled:opacity-40"><Clock3 size={14} className={submitting === 'auction' ? 'animate-pulse' : ''} />AI竞价盯盘</button>
         <button type="button" onClick={() => run('exit')} disabled={Boolean(active) || Boolean(submitting)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-up/50 text-up rounded-md disabled:opacity-50"><LogOut size={14} />退出检查</button>
+        <button type="button" onClick={() => run('preliminary', { researchOnly: true })} disabled={Boolean(submitting)} title="使用最近完整缓存进行研究，不建立模拟仓位" className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-warn/60 text-warn rounded-md disabled:opacity-40"><Database size={14} />缓存研究</button>
       </div>
     </header>
 
@@ -321,7 +338,7 @@ export default function OvernightPanel() {
     {data?.loss_alert?.warning && <section className="border border-warn/50 bg-[#D2992218] rounded-md p-3 text-xs text-warn flex gap-2"><AlertTriangle size={15} className="shrink-0" /><div><div className="font-semibold">连续亏损提醒</div><div className="mt-1 text-text-secondary">{data.loss_alert.reason} 当前行情扫描、候选观察和人工操作保持开放。</div></div></section>}
     {active && <section className="border border-accent/50 rounded-md p-3"><div className="flex justify-between gap-3 text-xs"><span className="text-text flex items-center gap-2"><Loader2 size={14} className="animate-spin text-accent" />{active.message}</span><span className="font-mono text-accent">{active.progress}%</span></div><div className="h-1.5 bg-[#21262D] mt-2 overflow-hidden rounded"><div className="h-full bg-accent transition-all" style={{ width: `${Math.max(3, active.progress)}%` }} /></div></section>}
 
-    {data?.strategy.requires_auction_confirmation && <section className="border border-accent/40 rounded-md p-3"><div className="flex flex-wrap items-center gap-2"><CheckCircle2 size={15} className="text-accent" /><h3 className="text-sm font-semibold text-text">AI竞价盯盘 Agent</h3><span className="text-[11px] text-text-secondary">次日09:24-09:27 · 竞价量比严格&gt;{data.strategy.auction_volume_ratio_min ?? 3} · 高开{data.strategy.auction_high_open_pct?.[0] ?? 2}%-{data.strategy.auction_high_open_pct?.[1] ?? 5}%双条件</span></div>{data.latest_auction_run ? <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-secondary"><span>{data.latest_auction_run.message}</span><span>覆盖 {(data.latest_auction_run.data_quality?.auction?.covered ?? 0)}只</span><span>通过 {(data.latest_auction_run.data_quality?.auction?.passed ?? 0)}只</span><span className={data.latest_auction_run.is_realtime ? 'text-up' : 'text-warn'}>{data.latest_auction_run.is_realtime ? '实时竞价' : '无可执行实时竞价'}</span></div> : <div className="mt-2 text-xs text-text-secondary">尾盘候选生成后，系统会在下一交易日竞价窗口自动检查；无实时竞价时不建仓。</div>}</section>}
+    {data && <section className="border border-accent/40 rounded-md p-3"><div className="flex flex-wrap items-center gap-2"><CheckCircle2 size={15} className="text-accent" /><h3 className="text-sm font-semibold text-text">AI竞价盯盘 Agent</h3><span className="text-[11px] text-text-secondary">独立于当前一夜策略 · 次日09:24-09:27 · 量比严格&gt;{data.auction_strategy?.auction_volume_ratio_min ?? 3} · 高开{data.auction_strategy?.auction_high_open_pct?.[0] ?? 2}%-{data.auction_strategy?.auction_high_open_pct?.[1] ?? 5}%双条件</span></div>{data.latest_auction_run ? <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-text-secondary"><span>{data.latest_auction_run.message}</span><span>覆盖 {(data.latest_auction_run.data_quality?.auction?.covered ?? 0)}只</span><span>通过 {(data.latest_auction_run.data_quality?.auction?.passed ?? 0)}只</span><span className={data.latest_auction_run.is_realtime ? 'text-up' : 'text-warn'}>{data.latest_auction_run.is_realtime ? '实时竞价' : '当前无可执行实时竞价'}</span></div> : <div className="mt-2 text-xs text-text-secondary">尾盘候选生成后，Agent会在下一交易日独立检查；竞价数据缺失时不建仓。</div>}</section>}
 
     {data && <section className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 border border-border rounded-md divide-x divide-y xl:divide-y-0 divide-border">
       <Metric label="开放仓位" value={`${data.performance.open}只`} />
@@ -344,8 +361,9 @@ export default function OvernightPanel() {
 
     {latest && <section className="border border-border rounded-md overflow-hidden">
       <div className="px-3 py-2.5 border-b border-border flex flex-wrap items-center gap-x-4 gap-y-1"><h3 className="text-sm font-semibold text-text">最近扫描</h3><span className="text-xs text-text-secondary">{stageLabel[latest.stage] || latest.stage} · {latest.message}</span><span className="sm:ml-auto text-xs font-mono text-text-secondary">{latest.data_date || '--'}</span></div>
-      <div className="px-3 py-2 text-xs text-text-secondary border-b border-border flex flex-wrap gap-x-4 gap-y-1"><span>扫描 {latest.scanned_count}只</span><span>静态通过 {latest.prefiltered_count}只</span><span>最终合格 {latest.qualified_count}只</span><span className={latest.is_realtime ? 'text-up' : 'text-warn'}>{latest.is_realtime ? '当日实时' : '非实时/不可执行'}</span></div>
-      {candidates.length ? <div className="overflow-x-auto"><table className="w-full min-w-[1120px] text-xs"><thead className="text-text-secondary bg-[#161B22]"><tr><th className="text-left px-3 py-2">股票</th><th className="text-right px-3">评分</th><th className="text-right px-3">涨幅</th><th className="text-right px-3">量比</th><th className="text-right px-3">换手</th><th className="text-right px-3">市值</th><th className="text-left px-3">状态</th><th className="text-left px-3">分钟/竞价证据</th><th className="text-right px-3">个人池</th></tr></thead><tbody>{candidates.map((candidate) => <CandidateRow key={candidate.code} candidate={candidate} />)}</tbody></table></div> : <Empty text="本轮没有股票通过3%-5%涨幅、量比、换手率和市值预筛" />}
+      <div className="px-3 py-2 text-xs text-text-secondary border-b border-border flex flex-wrap gap-x-4 gap-y-1"><span>扫描 {latest.scanned_count}只</span><span>静态通过 {latest.prefiltered_count}只</span><span>最终合格 {latest.qualified_count}只</span>{latest.data_quality?.research_only && <span className="text-warn">缓存研究 · 观察候选 {latest.data_quality?.research_candidate_count ?? 0}只</span>}<span className={latest.is_realtime ? 'text-up' : 'text-warn'}>{latest.is_realtime ? '当日实时，可按规则执行' : '非实时，仅供观察'}</span></div>
+      <ScanDiagnostics run={latest} />
+      {candidates.length ? <div className="overflow-x-auto"><table className="w-full min-w-[1120px] text-xs"><thead className="text-text-secondary bg-[#161B22]"><tr><th className="text-left px-3 py-2">股票</th><th className="text-right px-3">评分</th><th className="text-right px-3">涨幅</th><th className="text-right px-3">量比</th><th className="text-right px-3">换手</th><th className="text-right px-3">市值</th><th className="text-left px-3">状态</th><th className="text-left px-3">分钟/竞价证据</th><th className="text-right px-3">个人池</th></tr></thead><tbody>{candidates.map((candidate) => <CandidateRow key={candidate.code} candidate={candidate} />)}</tbody></table></div> : <Empty text={latest.data_quality?.research_only ? '缓存中没有满足当前静态条件的观察候选，请查看上方淘汰原因' : '本轮没有股票通过预筛，具体原因见上方扫描诊断'} />}
     </section>}
 
     {data && <section className="border border-border rounded-md overflow-hidden">
@@ -389,9 +407,29 @@ function Empty({ text }: { text: string }) {
   return <div className="py-12 text-center text-xs text-text-secondary">{text}</div>;
 }
 
+function diagnosticEntries(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  return Object.entries(value as Record<string, unknown>)
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([, left], [, right]) => Number(right) - Number(left));
+}
+
+function DiagnosticList({ label, value }: { label: string; value: unknown }) {
+  const entries = diagnosticEntries(value);
+  return <div className="min-w-0"><div className="text-[11px] font-medium text-text">{label}</div>{entries.length ? <div className="mt-1.5 space-y-1">{entries.slice(0, 6).map(([reason, count]) => <div key={reason} className="flex items-start justify-between gap-3 text-[11px] leading-4"><span className="min-w-0 text-text-secondary">{reason}</span><span className="shrink-0 font-mono text-warn">{String(count)}只</span></div>)}{entries.length > 6 && <div className="text-[10px] text-text-secondary">另有 {entries.length - 6} 项，详见后端审计</div>}</div> : <div className="mt-1.5 text-[11px] text-text-secondary">暂无记录</div>}</div>;
+}
+
+function ScanDiagnostics({ run }: { run: OvernightRun }) {
+  const reasons = run.data_quality?.rejection_reasons || {};
+  const researchOnly = Boolean(run.data_quality?.research_only || run.research_only);
+  return <div className="border-b border-border bg-[#0D1117] px-3 py-3"><div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]"><span className="font-medium text-text">扫描诊断</span><span className={researchOnly ? 'text-warn' : run.is_realtime ? 'text-up' : 'text-warn'}>{researchOnly ? '缓存研究模式：不建立模拟仓位' : run.is_realtime ? '实时执行模式' : '数据不可执行'}</span>{run.data_quality?.execution_allowed === false && <span className="text-text-secondary">执行权限：关闭</span>}<span className="text-text-secondary">运行 {run.id} · {time(run.finished_at || run.created_at)}</span></div><div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3"><DiagnosticList label="静态预筛淘汰" value={reasons.prefilter} /><DiagnosticList label="日线规则未通过" value={reasons.daily_failed} /><DiagnosticList label="证据待补/未覆盖" value={reasons.evidence_pending} /></div>{researchOnly && <p className="mt-3 border-l-2 border-warn pl-2 text-[11px] leading-5 text-warn">缓存研究只回答“哪些股票值得继续观察”，不能替代当日14:52-14:59分钟行情、公告和风控校验；真实尾盘扫描仍会重新核验全部强制条件。</p>}</div>;
+}
+
 function CandidateRow({ candidate }: { candidate: Candidate }) {
   const auctionChecked = candidate.auction_passed !== undefined && candidate.auction_passed !== null;
-  const state = candidate.selected_for_entry
+  const state = candidate.research_qualified
+    ? (candidate.daily_passed ? '缓存研究候选，待实时复核' : '近似观察候选，存在硬约束')
+    : candidate.selected_for_entry
     ? '竞价确认后已模拟买入'
     : candidate.awaiting_auction
       ? '等待次日竞价'
@@ -400,9 +438,9 @@ function CandidateRow({ candidate }: { candidate: Candidate }) {
         : candidate.auction_passed === false
           ? (candidate.unavailable_reasons.length ? '竞价数据不足' : '竞价未通过，放弃')
           : candidate.qualified ? '合格未入场' : candidate.daily_passed && candidate.minute_passed == null ? '待分钟复核' : candidate.unavailable_reasons.length ? '数据不足' : '未通过';
-  const stateClass = candidate.selected_for_entry || candidate.auction_passed === true ? 'text-up border-up/50' : candidate.awaiting_auction ? 'text-accent border-accent/50' : candidate.unavailable_reasons.length ? 'text-warn border-warn/50' : 'text-down border-down/50';
+  const stateClass = candidate.research_qualified ? 'text-warn border-warn/50' : candidate.selected_for_entry || candidate.auction_passed === true ? 'text-up border-up/50' : candidate.awaiting_auction ? 'text-accent border-accent/50' : candidate.unavailable_reasons.length ? 'text-warn border-warn/50' : 'text-down border-down/50';
   const auction = candidate.auction;
-  return <tr className="border-t border-border/70 align-top"><td className="px-3 py-3"><StockKlineButton code={candidate.code} name={candidate.name} className="text-text font-medium">{candidate.name}<span className="font-mono text-text-secondary ml-2">{candidate.code}</span></StockKlineButton><div className="text-[10px] text-text-secondary mt-1">{candidate.sector || '板块未返回'}</div></td><td className="px-3 py-3 text-right font-mono text-text">{number(candidate.score, 1)}</td><td className={`px-3 py-3 text-right font-mono ${pnlClass(candidate.change_pct)}`}>{signed(candidate.change_pct)}</td><td className="px-3 py-3 text-right font-mono text-text">{number(candidate.volume_ratio)}</td><td className="px-3 py-3 text-right font-mono text-text">{number(candidate.turnover)}%</td><td className="px-3 py-3 text-right font-mono text-text">{number(candidate.market_cap_yi, 1)}亿</td><td className="px-3 py-3"><span className={`inline-block border rounded px-1.5 py-0.5 ${stateClass}`}>{state}</span><details className="mt-2"><summary className="text-accent cursor-pointer">规则审计</summary><div className="mt-2 w-[320px] space-y-1.5">{candidate.conditions.map((item) => <div key={item.key} className="grid grid-cols-[14px_1fr] gap-1.5"><span className={item.status === 'passed' ? 'text-up' : item.status === 'failed' ? 'text-down' : 'text-warn'}>{item.status === 'passed' ? '✓' : item.status === 'failed' ? '×' : '?'}</span><div><div className="text-text">{item.label}：{actualText(item.actual)}</div><div className="text-[10px] text-text-secondary">要求 {item.expected} · {item.source}</div>{item.detail && <div className="text-[10px] text-text-secondary">{item.detail}</div>}</div></div>)}</div></details></td><td className="px-3 py-3 text-text-secondary"><div>尾盘分钟：{candidate.minute?.latest_bar_at ? time(candidate.minute.latest_bar_at) : '--'}</div><div className="font-mono mt-1">尾盘成交参考 {candidate.minute?.entry_price ? `¥${number(candidate.minute.entry_price, 4)}` : '--'}</div>{auctionChecked && <div className="mt-2 border-t border-border/70 pt-2"><div className={candidate.auction_passed ? 'text-up' : 'text-down'}>竞价：{candidate.auction_passed ? '通过' : '放弃'}</div><div className="font-mono mt-1">量比&gt;{number(auction?.auction_volume_ratio)} · 高开{signed(auction?.high_open_pct)}</div><div className="mt-1">报价 {auction?.quote_at ? time(auction.quote_at) : '--'} · {auction?.source || '无来源'}</div><div className="mt-1 text-[10px] text-text-secondary">{auction?.agent_decision?.reason || 'AI竞价盯盘Agent未形成可执行结论'}</div></div>}</td><td className="px-3 py-3 text-right"><AddToPersonalPoolButton code={candidate.code} name={candidate.name} industry={candidate.sector} thesis={`一夜持股：评分${candidate.score}，${state}`} source="quant_overnight" compact /></td></tr>;
+  return <tr className="border-t border-border/70 align-top"><td className="px-3 py-3"><StockKlineButton code={candidate.code} name={candidate.name} className="text-text font-medium">{candidate.name}<span className="font-mono text-text-secondary ml-2">{candidate.code}</span></StockKlineButton><div className="text-[10px] text-text-secondary mt-1">{candidate.sector || '板块未返回'}</div></td><td className="px-3 py-3 text-right font-mono text-text">{number(candidate.score, 1)}</td><td className={`px-3 py-3 text-right font-mono ${pnlClass(candidate.change_pct)}`}>{signed(candidate.change_pct)}</td><td className="px-3 py-3 text-right font-mono text-text">{number(candidate.volume_ratio)}</td><td className="px-3 py-3 text-right font-mono text-text">{number(candidate.turnover)}%</td><td className="px-3 py-3 text-right font-mono text-text">{number(candidate.market_cap_yi, 1)}亿</td><td className="px-3 py-3"><span className={`inline-block border rounded px-1.5 py-0.5 ${stateClass}`}>{state}</span>{candidate.research_status && <div className="mt-1 text-[10px] leading-4 text-warn">{candidate.research_status}</div>}<details className="mt-2"><summary className="text-accent cursor-pointer">规则审计</summary><div className="mt-2 w-[320px] space-y-1.5">{candidate.conditions.map((item) => <div key={item.key} className="grid grid-cols-[14px_1fr] gap-1.5"><span className={item.status === 'passed' ? 'text-up' : item.status === 'failed' ? 'text-down' : 'text-warn'}>{item.status === 'passed' ? '✓' : item.status === 'failed' ? '×' : '?'}</span><div><div className="text-text">{item.label}：{actualText(item.actual)}</div><div className="text-[10px] text-text-secondary">要求 {item.expected} · {item.source}</div>{item.detail && <div className="text-[10px] text-text-secondary">{item.detail}</div>}</div></div>)}</div></details></td><td className="px-3 py-3 text-text-secondary"><div>尾盘分钟：{candidate.minute?.latest_bar_at ? time(candidate.minute.latest_bar_at) : '--'}</div><div className="font-mono mt-1">尾盘成交参考 {candidate.minute?.entry_price ? `¥${number(candidate.minute.entry_price, 4)}` : '--'}</div>{candidate.source_strategy_name && <div className="mt-1 text-[10px] text-text-secondary">候选来源：{candidate.source_strategy_name}</div>}{auctionChecked && <div className="mt-2 border-t border-border/70 pt-2"><div className={candidate.auction_passed ? 'text-up' : 'text-down'}>竞价：{candidate.auction_passed ? '通过' : '放弃'}</div><div className="font-mono mt-1">量比&gt;{number(auction?.auction_volume_ratio)} · 高开{signed(auction?.high_open_pct)}</div><div className="mt-1">报价 {auction?.quote_at ? time(auction.quote_at) : '--'} · {auction?.source || '无来源'}</div><div className="mt-1 text-[10px] text-text-secondary">{auction?.agent_decision?.reason || 'AI竞价盯盘Agent未形成可执行结论'}</div></div>}</td><td className="px-3 py-3 text-right"><AddToPersonalPoolButton code={candidate.code} name={candidate.name} industry={candidate.sector} thesis={`一夜持股：评分${candidate.score}，${state}`} source="quant_overnight" compact /></td></tr>;
 }
 
 function PositionRow({ position }: { position: Position }) {
