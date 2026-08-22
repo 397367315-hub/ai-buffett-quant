@@ -567,6 +567,37 @@ body {
   .v5-footer { display: grid; }
 }
 
+/* V5.1 evidence and event-radar additions.  They stay compact so the new
+   evidence layer does not compete with the forecast timeline. */
+.v5-evidence-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 8px; margin-top: 8px; }
+.v5-evidence-grid > * { min-width: 0; }
+.v5-v51-panel, .v5-radar-panel { min-width: 0; }
+.v5-v51-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.v5-v51-metrics > div { min-width: 0; border-right: 1px solid #202d3a; padding: 13px 12px; }
+.v5-v51-metrics > div:last-child { border-right: 0; }
+.v5-v51-metrics span, .v5-v51-metrics small { display: block; color: #8d98a6; font-size: 9px; }
+.v5-v51-metrics strong { display: block; overflow: hidden; margin-top: 7px; color: #f2f4f7; font-family: Inter, 'SF Pro Display', sans-serif; font-size: 15px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.v5-v51-metrics small { margin-top: 5px; color: #667085; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v5-radar-summary { display: flex; min-height: 32px; align-items: center; gap: 12px; overflow-x: auto; border-bottom: 1px solid #202d3a; padding: 0 12px; color: #748191; font-size: 9px; white-space: nowrap; }
+.v5-radar-summary > span { display: inline-flex; align-items: center; gap: 5px; }
+.v5-radar-live-dot { width: 5px; height: 5px; border-radius: 50%; background: #3fb950; }
+.v5-radar-event { display: flex; width: 100%; min-width: 0; align-items: center; gap: 9px; border: 0; background: transparent; padding: 10px 12px; color: inherit; cursor: pointer; text-align: left; }
+.v5-radar-event:hover { background: rgba(76, 141, 255, 0.045); }
+.v5-radar-level { display: inline-grid; width: 19px; height: 19px; flex: 0 0 19px; place-items: center; border: 1px solid #344352; border-radius: 3px; color: #9aa4b2; font-family: Inter, sans-serif; font-size: 9px; }
+.v5-radar-level.level-s { border-color: rgba(248, 81, 73, 0.55); color: #f85149; }
+.v5-radar-level.level-a { border-color: rgba(217, 164, 65, 0.55); color: #d9a441; }
+.v5-radar-level.level-b { border-color: rgba(76, 141, 255, 0.45); color: #5a9bff; }
+.v5-radar-detail { border-top: 1px solid #263440; background: #121d28; padding: 13px 14px; }
+.v5-radar-interpretation { white-space: pre-line; border-left: 2px solid #4c8dff; margin-top: 10px; padding-left: 10px; color: #c6ced7; font-size: 11px; line-height: 1.7; }
+@media (max-width: 900px) {
+  .v5-evidence-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .v5-v51-metrics > div { padding: 11px 9px; }
+  .v5-v51-metrics strong { font-size: 13px; }
+  .v5-radar-summary { gap: 9px; }
+}
+
 /* V5 reference terminal skin: dense, restrained, and desktop-first. */
 .v5-page {
   min-height: 100vh;

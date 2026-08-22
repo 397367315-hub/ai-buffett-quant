@@ -2,7 +2,7 @@
 
 Historical fields that were never captured cannot be reconstructed faithfully.
 This service therefore records the full observed universe at each verified
-quote date and the 09:25 auction from deployment onward, with explicit coverage
+quote date and 09:15-09:27 auction observations from deployment onward, with explicit coverage
 dates for the research workspace.
 """
 
@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from database import async_session
-from models import StockAuctionSnapshot, StockUniverseSnapshot, StockValuationHistory
+from models import AuctionSnapshotV51, StockAuctionSnapshot, StockUniverseSnapshot, StockValuationHistory
 from quant.market_cache import load_quant_market_snapshot
 from services.data_collector import collector, shanghai_now
 
@@ -188,11 +188,18 @@ class PITMarketDataService:
         return list(snapshot.get("stocks") or []), _parse_date(snapshot.get("data_date"))
 
     async def capture_auction(self) -> dict[str, Any]:
-        """Capture one full-market 09:25 Tencent quote snapshot."""
+        """Capture one timestamped full-market call-auction observation.
+
+        The public quote feed may not expose every requested field at every
+        point. We retain only fields actually returned by the provider. The
+        legacy stock-auction table is updated only for the 09:24-09:27
+        confirmation window so existing overnight logic does not consume an
+        early pre-call snapshot.
+        """
         now = shanghai_now()
         minute = now.hour * 60 + now.minute
-        if now.weekday() >= 5 or not (9 * 60 + 24 <= minute <= 9 * 60 + 27):
-            return {"status": "outside_window", "written": 0, "window": "09:24-09:27"}
+        if now.weekday() >= 5 or not (9 * 60 + 15 <= minute <= 9 * 60 + 27):
+            return {"status": "outside_window", "written": 0, "window": "09:15-09:27"}
 
         async with self._auction_lock:
             universe, _ = await self._universe_for_auction()
@@ -224,7 +231,7 @@ class PITMarketDataService:
                 if quote_at is None or quote_at.date() != now.date():
                     continue
                 quote_minute = quote_at.hour * 60 + quote_at.minute
-                if not (9 * 60 + 24 <= quote_minute <= 9 * 60 + 27):
+                if not (9 * 60 + 15 <= quote_minute <= 9 * 60 + 27):
                     continue
                 price = _number(quote.get("price"))
                 previous_close = _number(quote.get("previous_close"))
@@ -251,17 +258,51 @@ class PITMarketDataService:
                     "is_realtime": True,
                     "updated_at": datetime.utcnow(),
                 })
+            legacy_rows = [
+                item for item in rows
+                if 9 * 60 + 24 <= item["quote_at"].hour * 60 + item["quote_at"].minute <= 9 * 60 + 27
+            ]
             written = await self._upsert(
-                StockAuctionSnapshot, rows, ["stock_code", "trade_date"],
+                StockAuctionSnapshot, legacy_rows, ["stock_code", "trade_date"],
+            )
+            # Preserve each observed quote time as a V5.1 timeline row.  The
+            # public quote feed does not expose unmatched order quantities, so
+            # those fields remain null instead of being inferred from volume.
+            timeline_rows = [{
+                "stock_code": item["stock_code"],
+                "stock_name": item.get("stock_name"),
+                "trade_date": item["trade_date"],
+                "snapshot_time": item["quote_at"],
+                "indicative_price": item.get("auction_price"),
+                "indicative_return": item.get("high_open_pct"),
+                "matched_volume": item.get("auction_volume"),
+                "matched_amount": item.get("auction_amount"),
+                "unmatched_buy_volume": None,
+                "unmatched_buy_amount": None,
+                "unmatched_sell_volume": None,
+                "unmatched_sell_amount": None,
+                "activity_count": None,
+                "source": item.get("source") or "tencent",
+                "data_cutoff_time": now.replace(tzinfo=None),
+                "quality_score": 45.0,
+                "payload": {"auction_volume_ratio": item.get("auction_volume_ratio"), "single_snapshot": True},
+                "created_at": datetime.utcnow(),
+            } for item in rows]
+            timeline_written = await self._upsert(
+                AuctionSnapshotV51, timeline_rows,
+                ["stock_code", "trade_date", "snapshot_time"],
             )
             return {
-                "status": "success" if written and written == len(codes) else "partial" if written else "unavailable",
+                "status": "success" if rows else "unavailable",
                 "written": written,
+                "timeline_written": timeline_written,
+                "observed": len(rows),
                 "requested": len(codes),
                 "coverage_pct": round(written / len(codes) * 100, 2) if codes else 0.0,
+                "timeline_coverage_pct": round(timeline_written / len(codes) * 100, 2) if codes else 0.0,
                 "data_date": now.date().isoformat(),
                 "source": "tencent",
-                "window": "09:24-09:27",
+                "window": "09:15-09:27",
             }
 
     async def coverage(self) -> dict[str, Any]:

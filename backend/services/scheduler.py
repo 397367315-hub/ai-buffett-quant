@@ -166,6 +166,35 @@ async def refresh_forecast_v5():
         return None
 
 
+async def refresh_v51_dashboard():
+    """Warm the bounded V5.1 evidence summary without blocking the forecast."""
+    from services.v51_microstructure_service import v51_microstructure_service
+
+    try:
+        payload = await v51_microstructure_service.auction_dashboard(refresh=True)
+        print(
+            "[Scheduler] V5.1微结构快照已更新: "
+            f"{payload.get('trade_date')} / {payload.get('quality', {}).get('status')}"
+        )
+        return payload
+    except Exception as exc:
+        print(f"[Scheduler] V5.1微结构更新失败: {type(exc).__name__}")
+        return None
+
+
+async def refresh_event_radar():
+    """Refresh free-source events; failures are isolated from market data jobs."""
+    from services.event_radar import event_radar_service
+
+    try:
+        payload = await event_radar_service.refresh(force=True)
+        print(f"[Scheduler] 事件雷达已更新: {payload.get('count', 0)} 条")
+        return payload
+    except Exception as exc:
+        print(f"[Scheduler] 事件雷达更新失败: {type(exc).__name__}")
+        return None
+
+
 async def refresh_market_way_policy_source():
     """Keep official policy evidence warm before and during the trading day."""
     from services.market_way_v4 import market_way_v4_service
@@ -625,6 +654,27 @@ async def start_scheduler(data_collector=None, db_session=None):
         CronTrigger(hour=9, minute=25, day_of_week="mon-fri"),
         id="market_auction_pit", name="全市场09:25竞价PIT快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=60,
+    )
+    # Capture the observed quote timestamp at several points.  The public
+    # feed does not expose unmatched order quantities, so the V5.1 timeline
+    # keeps those fields null rather than inferring them.
+    scheduler.add_job(
+        capture_market_auction_snapshot,
+        CronTrigger(hour=9, minute="15,18,20,22,24,25,26,27", day_of_week="mon-fri"),
+        id="market_auction_pit_timeline", name="V5.1竞价时间序列补采", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=60,
+    )
+    scheduler.add_job(
+        refresh_v51_dashboard,
+        CronTrigger(hour="9,10,11,13,14,15", minute="0,30", day_of_week="mon-fri"),
+        id="v51_microstructure_warm", name="V5.1微结构证据预热", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=180,
+    )
+    scheduler.add_job(
+        refresh_event_radar,
+        CronTrigger(hour="8,9,10,11,12,13,14,15,16", minute="5,35", day_of_week="mon-fri"),
+        id="event_radar_refresh", name="免费数据事件雷达刷新", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=300,
     )
     scheduler.add_job(
         refresh_topic_intraday_evidence,

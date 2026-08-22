@@ -1489,3 +1489,195 @@ class PersonalErrorPattern(Base):
     prevention = Column(Text, nullable=False)
     context = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# V5.1 incremental evidence tables.  These tables intentionally keep the
+# engine payload alongside a few indexed headline fields: the calculation
+# contract can evolve without losing the exact point-in-time evidence used by
+# an earlier result.
+class AuctionSnapshotV51(Base):
+    """Normalized call-auction observations when a time series is available."""
+
+    __tablename__ = "auction_snapshots"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trade_date", "snapshot_time", name="uq_v51_auction_snapshot"),
+        Index("idx_v51_auction_code_time", "stock_code", "trade_date", "snapshot_time"),
+        Index("idx_v51_auction_trade_date", "trade_date", "snapshot_time"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    trade_date = Column(Date, nullable=False)
+    snapshot_time = Column(DateTime, nullable=False)
+    indicative_price = Column(Float)
+    indicative_return = Column(Float)
+    matched_volume = Column(BigInteger)
+    matched_amount = Column(BigInteger)
+    unmatched_buy_volume = Column(BigInteger)
+    unmatched_buy_amount = Column(BigInteger)
+    unmatched_sell_volume = Column(BigInteger)
+    unmatched_sell_amount = Column(BigInteger)
+    activity_count = Column(Integer)
+    source = Column(String(80), nullable=False, default="unavailable")
+    data_cutoff_time = Column(DateTime, nullable=False)
+    quality_score = Column(Float, nullable=False, default=0.0)
+    payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class V51EngineSnapshot(Base):
+    """Replayable output for one V5.1 engine and one point-in-time cutoff."""
+
+    __tablename__ = "v51_engine_snapshots"
+    __table_args__ = (
+        Index("idx_v51_engine_symbol_time", "stock_code", "engine_id", "data_cutoff_time"),
+        Index("idx_v51_engine_date", "trade_date", "engine_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_code = Column(String(10))
+    trade_date = Column(Date, nullable=False)
+    engine_id = Column(String(50), nullable=False)
+    status = Column(String(40), nullable=False)
+    model_version = Column(String(80), nullable=False)
+    data_cutoff_time = Column(DateTime, nullable=False)
+    coverage_pct = Column(Float, nullable=False, default=0.0)
+    payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RadarRawSource(Base):
+    """Immutable-ish normalized input from a free/public event provider."""
+
+    __tablename__ = "radar_raw_sources"
+    __table_args__ = (
+        UniqueConstraint("content_hash", name="uq_radar_raw_content_hash"),
+        Index("idx_radar_raw_published", "published_at"),
+        Index("idx_radar_raw_provider", "provider", "fetched_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(80), nullable=False)
+    provider_event_id = Column(String(160))
+    title = Column(String(600), nullable=False)
+    content = Column(Text)
+    url = Column(String(1000))
+    published_at = Column(DateTime)
+    fetched_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    content_hash = Column(String(64), nullable=False)
+    raw_json = Column(JSON, nullable=False, default=dict)
+
+
+class RadarEvent(Base):
+    """Canonical deduplicated event and its deterministic score."""
+
+    __tablename__ = "radar_events"
+    __table_args__ = (
+        Index("idx_radar_events_score", "alert_level", "event_score", "last_updated_at"),
+        Index("idx_radar_events_status", "status", "last_updated_at"),
+        Index("idx_radar_events_type", "event_type", "last_updated_at"),
+    )
+
+    event_id = Column(String(80), primary_key=True)
+    canonical_title = Column(String(600), nullable=False)
+    summary = Column(Text)
+    event_type = Column(String(50), nullable=False)
+    source_score = Column(Float, nullable=False, default=0.0)
+    certainty_score = Column(Float, nullable=False, default=0.0)
+    novelty_score = Column(Float, nullable=False, default=0.0)
+    impact_score = Column(Float, nullable=False, default=0.0)
+    topic_relevance_score = Column(Float, nullable=False, default=0.0)
+    market_confirmation_score = Column(Float, nullable=False, default=0.0)
+    urgency_score = Column(Float, nullable=False, default=0.0)
+    event_score = Column(Float, nullable=False, default=0.0)
+    alert_level = Column(String(1), nullable=False, default="C")
+    direction = Column(String(20), nullable=False, default="mixed")
+    first_seen_at = Column(DateTime, nullable=False)
+    last_updated_at = Column(DateTime, nullable=False)
+    status = Column(String(30), nullable=False, default="DISCOVERED")
+    source_level = Column(String(30), nullable=False, default="unknown")
+    data_cutoff_time = Column(DateTime, nullable=False)
+    payload = Column(JSON, nullable=False, default=dict)
+
+
+class RadarEventTopic(Base):
+    __tablename__ = "radar_event_topics"
+    __table_args__ = (Index("idx_radar_event_topics_topic", "topic_name", "relevance_score"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(80), ForeignKey("radar_events.event_id", ondelete="CASCADE"), nullable=False)
+    topic_name = Column(String(120), nullable=False)
+    relevance_score = Column(Float, nullable=False, default=0.0)
+    direction = Column(String(20), nullable=False, default="mixed")
+    reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RadarEventStock(Base):
+    __tablename__ = "radar_event_stocks"
+    __table_args__ = (
+        UniqueConstraint("event_id", "stock_code", name="uq_radar_event_stock"),
+        Index("idx_radar_event_stocks_code", "stock_code", "total_score"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(80), ForeignKey("radar_events.event_id", ondelete="CASCADE"), nullable=False)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100))
+    relation_type = Column(String(30), nullable=False, default="concept")
+    relation_score = Column(Float, nullable=False, default=0.0)
+    benefit_score = Column(Float, nullable=False, default=0.0)
+    business_evidence = Column(Text)
+    market_score = Column(Float, nullable=False, default=0.0)
+    total_score = Column(Float, nullable=False, default=0.0)
+    evidence_tag = Column(String(20), nullable=False, default="INFERRED")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RadarAlert(Base):
+    __tablename__ = "radar_alerts"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_radar_alert_dedupe"),
+        Index("idx_radar_alerts_level_time", "level", "created_at"),
+    )
+
+    alert_id = Column(String(80), primary_key=True)
+    event_id = Column(String(80), ForeignKey("radar_events.event_id", ondelete="CASCADE"), nullable=False)
+    level = Column(String(1), nullable=False)
+    title = Column(String(600), nullable=False)
+    message = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    sent_at = Column(DateTime)
+    channel = Column(String(30), nullable=False, default="in_app")
+    status = Column(String(20), nullable=False, default="NEW")
+    dedupe_key = Column(String(120), nullable=False)
+
+
+class RadarProviderHealth(Base):
+    __tablename__ = "radar_provider_health"
+
+    provider = Column(String(80), primary_key=True)
+    last_success_at = Column(DateTime)
+    last_failure_at = Column(DateTime)
+    latency_ms = Column(Float)
+    error_count = Column(Integer, nullable=False, default=0)
+    empty_count = Column(Integer, nullable=False, default=0)
+    last_record_time = Column(DateTime)
+    status = Column(String(20), nullable=False, default="UNKNOWN")
+    details = Column(JSON, nullable=False, default=dict)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RadarEventEffect(Base):
+    __tablename__ = "radar_event_effects"
+    __table_args__ = (UniqueConstraint("event_id", "window", name="uq_radar_event_effect"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(80), ForeignKey("radar_events.event_id", ondelete="CASCADE"), nullable=False)
+    window = Column(String(20), nullable=False)
+    market_return = Column(Float)
+    topic_return = Column(Float)
+    core_stock_return = Column(Float)
+    recorded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    data_quality = Column(JSON, nullable=False, default=dict)

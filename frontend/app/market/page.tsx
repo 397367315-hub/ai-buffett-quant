@@ -25,6 +25,7 @@ import {
   Layers3,
   LineChart,
   Loader2,
+  Radio,
   RefreshCw,
   ScanSearch,
   ShieldAlert,
@@ -281,6 +282,35 @@ interface EventInterpretation {
   snapshot_updated_at?: string | null;
   cache_used?: boolean;
   sources?: string[];
+}
+
+interface RadarEventItem {
+  event_id: string;
+  canonical_title: string;
+  summary?: string;
+  event_type?: string;
+  source?: string;
+  source_level?: string;
+  event_score?: NullableNumber;
+  alert_level?: string;
+  direction?: string;
+  status?: string;
+  market_confirmation_score?: NullableNumber;
+  topics?: Array<{ name: string; relevance_score?: NullableNumber }>;
+  published_at?: string | null;
+  last_updated_at?: string | null;
+  cached?: boolean;
+}
+
+interface RadarEventDetail extends RadarEventItem {
+  stocks?: Array<{ code: string; name: string; relation_type?: string; total_score?: NullableNumber; evidence_tag?: string; business_evidence?: string }>;
+  quality?: { ai_explanation_policy?: string };
+}
+
+interface V51Summary {
+  auction?: { coverage_pct?: NullableNumber; timeline_coverage_pct?: NullableNumber; observed_stocks?: number; time_series_snapshots?: number; quality?: { status?: string; warning?: string | null } };
+  reward_punishment?: { state?: string; breadth_pct?: NullableNumber; rewarded_structures?: string[]; punished_structures?: string[] };
+  leadership?: { sectors?: Array<{ name: string; leadership_score?: NullableNumber; change_pct?: NullableNumber }>; quality?: { status?: string } };
 }
 
 interface AiInterpretationSection {
@@ -771,6 +801,86 @@ function EventMonitor({ forecast, supplement }: { forecast: ForecastSnapshot; su
   );
 }
 
+function RadarEventPanel() {
+  const [events, setEvents] = useState<RadarEventItem[]>([]);
+  const [selected, setSelected] = useState<RadarEventDetail | null>(null);
+  const [interpretation, setInterpretation] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async (refresh = false) => {
+    setLoading(true);
+    setError('');
+    try {
+      const params = new URLSearchParams({ limit: '8' });
+      if (refresh) params.set('refresh', 'true');
+      const response = await apiFetch<{ code: number; data: { events: RadarEventItem[] } }>(`/radar/events?${params.toString()}`, { cache: 'no-store', timeoutMs: 15000 });
+      setEvents(response.data?.events || []);
+    } catch (caught) {
+      setError(friendlyApiError(caught, '事件雷达暂时不可用'));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(false); const timer = window.setInterval(() => void load(false), 60_000); return () => window.clearInterval(timer); }, [load]);
+
+  const open = async (event: RadarEventItem) => {
+    setDetailLoading(true);
+    setInterpretation('');
+    try {
+      const response = await apiFetch<{ code: number; data: RadarEventDetail }>(`/radar/events/${encodeURIComponent(event.event_id)}`, { cache: 'no-store', timeoutMs: 12000 });
+      setSelected(response.data);
+    } catch (caught) {
+      setError(friendlyApiError(caught, '事件详情暂时不可用'));
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const explain = async () => {
+    if (!selected) return;
+    setDetailLoading(true);
+    try {
+      const response = await apiFetch<{ code: number; data: { interpretation: string } }>(`/radar/events/${encodeURIComponent(selected.event_id)}/interpretation`, { method: 'POST', timeoutMs: 45000, cache: 'no-store' });
+      setInterpretation(cleanAiText(response.data?.interpretation || '暂无可读解读'));
+    } catch (caught) {
+      setError(friendlyApiError(caught, '事件AI解读暂时不可用'));
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  return <section className="v5-panel v5-radar-panel">
+    <SectionHeader icon={Radio} title="AI实时事件雷达" subtitle="发现、验源、题材映射与市场确认" action={<button type="button" className="v5-mini-refresh" onClick={() => void load(true)} disabled={loading} title="刷新事件雷达">{loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}刷新</button>} />
+    <div className="v5-radar-summary"><span><i className="v5-radar-live-dot" />免费源优先</span><span>未证实传闻最高 C 级</span><span>事件不等于买入信号</span></div>
+    {error && <div className="px-4 py-2 text-[10px] text-warn">{error}</div>}
+    {events.length ? <div className="divide-y divide-border">{events.slice(0, 6).map((event) => <button type="button" key={event.event_id} className="v5-radar-event" onClick={() => void open(event)}><span className={`v5-radar-level level-${String(event.alert_level || 'C').toLowerCase()}`}>{event.alert_level || 'C'}</span><span className="min-w-0 flex-1 text-left"><strong className="block truncate text-[11px] text-text">{event.canonical_title}</strong><span className="mt-1 block truncate text-[9px] text-text-secondary">{event.source || '公开源'} · 市场确认 {numberText(event.market_confirmation_score)} · {event.status || '发现'}</span></span><span className="shrink-0 font-mono text-[10px] text-accent">{numberText(event.event_score)}</span></button>)}</div> : <EmptyState text={loading ? '正在汇总公开事件源' : '当前没有可核验事件'} />}
+    {selected && <div className="v5-radar-detail"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="text-xs font-medium text-text">{selected.canonical_title}</div><div className="mt-1 text-[10px] text-text-secondary">{selected.source || '--'} · {selected.event_type || '--'} · {selected.status || '--'}</div></div><button type="button" className="v5-icon-button" onClick={() => { setSelected(null); setInterpretation(''); }} aria-label="关闭事件详情" title="关闭"><X size={13} /></button></div><div className="mt-3 flex flex-wrap gap-1.5">{(selected.topics || []).slice(0, 4).map((topic) => <span className="v5-tag" key={topic.name}>{topic.name}</span>)}{(selected.stocks || []).slice(0, 4).map((stock) => <span className="v5-tag" key={stock.code}>{stock.name || stock.code} · {stock.evidence_tag === 'FACT' ? '事实关联' : '推断关联'}</span>)}</div><p className="mt-3 text-[11px] leading-5 text-text-secondary">{selected.summary || '暂无摘要'}</p><button type="button" className="v5-text-button mt-2" onClick={() => void explain()} disabled={detailLoading}>{detailLoading ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}AI解读</button>{interpretation && <p className="v5-radar-interpretation">{interpretation}</p>}<div className="mt-3 text-[9px] leading-4 text-warn">关联股仅按已登记事实或行业字段标注；缺少主营证据时不会升级为核心受益。</div></div>}
+  </section>;
+}
+
+function V51EvidencePanel() {
+  const [data, setData] = useState<V51Summary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const load = useCallback(async () => {
+    try {
+      const response = await apiFetch<{ code: number; data: V51Summary }>('/v51/dashboard', { cache: 'no-store', timeoutMs: 15000 });
+      setData(response.data || null);
+    } catch {
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => { void load(); const timer = window.setInterval(() => void load(), 120_000); return () => window.clearInterval(timer); }, [load]);
+  const auction = data?.auction;
+  const reward = data?.reward_punishment;
+  const sectors = data?.leadership?.sectors || [];
+  return <section className="v5-panel v5-v51-panel"><SectionHeader icon={Layers3} title="V5.1证据层" subtitle="竞价、预期差、供给测试与市场奖惩" />{loading && !data ? <EmptyState text="正在读取V5.1证据" /> : <><div className="v5-v51-metrics"><div><span>竞价覆盖</span><strong>{percent(auction?.coverage_pct)}</strong><small>{auction?.quality?.status || '暂无快照'}</small></div><div><span>竞价序列</span><strong>{percent(auction?.timeline_coverage_pct)}</strong><small>{auction?.time_series_snapshots ?? '--'} 条时间点</small></div><div><span>奖惩状态</span><strong className={toneClass(reward?.state)}>{reward?.state || '核验中'}</strong><small>宽度 {percent(reward?.breadth_pct)}</small></div></div><div className="border-t border-border px-4 py-3"><div className="text-[10px] text-text-secondary">板块领导力观察</div><div className="mt-2 flex flex-wrap gap-2">{sectors.slice(0, 5).map((item) => <span className="v5-tag" key={item.name}>{item.name} {numberText(item.leadership_score)}</span>)}{!sectors.length && <span className="text-[10px] text-text-secondary">暂无板块成分证据</span>}</div></div>{auction?.quality?.warning && <div className="border-t border-border px-4 py-2.5 text-[9px] leading-4 text-warn">{auction.quality.warning}</div>}</>}</section>;
+}
+
 function SectorResonance({ sectors, supplement }: { sectors: ForecastSector[]; supplement: MarketSupplement | null }) {
   const rows = (sectors || []).slice(0, 5);
   return (
@@ -988,7 +1098,7 @@ export default function MarketDecisionWorkbenchPage() {
       <header className="v5-global-header">
         <Link href="#top" className="v5-global-brand" aria-label="AI多因子共振预测中枢总览">
           <span className="v5-aperture-mark"><Aperture size={25} strokeWidth={1.25} /></span>
-          <span className="min-w-0"><strong>AI多因子共振预测中枢 <b>V5.0</b></strong><small>进因势位时止 · 洞察先机 · 驭势而行</small></span>
+          <span className="min-w-0"><strong>AI多因子共振预测中枢 <b>V5.1</b></strong><small>进因势位时止 · 洞察先机 · 驭势而行</small></span>
         </Link>
             <nav className="v5-global-nav" aria-label="预测工作台功能导航">
           <a className="active" href="#forecast">预测引擎</a><a href="#factors">因子监控</a><a href="#sectors">板块轮动</a><a href="#alpha">Alpha雷达</a><a href="#history">历史回溯</a><a href="#strategy">策略执行</a><a href="#system-status">系统状态</a><Link className="v5-global-utility" href="/market/v4">V4工作台</Link><Link className="v5-global-utility" href="/pro/research">研究中心</Link><Link className="v5-global-utility" href="/pro/personal">个人股票池</Link><Link className="v5-global-utility" href="/quant">量化策略</Link>
@@ -1010,6 +1120,8 @@ export default function MarketDecisionWorkbenchPage() {
 
             <div className="v5-research-grid"><div id="sectors"><SectorResonance sectors={forecast.sector_forecasts || []} supplement={supplement} /></div><div id="alpha"><AlphaRadar seeds={forecast.alpha_seeds || []} /></div><div><CapitalFlow forecast={forecast} supplement={supplement} overview={overview} /></div><BehaviorPanel behavior={forecast.behavior} /></div>
 
+            <div id="radar" className="v5-evidence-grid"><V51EvidencePanel /><RadarEventPanel /></div>
+
             <div className="v5-bottom-grid"><div><TurningPoints forecast={forecast} /></div><HistoricalAnalogs forecast={forecast} onLoad={() => void loadHistory()} loading={historyLoading} /><section className="v5-panel"><SectionHeader icon={Gauge} title="预测置信度与风险提示" subtitle="置信度受数据完整度上限约束" /><div className="p-4"><div className="flex items-end justify-between"><span className="text-3xl font-semibold text-text">{percent(confidence)}</span><StatusPill value={health.level}>{health.level || '核验中'}</StatusPill></div><ThinBar value={confidence} color={confidence >= 70 ? 'up' : 'warn'} /><div className="mt-4 space-y-2 text-[10px] leading-4 text-text-secondary">{(health.stale_factors || []).slice(0, 2).map((item) => <div key={item.factor_id} className="flex gap-2"><span className="text-warn">·</span>{item.name}沿用缓存，边际信息可能滞后</div>)}{(health.missing_factors || []).slice(0, 1).map((item) => <div key={item.factor_id} className="flex gap-2"><span className="text-warn">·</span>{item.name}当前缺少可核验来源：{item.source}</div>)}{!health.stale_factors?.length && !health.missing_factors?.length && <div>当前没有新增数据边界提示。</div>}</div></div></section><div id="strategy"><StrategyAdvice forecast={forecast} supplement={supplement} /></div></div>
 
             <div id="factors" className="v5-panel"><SectionHeader icon={LineChart} title="因子监控与共振变化" subtitle="领先因子 → 传播因子 → 确认因子，按新鲜度和可靠度进入预测" action={<span className="text-[10px] text-text-secondary">观测 {factors.length} / {forecast.factors?.all?.length || 0}</span>} /><div className="v5-factor-grid">{factors.map((item) => <div key={item.id} className="v5-factor"><div className="flex items-start justify-between gap-2"><span className="line-clamp-2 text-xs text-text">{item.name}</span><span className={`shrink-0 text-[10px] ${item.observed ? 'text-up' : 'text-warn'}`}>{item.observed ? '已观测' : '核验中'}</span></div><div className="mt-3 flex items-end justify-between"><span className="font-mono text-lg text-text">{numberText(item.value)}</span><span className={`font-mono text-[10px] ${toneClass(item.delta)}`}>{signedPercent(item.delta)}</span></div><ThinBar value={item.value} color={tone(item.state) === 'down' ? 'down' : tone(item.state) === 'up' ? 'up' : 'accent'} /><div className="mt-2 truncate text-[10px] text-text-secondary">{item.layer} · {item.source}</div></div>)}{!factors.length && <EmptyState text="暂无满足新鲜度门槛的因子" />}</div></div>
@@ -1017,7 +1129,7 @@ export default function MarketDecisionWorkbenchPage() {
             <section className="v5-panel"><SectionHeader icon={Wallet} title="AI与用户双轨判断" subtitle="保存你的判断，盘后与实际市场状态对照" /><div className="grid gap-3 p-4 sm:grid-cols-[160px_minmax(0,1fr)_auto] sm:items-end"><label className="text-[10px] text-text-secondary">我的判断<select value={judgmentAction} onChange={(event) => setJudgmentAction(event.target.value)} className="v5-select mt-1"><option value="BULLISH">偏多</option><option value="NEUTRAL">中性</option><option value="BEARISH">偏空</option><option value="WAIT">等待</option><option value="NO_TRADE">不交易</option></select></label><label className="text-[10px] text-text-secondary">依据与反证<textarea value={judgmentNote} onChange={(event) => setJudgmentNote(event.target.value)} rows={2} placeholder="记录与你的判断有关的事实、反证或观察条件" className="v5-textarea mt-1" /></label><button type="button" onClick={() => void saveJudgment()} disabled={judgmentBusy} className="v5-button">{judgmentBusy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}保存判断</button></div></section>
 
             {health.missing_factors.length > 0 && <section className="v5-data-boundary"><div className="flex items-center gap-2 font-medium text-warn"><Database size={13} />数据边界与补采队列</div><div className="mt-2 text-[10px] leading-4 text-text-secondary">{health.missing_factors.slice(0, 5).map((item) => `${item.name}：${item.source}`).join(' · ')}。缺口不会填充默认值，预测置信度已按规则封顶。</div></section>}
-            <footer id="system-status" className="v5-footer"><span>V5.0 · {forecast.version} · {forecast.data_health.high_confidence_allowed ? '高置信度通道可用' : '高置信度通道受限'}</span><span>实时行情仅在交易时段更新，非交易时段使用最近完整快照</span><div className="flex gap-3"><Link href="/pro/research">研究中心</Link><Link href="/pro/personal">个人股票池</Link><Link href="/quant">量化策略</Link></div></footer>
+            <footer id="system-status" className="v5-footer"><span>V5.1 · {forecast.version} · {forecast.data_health.high_confidence_allowed ? '高置信度通道可用' : '高置信度通道受限'}</span><span>实时行情仅在交易时段更新，非交易时段使用最近完整快照</span><div className="flex gap-3"><Link href="/pro/research">研究中心</Link><Link href="/pro/personal">个人股票池</Link><Link href="/quant">量化策略</Link></div></footer>
           </div>
         </div>
       </div>

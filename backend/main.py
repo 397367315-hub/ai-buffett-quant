@@ -10,6 +10,8 @@ from api.research_routes import router as research_router
 from api.forecast_routes import router as forecast_router
 from api.trading_skill_routes import router as trading_skill_router
 from api.reflexivity_routes import router as reflexivity_router, skills_alias_router as reflexivity_skills_alias_router
+from api.v51_routes import router as v51_router
+from api.radar_routes import router as radar_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -86,6 +88,8 @@ app.include_router(forecast_router)
 app.include_router(trading_skill_router)
 app.include_router(reflexivity_router)
 app.include_router(reflexivity_skills_alias_router)
+app.include_router(v51_router)
+app.include_router(radar_router)
 
 
 @app.get("/")
