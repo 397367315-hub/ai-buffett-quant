@@ -364,6 +364,36 @@ class OvernightWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(positions[0].previous_close, 17.5)
         self.assertLessEqual(positions[0].allocated_pct, 10)
 
+    async def test_manual_scan_outside_window_uses_cache_research_without_position(self):
+        now = datetime(2026, 8, 8, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        snapshot = {
+            "stocks": [{
+                "code": "600000", "name": "浦发银行", "sector": "银行", "price": 18.2,
+                "change_pct": 4.0, "volume_ratio": 1.8, "turnover": 5.0,
+                "market_cap": 18_000_000_000, "high": 18.3, "low": 17.7,
+            }],
+            "complete": True,
+            "is_realtime": False,
+            "data_date": "2026-08-07",
+            "source": "cache",
+        }
+        with (
+            patch("services.overnight_strategy.shanghai_now", return_value=now),
+            patch("services.overnight_strategy.load_quant_market_snapshot", new_callable=AsyncMock, return_value=snapshot),
+            patch("services.overnight_strategy.collector.fetch_market_turnover", new_callable=AsyncMock, return_value={}),
+        ):
+            result = await self.service.start("preliminary", background=False)
+
+        run = result["run"]
+        self.assertEqual(run["status"], "completed")
+        self.assertTrue(run["research_only"])
+        self.assertFalse(run["data_quality"]["execution_allowed"])
+        self.assertEqual(run["data_quality"]["quote"]["source"], "cache")
+        self.assertIn("research_candidate_count", run["data_quality"])
+        async with self.session_factory() as session:
+            positions = (await session.execute(select(OvernightPosition))).scalars().all()
+        self.assertEqual(positions, [])
+
     async def test_three_losses_warn_without_blocking_future_scans(self):
         run = OvernightStrategyRun(
             stage="entry", trigger="manual", status="completed", progress=100,

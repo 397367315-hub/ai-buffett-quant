@@ -21,6 +21,7 @@ from models import (
     StockDailyBar,
     StockMinuteBar,
 )
+from quant.market_cache import load_quant_market_snapshot
 from quant.indicators import normalize_snapshot_stock
 from quant.risk import CRITICAL_ANNOUNCEMENT_TERMS
 from services.data_collector import collector, shanghai_now
@@ -207,6 +208,7 @@ def _run_view(row: OvernightStrategyRun | None) -> dict[str, Any] | None:
         "qualified_count": row.qualified_count,
         "candidates": row.candidates or [],
         "data_quality": row.data_quality or {},
+        "research_only": bool((row.data_quality or {}).get("research_only")),
         "error": row.error,
         "started_at": row.started_at.isoformat() if row.started_at else None,
         "finished_at": row.finished_at.isoformat() if row.finished_at else None,
@@ -436,6 +438,8 @@ class OvernightStrategyService:
         stage: str,
         trigger: str,
         strategy: dict[str, Any] | None = None,
+        *,
+        research_only: bool = False,
     ) -> tuple[OvernightStrategyRun, bool]:
         strategy = strategy or {**STRATEGY_CONFIG}
         normalized = str(stage or "").strip().lower()
@@ -456,6 +460,7 @@ class OvernightStrategyService:
                 (
                     item for item in active_rows
                     if str((item.data_quality or {}).get("strategy_id") or STRATEGY_CONFIG["id"]) == strategy["id"]
+                    and bool((item.data_quality or {}).get("research_only")) == bool(research_only)
                 ),
                 None,
             )
@@ -482,6 +487,7 @@ class OvernightStrategyService:
                     (
                         item for item in recent_rows
                         if str((item.data_quality or {}).get("strategy_id") or STRATEGY_CONFIG["id"]) == strategy["id"]
+                        and bool((item.data_quality or {}).get("research_only")) == bool(research_only)
                     ),
                     None,
                 )
@@ -496,7 +502,11 @@ class OvernightStrategyService:
                 progress=0,
                 message="等待策略引擎开始",
                 candidates=[],
-                data_quality={"strategy_id": strategy["id"], "strategy": strategy},
+                data_quality={
+                    "strategy_id": strategy["id"],
+                    "strategy": strategy,
+                    "research_only": bool(research_only),
+                },
             )
             session.add(row)
             await session.commit()
@@ -515,9 +525,19 @@ class OvernightStrategyService:
         trigger: str = "manual",
         background: bool = True,
         strategy_id: str | None = None,
+        research_only: bool = False,
     ) -> dict[str, Any]:
         strategy = await self._resolve_strategy(strategy_id)
-        row, created = await self._create_run(stage, trigger, strategy)
+        # Manual scans outside their execution window become explicitly
+        # labelled cache research. Scheduled jobs and real-time entry remain
+        # fail-closed and keep the original window/data requirements.
+        if not research_only and trigger == "manual" and stage in {"preliminary", "entry"}:
+            now = shanghai_now()
+            window_open, _ = self._stage_window_status(stage, now)
+            research_only = now.weekday() >= 5 or not window_open
+        row, created = await self._create_run(
+            stage, trigger, strategy, research_only=research_only,
+        )
         if created:
             if background:
                 self._spawn(row.id)
@@ -537,10 +557,11 @@ class OvernightStrategyService:
                     stage = row.stage
                     stored = row.data_quality or {}
                     strategy = stored.get("strategy") if isinstance(stored, dict) else None
+                    research_only = bool(stored.get("research_only")) if isinstance(stored, dict) else False
                     if not isinstance(strategy, dict):
                         strategy = await self._resolve_strategy()
                 if stage in {"preliminary", "entry"}:
-                    await self._scan(run_id, stage, strategy)
+                    await self._scan(run_id, stage, strategy, research_only=research_only)
                 elif stage == "auction":
                     await self._auction(run_id, strategy)
                 else:
@@ -593,11 +614,23 @@ class OvernightStrategyService:
 
     @staticmethod
     def _prefilter(stocks: list[dict], config: dict[str, Any] | None = None) -> list[dict]:
+        selected, _ = OvernightStrategyService._prefilter_diagnostics(stocks, config)
+        return selected
+
+    @staticmethod
+    def _prefilter_diagnostics(
+        stocks: list[dict], config: dict[str, Any] | None = None,
+    ) -> tuple[list[dict], dict[str, int]]:
         config = config or STRATEGY_CONFIG
         change_min, change_max = config["change_pct"]
         turnover_min, turnover_max = config["turnover_pct"]
         cap_min, cap_max = config["market_cap_yi"]
-        selected = []
+        selected: list[dict] = []
+        rejected: dict[str, int] = {}
+
+        def reject(reason: str) -> None:
+            rejected[reason] = rejected.get(reason, 0) + 1
+
         for raw in stocks:
             stock = normalize_snapshot_stock(raw)
             code = str(stock.get("code") or "")
@@ -609,21 +642,28 @@ class OvernightStrategyService:
             price = _number(stock.get("price"))
             minimum_price = float(config.get("minimum_price") or 0)
             if price is None or price <= minimum_price or "ST" in name.upper() or "退" in name:
+                reject("价格/名称排除（ST、退市或低于最低价）")
                 continue
             if config.get("exclude_star_market") and code.startswith(("688", "689")):
+                reject("科创板权限过滤")
                 continue
             if config.get("exclude_chinext") and code.startswith(("300", "301", "302")):
+                reject("创业板权限过滤")
                 continue
             if change is None or not change_min <= change <= change_max:
+                reject("涨幅不在策略区间")
                 continue
             if ratio is None or ratio <= float(config["volume_ratio_min"]):
+                reject("量比未超过主阈值")
                 continue
             if turnover is None or not turnover_min <= turnover <= turnover_max:
+                reject("换手率不在策略区间")
                 continue
             if market_cap is None or not cap_min <= market_cap <= cap_max:
+                reject("市值不在策略区间")
                 continue
             selected.append(stock)
-        return selected
+        return selected, rejected
 
     @staticmethod
     def _moving_average(previous_closes: list[float], current_price: float, period: int) -> float | None:
@@ -642,6 +682,7 @@ class OvernightStrategyService:
         report_available: bool,
         market_audit: dict[str, Any] | None = None,
         config: dict[str, Any] | None = None,
+        allow_unavailable: bool = False,
     ) -> dict[str, Any]:
         config = config or STRATEGY_CONFIG
         price = _number(stock.get("price"))
@@ -810,7 +851,9 @@ class OvernightStrategyService:
 
         unavailable = [item["label"] for item in conditions if item["status"] == "unavailable"]
         failed = [item["label"] for item in conditions if item["status"] == "failed"]
-        passed = not unavailable and not failed
+        # Research mode may rank a cached candidate while explicitly keeping
+        # missing evidence as "待核验". Execution mode remains fail-closed.
+        passed = not failed and (allow_unavailable or not unavailable)
         trend_spread = (
             (ma[10] - ma[30]) / ma[30] * 100
             if ma.get(10) is not None and ma.get(30) not in (None, 0) else 0.0
@@ -1071,12 +1114,19 @@ class OvernightStrategyService:
         }
 
     @staticmethod
-    async def _market_audit(market: dict[str, Any], now: datetime, config: dict[str, Any]) -> dict[str, Any]:
+    async def _market_audit(
+        market: dict[str, Any],
+        now: datetime,
+        config: dict[str, Any],
+        *,
+        data_date: date | None = None,
+    ) -> dict[str, Any]:
         """Verify the optional broad-market MA20 gate from dated index data."""
         if not config.get("require_market_ma20"):
             return {"required": False, "above_ma20": None, "regime": "unrestricted"}
         current_index = _number(market.get("sh_index"))
-        if current_index is None or _date(market.get("data_date")) != now.date():
+        expected_date = data_date or now.date()
+        if current_index is None or _date(market.get("data_date")) != expected_date:
             return {
                 "required": True,
                 "above_ma20": None,
@@ -1126,10 +1176,17 @@ class OvernightStrategyService:
             "detail": "连续5个有效点高于各自MA20视为趋势市；否则按震荡/偏弱市处理",
         }
 
-    async def _scan(self, run_id: int, stage: str, config: dict[str, Any]) -> None:
+    async def _scan(
+        self,
+        run_id: int,
+        stage: str,
+        config: dict[str, Any],
+        *,
+        research_only: bool = False,
+    ) -> None:
         now = shanghai_now()
         window_open, window_message = self._stage_window_status(stage, now)
-        if now.weekday() >= 5 or not window_open:
+        if not research_only and (now.weekday() >= 5 or not window_open):
             await self._finish(
                 run_id,
                 status="unavailable",
@@ -1144,12 +1201,23 @@ class OvernightStrategyService:
             return
 
         circuit = await self._loss_circuit(now)
-        await self._set_progress(run_id, 5, "正在获取完整A股实时横截面")
-        snapshot_result, market_result = await asyncio.gather(
-            collector.fetch_quant_market_snapshot(),
-            collector.fetch_market_turnover(),
-            return_exceptions=True,
+        await self._set_progress(
+            run_id,
+            5,
+            "正在读取最近完整缓存快照（研究观察模式）" if research_only else "正在获取完整A股实时横截面",
         )
+        if research_only:
+            snapshot_result, market_result = await asyncio.gather(
+                load_quant_market_snapshot(),
+                collector.fetch_market_turnover(),
+                return_exceptions=True,
+            )
+        else:
+            snapshot_result, market_result = await asyncio.gather(
+                collector.fetch_quant_market_snapshot(),
+                collector.fetch_market_turnover(),
+                return_exceptions=True,
+            )
         if isinstance(snapshot_result, Exception):
             await self._finish(
                 run_id,
@@ -1161,31 +1229,36 @@ class OvernightStrategyService:
             return
         snapshot = snapshot_result
         market = {} if isinstance(market_result, Exception) else market_result
-        market_audit = await self._market_audit(market, now, config)
 
         data_date = _date(snapshot.get("data_date"))
         realtime = bool(snapshot.get("is_realtime")) and data_date == now.date()
         stocks = list(snapshot.get("stocks") or [])
-        if not snapshot.get("complete") or not realtime:
+        if not stocks or (not research_only and (not snapshot.get("complete") or not realtime)):
             await self._finish(
                 run_id,
                 status="unavailable",
-                message="行情不是当日完整实时快照，本轮不产生一夜持股信号",
+                message=(
+                    "没有可用的完整市场缓存，本轮无法建立研究观察"
+                    if research_only else "行情不是当日完整实时快照，本轮不产生一夜持股信号"
+                ),
                 data_date=data_date,
-                scanned_count=len(stocks),
+                is_realtime=realtime,
                 data_quality={
                     "quote": "stale_or_incomplete",
+                    "research_only": bool(research_only),
                     "complete": bool(snapshot.get("complete")),
                     "is_realtime": bool(snapshot.get("is_realtime")),
                     "data_date": snapshot.get("data_date"),
                     "missing_policy": "缓存行情只供查看，不用于尾盘模拟买入",
                 },
-                error="RealtimeSnapshotRequired",
+                error="CacheSnapshotUnavailable" if research_only else "RealtimeSnapshotRequired",
             )
             return
 
-        prefiltered = self._prefilter(stocks, config)
-        market_change = _number(market.get("sh_change_pct"))
+        scan_date = data_date or now.date()
+        market_audit = await self._market_audit(market, now, config, data_date=scan_date)
+        prefiltered, prefilter_rejections = self._prefilter_diagnostics(stocks, config)
+        market_change = _number(market.get("sh_change_pct")) if _date(market.get("data_date")) == scan_date else None
         market_circuit = {
             "triggered": bool(market_change is not None and market_change <= -2.0),
             "sh_change_pct": market_change,
@@ -1208,12 +1281,22 @@ class OvernightStrategyService:
             return
         await self._set_progress(run_id, 24, f"静态条件通过 {len(prefiltered)} 只，正在核验日线与黑名单")
         codes = [str(item["code"]) for item in prefiltered]
-        bars_result, announcements_result, appointments_result = await asyncio.gather(
-            self._daily_bars(codes, now.date()),
-            macro_policy_news_collector.get_stock_announcements_audit(codes, max_stocks=min(len(codes), 64)),
-            self._appointment_map(codes, now.date()),
-            return_exceptions=True,
-        )
+        if research_only:
+            # A cache observation should be fast and deterministic. External
+            # same-day disclosure endpoints are reserved for executable scans;
+            # their absence is recorded as pending evidence below.
+            bars_result, announcements_result, appointments_result = await asyncio.gather(
+                self._daily_bars(codes, scan_date),
+                asyncio.sleep(0, result={"announcements": {}, "status": {}}),
+                asyncio.sleep(0, result=({}, False)),
+            )
+        else:
+            bars_result, announcements_result, appointments_result = await asyncio.gather(
+                self._daily_bars(codes, scan_date),
+                macro_policy_news_collector.get_stock_announcements_audit(codes, max_stocks=min(len(codes), 64)),
+                self._appointment_map(codes, scan_date),
+                return_exceptions=True,
+            )
         bars_by_code = {} if isinstance(bars_result, Exception) else bars_result
         announcement_payload = {} if isinstance(announcements_result, Exception) else announcements_result
         announcements = announcement_payload.get("announcements") or {}
@@ -1226,13 +1309,14 @@ class OvernightStrategyService:
             audit = self._daily_audit(
                 stock,
                 bars_by_code.get(code, []),
-                today=now.date(),
+                today=scan_date,
                 announcements=announcements.get(code),
                 announcement_available=bool((announcement_status.get(code) or {}).get("available")),
                 report_dates=appointment_map.get(code, []),
                 report_available=report_available,
                 market_audit=market_audit,
                 config=config,
+                allow_unavailable=research_only,
             )
             candidates.append({
                 "code": code,
@@ -1252,7 +1336,10 @@ class OvernightStrategyService:
                 "tail_qualified": False,
                 "awaiting_auction": False,
                 "auction_passed": None,
-                "signal_at": _local_naive(now).isoformat(timespec="minutes"),
+                "signal_at": (
+                    f"{scan_date.isoformat()}T14:55"
+                    if research_only else _local_naive(now).isoformat(timespec="minutes")
+                ),
                 "failed_reasons": audit["failed_reasons"],
                 "unavailable_reasons": audit["unavailable_reasons"],
                 "conditions": audit["conditions"],
@@ -1261,11 +1348,26 @@ class OvernightStrategyService:
                 "minute": None,
             })
 
+        if research_only:
+            # Keep the research view useful even when the newly added hard
+            # filters leave no executable signal. These are ranked near-misses,
+            # never buy candidates; every failed rule remains visible.
+            ranked_codes = {
+                str(item.get("code"))
+                for item in sorted(candidates, key=lambda item: item.get("score") or 0, reverse=True)[:12]
+            }
+            for candidate in candidates:
+                candidate["research_qualified"] = str(candidate.get("code")) in ranked_codes
+                candidate["research_status"] = (
+                    "通过日线审计，等待实时分钟复核"
+                    if candidate.get("daily_passed") else "近似候选，存在硬约束未通过"
+                )
+
         daily_passed = [item for item in candidates if item["daily_passed"]]
         minute_payloads: list[dict] = []
         minute_covered = 0
         benchmark_payload: dict[str, Any] = {}
-        if stage == "entry" and daily_passed:
+        if stage == "entry" and daily_passed and not research_only:
             await self._set_progress(run_id, 62, f"日线与黑名单通过 {len(daily_passed)} 只，正在复核1分钟分时")
             semaphore = asyncio.Semaphore(8)
 
@@ -1319,11 +1421,32 @@ class OvernightStrategyService:
                 await self._persist_minute_bars(minute_payloads)
             except Exception:
                 pass
+        elif stage == "entry" and research_only:
+            for candidate in daily_passed:
+                candidate["research_only"] = True
+                candidate["research_qualified"] = True
+                candidate["unavailable_reasons"].append("等待交易日14:52-14:59实时分钟复核")
+                candidate["conditions"].append(_condition(
+                    "research_minute_boundary",
+                    "实时分钟复核边界",
+                    "unavailable",
+                    None,
+                    "仅在交易日14:52-14:59使用实时1分钟行情",
+                    source="研究观察模式",
+                    detail="当前结果来自最近完整缓存，只用于候选观察，不建立模拟持仓",
+                ))
         elif stage == "preliminary":
             for candidate in daily_passed:
                 candidate["unavailable_reasons"] = ["等待14:45-14:55最终分钟复核"]
 
         candidates.sort(key=lambda item: (bool(item.get("qualified")), item.get("score") or 0), reverse=True)
+        failed_counts: dict[str, int] = {}
+        unavailable_counts: dict[str, int] = {}
+        for item in candidates:
+            for reason in item.get("failed_reasons") or []:
+                failed_counts[reason] = failed_counts.get(reason, 0) + 1
+            for reason in item.get("unavailable_reasons") or []:
+                unavailable_counts[reason] = unavailable_counts.get(reason, 0) + 1
         selected_count = 0
         tail_count = 0
         market_execution_gate: dict[str, Any] | None = None
@@ -1352,7 +1475,16 @@ class OvernightStrategyService:
         data_quality = {
             "strategy_id": config["id"],
             "strategy": config,
+            "research_only": bool(research_only),
+            "execution_allowed": not research_only,
+            "research_candidate_count": sum(bool(item.get("research_qualified")) for item in candidates),
+            "rejection_reasons": {
+                "prefilter": prefilter_rejections,
+                "daily_failed": failed_counts,
+                "evidence_pending": unavailable_counts,
+            },
             "cash_day": not any(item.get("qualified") for item in candidates),
+            "research_cash_day": not any(item.get("research_qualified") for item in candidates),
             "loss_circuit": circuit,
             "market_circuit": market_circuit,
             "market_audit": market_audit,
@@ -1388,7 +1520,10 @@ class OvernightStrategyService:
                 "status": "pending_next_session" if config.get("requires_auction_confirmation") and stage == "entry" else "not_required",
                 "agent": "AI竞价盯盘Agent" if config.get("ai_auction_monitor") else None,
             },
-            "missing_policy": "任一强制字段缺失即不入选；不会以日线推断尾盘分钟条件",
+            "missing_policy": (
+                "研究观察可展示待核验候选；真实执行仍要求所有强制字段和点时数据完整"
+                if research_only else "任一强制字段缺失即不入选；不会以日线推断尾盘分钟条件"
+            ),
             "backtest_limitation": "现有分钟缓存不是历史全市场点时样本，不能据此宣称十年精确回测或固定胜率",
         }
         if stage == "entry":
@@ -1399,7 +1534,13 @@ class OvernightStrategyService:
             }
         if market_execution_gate:
             data_quality["market_execution_gate"] = market_execution_gate
-        if stage == "preliminary":
+        if research_only:
+            message = (
+                f"缓存研究完成：扫描{len(stocks)}只，静态预筛{len(prefiltered)}只，"
+                f"{sum(bool(item.get('research_qualified')) for item in candidates)}只进入观察候选；"
+                "仅供研究，不能作为实时买入或模拟建仓信号"
+            )
+        elif stage == "preliminary":
             message = f"14:30预扫描完成：{len(daily_passed)}只等待14:55最终分钟复核"
         elif config.get("requires_auction_confirmation"):
             message = (
@@ -1423,8 +1564,8 @@ class OvernightStrategyService:
             run_id,
             status="completed",
             message=message,
-            data_date=data_date,
-            is_realtime=True,
+            data_date=scan_date,
+            is_realtime=realtime,
             scanned_count=len(stocks),
             prefiltered_count=len(prefiltered),
             candidates=candidates[:120],
@@ -1548,20 +1689,46 @@ class OvernightStrategyService:
                     OvernightStrategyRun.data_date < now.date(),
                 )
                 .order_by(desc(OvernightStrategyRun.id))
-                .limit(30)
+                .limit(100)
             )).scalars().all()
-        previous_run = next(
-            (
-                item for item in previous_runs
-                if str((item.data_quality or {}).get("strategy_id") or STRATEGY_CONFIG["id"]) == config["id"]
-            ),
-            None,
+        # The auction agent is independent from the active tail strategy. It
+        # prefers its own prior-day candidates, then falls back to the latest
+        # eligible candidates produced by any overnight tail strategy.
+        dated_runs = [item for item in previous_runs if item.data_date is not None]
+        latest_tail_date = max((item.data_date for item in dated_runs), default=None)
+        eligible_runs = [item for item in dated_runs if item.data_date == latest_tail_date]
+        eligible_runs.sort(
+            key=lambda item: (
+                str((item.data_quality or {}).get("strategy_id") or STRATEGY_CONFIG["id"]) != config["id"],
+                -int(item.id),
+            )
         )
-        tail_candidates = [
-            item for item in (previous_run.candidates if previous_run else [])
-            if isinstance(item, dict) and bool(item.get("tail_qualified") or item.get("awaiting_auction"))
-        ]
-        pending_id = previous_run.id if previous_run else None
+        tail_candidates: list[dict[str, Any]] = []
+        source_run_ids: list[int] = []
+        seen_codes: set[str] = set()
+        for source_run in eligible_runs:
+            source_quality = source_run.data_quality if isinstance(source_run.data_quality, dict) else {}
+            source_strategy_id = str(source_quality.get("strategy_id") or STRATEGY_CONFIG["id"])
+            source_strategy = source_quality.get("strategy") if isinstance(source_quality.get("strategy"), dict) else {}
+            source_candidates = [
+                item for item in (source_run.candidates or [])
+                if isinstance(item, dict) and bool(item.get("tail_qualified") or item.get("awaiting_auction"))
+            ]
+            if not source_candidates:
+                continue
+            source_run_ids.append(source_run.id)
+            for item in source_candidates:
+                code = str(item.get("code") or "")
+                if not code or code in seen_codes:
+                    continue
+                candidate = deepcopy(item)
+                candidate["source_strategy_id"] = source_strategy_id
+                candidate["source_strategy_name"] = str(source_strategy.get("name") or source_strategy_id)
+                candidate["source_entry_run_id"] = source_run.id
+                tail_candidates.append(candidate)
+                seen_codes.add(code)
+        previous_run = eligible_runs[0] if eligible_runs else None
+        pending_id = source_run_ids[0] if source_run_ids else None
         if not tail_candidates:
             await self._finish(
                 run_id,
@@ -1573,11 +1740,17 @@ class OvernightStrategyService:
                     "cash_day": True,
                     "auction": {"status": "no_pending_candidates", "agent": "AI竞价盯盘Agent"},
                     "pending_entry_run_id": pending_id,
+                    "pending_entry_run_ids": source_run_ids,
+                    "candidate_source_policy": "优先竞价版尾盘候选，否则读取其他一夜策略最新尾盘候选",
                 },
             )
             return
 
-        await self._set_progress(run_id, 20, f"AI竞价盯盘Agent正在核验{len(tail_candidates)}只尾盘候选")
+        await self._set_progress(
+            run_id,
+            20,
+            f"AI竞价盯盘Agent正在核验{len(tail_candidates)}只尾盘候选（来源策略可独立）",
+        )
         codes = [str(item.get("code") or "") for item in tail_candidates if item.get("code")]
         try:
             quote_payload = await collector.fetch_stock_auction_quotes(codes)
@@ -1603,6 +1776,8 @@ class OvernightStrategyService:
                     "strategy_id": config["id"], "strategy": config,
                     "auction": {"status": "unavailable", "agent": "AI竞价盯盘Agent"},
                     "pending_entry_run_id": pending_id,
+                    "pending_entry_run_ids": source_run_ids,
+                    "candidate_source_policy": "优先竞价版尾盘候选，否则读取其他一夜策略最新尾盘候选",
                     "missing_policy": "竞价数据不可用时不以缓存推断买入",
                 },
                 error=type(exc).__name__,
@@ -1686,6 +1861,8 @@ class OvernightStrategyService:
                 "cash_day": not any(item.get("qualified") for item in candidates),
                 "loss_circuit": circuit,
                 "pending_entry_run_id": pending_id,
+                "pending_entry_run_ids": source_run_ids,
+                "candidate_source_policy": "优先竞价版尾盘候选，否则读取其他一夜策略最新尾盘候选",
                 "execution": execution_quality,
                 **({"market_execution_gate": market_execution_gate} if market_execution_gate else {}),
                 "auction": {
@@ -2166,9 +2343,13 @@ class OvernightStrategyService:
             item for item in strategy_store["strategies"]
             if item["id"] == strategy_store["active_id"]
         )
+        auction_strategy = next(
+            (item for item in strategy_store["strategies"] if item["id"] == AUCTION_STRATEGY_CONFIG["id"]),
+            {**AUCTION_STRATEGY_CONFIG},
+        )
         async with async_session() as session:
             runs = (await session.execute(
-                select(OvernightStrategyRun).order_by(desc(OvernightStrategyRun.id)).limit(20)
+                select(OvernightStrategyRun).order_by(desc(OvernightStrategyRun.id)).limit(100)
             )).scalars().all()
             positions = (await session.execute(
                 select(OvernightPosition).order_by(desc(OvernightPosition.entry_at)).limit(100)
@@ -2191,12 +2372,16 @@ class OvernightStrategyService:
         quotes = {str(item.get("code")): item for item in quote_payload.get("stocks") or []}
         position_views = [self._position_view(row, quotes.get(row.stock_code)) for row in positions]
         active = next((row for row in runs if row.status in {"queued", "running"}), None)
+        def strategy_id_for(row: OvernightStrategyRun) -> str:
+            return str((row.data_quality or {}).get("strategy_id") or STRATEGY_CONFIG["id"])
+
         def belongs_to_active(row: OvernightStrategyRun) -> bool:
-            return str((row.data_quality or {}).get("strategy_id") or STRATEGY_CONFIG["id"]) == active_strategy["id"]
+            return strategy_id_for(row) == active_strategy["id"]
 
         latest_entry = next((row for row in runs if belongs_to_active(row) and row.stage == "entry" and row.status not in {"queued", "running"}), None)
-        latest_auction = next((row for row in runs if belongs_to_active(row) and row.stage == "auction" and row.status not in {"queued", "running"}), None)
+        latest_auction = next((row for row in runs if strategy_id_for(row) == AUCTION_STRATEGY_CONFIG["id"] and row.stage == "auction" and row.status not in {"queued", "running"}), None)
         latest_preliminary = next((row for row in runs if belongs_to_active(row) and row.stage == "preliminary" and row.status not in {"queued", "running"}), None)
+        latest_research = next((row for row in runs if bool((row.data_quality or {}).get("research_only")) and row.stage in {"preliminary", "entry"} and row.status not in {"queued", "running"}), None)
         completed = [item for item in position_views if item["status"] == "closed" and item["pnl"] is not None]
         all_priced = [item for item in position_views if item["pnl"] is not None]
         total_cost = sum(item["cost_value"] for item in all_priced)
@@ -2211,10 +2396,17 @@ class OvernightStrategyService:
                 "selection_limit": "按可审计综合分取前5只",
             },
             "strategy_store": strategy_store,
+            "auction_strategy": {
+                **auction_strategy,
+                "enabled": True,
+                "independent": True,
+                "agent": "AI竞价盯盘Agent",
+            },
             "active_run": _run_view(active),
             "latest_entry_run": _run_view(latest_entry),
             "latest_auction_run": _run_view(latest_auction),
             "latest_preliminary_run": _run_view(latest_preliminary),
+            "latest_research_run": _run_view(latest_research),
             "runs": [_run_view(row) for row in runs],
             "positions": position_views,
             "open_positions": [item for item in position_views if item["status"] == "open"],
@@ -2263,8 +2455,15 @@ class OvernightStrategyService:
         dashboard = await self.dashboard()
         latest = dashboard.get("latest_auction_run") or dashboard.get("latest_entry_run") or {}
         strategy = dashboard.get("strategy") or {}
+        auction_strategy = dashboard.get("auction_strategy") or AUCTION_STRATEGY_CONFIG
         return {
             "tag": str(strategy.get("name") or STRATEGY_CONFIG["name"]),
+            "auction_agent": {
+                "name": "AI竞价盯盘Agent",
+                "strategy_id": auction_strategy.get("id"),
+                "strategy_name": auction_strategy.get("name"),
+                "independent": True,
+            },
             "schedule": "交易日14:30预扫，14:55尾盘复核；竞价确认版次日09:24-09:27由AI竞价盯盘Agent核验，10:00前退出",
             "run": latest,
             "tail_run": dashboard.get("latest_entry_run") or {},

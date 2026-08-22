@@ -460,9 +460,14 @@ async def start_overnight_strategy_run(request: dict):
     requested_trigger = str((request or {}).get("trigger") or "manual").strip().lower()
     trigger = "github_schedule" if requested_trigger == "github_schedule" else "manual"
     strategy_id = str((request or {}).get("strategy_id") or "").strip() or None
+    research_only = bool((request or {}).get("research_only"))
     try:
         result = await overnight_strategy_service.start(
-            stage, trigger=trigger, background=True, strategy_id=strategy_id,
+            stage,
+            trigger=trigger,
+            background=True,
+            strategy_id=strategy_id,
+            research_only=research_only,
         )
     except ValueError as exc:
         raise _unprocessable(exc) from exc

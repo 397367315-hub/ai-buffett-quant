@@ -252,11 +252,14 @@ async def run_overnight_entry_scan():
 
 
 async def run_overnight_auction_watch():
-    from services.overnight_strategy import overnight_strategy_service
+    from services.overnight_strategy import AUCTION_STRATEGY_CONFIG, overnight_strategy_service
 
     try:
         return await overnight_strategy_service.start(
-            "auction", trigger="schedule", background=False,
+            "auction",
+            trigger="schedule",
+            background=False,
+            strategy_id=AUCTION_STRATEGY_CONFIG["id"],
         )
     except Exception as exc:
         print(f"[Scheduler] 一夜持股09:25竞价盯盘失败: {type(exc).__name__}")

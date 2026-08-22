@@ -7,6 +7,22 @@ from services import scheduler as scheduler_module
 
 
 class SchedulerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_auction_watch_always_uses_independent_auction_strategy(self):
+        with patch(
+            "services.overnight_strategy.overnight_strategy_service.start",
+            new_callable=AsyncMock,
+            return_value={"run": {"id": 1}},
+        ) as start:
+            result = await scheduler_module.run_overnight_auction_watch()
+
+        self.assertEqual(result, {"run": {"id": 1}})
+        start.assert_awaited_once_with(
+            "auction",
+            trigger="schedule",
+            background=False,
+            strategy_id="overnight_auction_confirm_v1",
+        )
+
     async def test_resume_incomplete_backfills_restarts_persisted_work(self):
         with patch(
             "services.history_cache.history_cache.resume_incomplete_runs",
