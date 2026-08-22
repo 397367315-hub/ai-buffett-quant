@@ -450,9 +450,21 @@ class V51MicrostructureService:
         if target is None:
             return {"status": "NO_DATA", "model_version": AUCTION_MODEL_VERSION, "quality": {"coverage_pct": 0}}
         async with async_session() as session:
-            total = (await session.execute(select(func.count(func.distinct(StockUniverseSnapshot.stock_code)).where(StockUniverseSnapshot.trade_date == target)))).scalar_one() or 0
-            observed = (await session.execute(select(func.count(func.distinct(StockAuctionSnapshot.stock_code)).where(StockAuctionSnapshot.trade_date == target)))).scalar_one() or 0
-            timeline_count = (await session.execute(select(func.count(func.distinct(AuctionSnapshotV51.stock_code)).where(AuctionSnapshotV51.trade_date == target)))).scalar_one() or 0
+            total = (await session.execute(
+                select(func.count(func.distinct(StockUniverseSnapshot.stock_code))).where(
+                    StockUniverseSnapshot.trade_date == target,
+                )
+            )).scalar_one() or 0
+            observed = (await session.execute(
+                select(func.count(func.distinct(StockAuctionSnapshot.stock_code))).where(
+                    StockAuctionSnapshot.trade_date == target,
+                )
+            )).scalar_one() or 0
+            timeline_count = (await session.execute(
+                select(func.count(func.distinct(AuctionSnapshotV51.stock_code))).where(
+                    AuctionSnapshotV51.trade_date == target,
+                )
+            )).scalar_one() or 0
             latest = list((await session.execute(select(StockAuctionSnapshot).where(StockAuctionSnapshot.trade_date == target).order_by(StockAuctionSnapshot.high_open_pct.desc().nullslast()).limit(12))).scalars().all())
         rows = [{
             "snapshot_time": item.quote_at,

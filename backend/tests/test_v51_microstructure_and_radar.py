@@ -1,13 +1,18 @@
 from datetime import date, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from database import Base
+from models import AuctionSnapshotV51, StockAuctionSnapshot, StockDailyBar, StockUniverseSnapshot
 from quant.v51_microstructure import (
     candlestick_semantics,
     expectation_deviation,
     normalize_auction_snapshots,
 )
 from services.event_radar import EventRadarService
+from services.v51_microstructure_service import V51MicrostructureService
 
 
 def test_auction_without_history_disables_model_explicitly():
@@ -119,3 +124,46 @@ async def test_radar_provider_failure_is_recorded_as_degraded():
     assert await service._provider_call("test_provider", failing_provider()) == []
     assert service._memory_health["test_provider"]["status"] == "FAILED"
     assert service._memory_health["test_provider"]["error_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_auction_dashboard_coverage_counts_each_stock_once_per_session():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    target = date(2026, 8, 21)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with session_factory() as session:
+        session.add(StockDailyBar(stock_code="600001", trade_date=target, close_price=10.0, source="test"))
+        session.add_all([
+            StockUniverseSnapshot(stock_code="600001", exchange="SH", trade_date=target, source="test"),
+            StockUniverseSnapshot(stock_code="000001", exchange="SZ", trade_date=target, source="test"),
+            StockAuctionSnapshot(
+                stock_code="600001", trade_date=target,
+                quote_at=datetime(2026, 8, 21, 9, 25),
+                auction_price=10.2, previous_close=10.0, source="test",
+            ),
+            AuctionSnapshotV51(
+                stock_code="600001", trade_date=target,
+                snapshot_time=datetime(2026, 8, 21, 9, 24),
+                indicative_price=10.1, data_cutoff_time=datetime(2026, 8, 21, 9, 24),
+                source="test", payload={},
+            ),
+            AuctionSnapshotV51(
+                stock_code="600001", trade_date=target,
+                snapshot_time=datetime(2026, 8, 21, 9, 25),
+                indicative_price=10.2, data_cutoff_time=datetime(2026, 8, 21, 9, 25),
+                source="test", payload={},
+            ),
+        ])
+        await session.commit()
+    try:
+        with patch("services.v51_microstructure_service.async_session", session_factory):
+            result = await V51MicrostructureService().auction_dashboard()
+        assert result["universe_count"] == 2
+        assert result["observed_stocks"] == 1
+        assert result["time_series_snapshots"] == 1
+        assert result["coverage_pct"] == 50.0
+        assert result["timeline_coverage_pct"] == 50.0
+    finally:
+        await engine.dispose()
