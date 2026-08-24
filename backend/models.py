@@ -1681,3 +1681,391 @@ class RadarEventEffect(Base):
     core_stock_return = Column(Float)
     recorded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     data_quality = Column(JSON, nullable=False, default=dict)
+
+
+# ROCI is an additive sidecar.  These tables deliberately do not reference or
+# overwrite the legacy scoring tables; the snapshot key is the boundary
+# between the read-only adapters and the ROCI evidence graph.
+class RociSkill(Base):
+    __tablename__ = "roci_skills"
+    __table_args__ = (
+        Index("idx_roci_skills_status", "status", "enabled"),
+        Index("idx_roci_skills_category", "category", "status"),
+    )
+
+    skill_id = Column(String(32), primary_key=True)
+    name = Column(String(128), nullable=False)
+    category = Column(String(64), nullable=False)
+    source_name = Column(String(255))
+    source_section = Column(String(255))
+    source_pages = Column(String(64))
+    source_claim = Column(Text)
+    engineered_definition = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="DETECT_ONLY")
+    version = Column(String(32), nullable=False, default="roci-v1.0")
+    data_requirements = Column(JSON, nullable=False, default=list)
+    applicable_regimes = Column(JSON, nullable=False, default=list)
+    forbidden_regimes = Column(JSON, nullable=False, default=list)
+    default_weight = Column(Float)
+    enabled = Column(Boolean, nullable=False, default=True)
+    validation_status = Column(String(40), nullable=False, default="NOT_TESTED")
+    sample_size = Column(Integer, nullable=False, default=0)
+    hit_rate = Column(Float)
+    profit_factor = Column(Float)
+    expectancy_r = Column(Float)
+    max_drawdown = Column(Float)
+    last_validated_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RociSkillRun(Base):
+    __tablename__ = "roci_skill_runs"
+    __table_args__ = (
+        Index("idx_roci_skill_runs_skill_time", "skill_id", "snapshot_time"),
+        Index("idx_roci_skill_runs_snapshot", "snapshot_key"),
+        Index("idx_roci_skill_runs_triggered", "triggered", "snapshot_time"),
+        UniqueConstraint("snapshot_key", "skill_id", name="uq_roci_skill_run_snapshot_skill"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    skill_id = Column(String(32), ForeignKey("roci_skills.skill_id"), nullable=False)
+    symbol = Column(String(20))
+    trade_date = Column(Date)
+    snapshot_time = Column(DateTime, nullable=False, default=datetime.utcnow)
+    triggered = Column(Boolean, nullable=False, default=False)
+    score = Column(Float)
+    confidence = Column(Float)
+    contribution = Column(Float)
+    evidence = Column(JSON, nullable=False, default=list)
+    state = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociSourceRegistry(Base):
+    __tablename__ = "roci_source_registry"
+
+    source_key = Column(String(80), primary_key=True)
+    name = Column(String(255), nullable=False)
+    source_type = Column(String(40), nullable=False, default="knowledge")
+    locator = Column(String(500))
+    trust_note = Column(Text)
+    active = Column(Boolean, nullable=False, default=True)
+    metadata_payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RociSourceSkillLink(Base):
+    __tablename__ = "roci_source_skill_links"
+    __table_args__ = (
+        UniqueConstraint("source_key", "skill_id", name="uq_roci_source_skill"),
+        Index("idx_roci_source_skill_skill", "skill_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_key = Column(String(80), ForeignKey("roci_source_registry.source_key"), nullable=False)
+    skill_id = Column(String(32), ForeignKey("roci_skills.skill_id"), nullable=False)
+    section = Column(String(255))
+    relation = Column(String(40), nullable=False, default="derived_from")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociBattlefieldSnapshot(Base):
+    __tablename__ = "roci_battlefield_snapshots"
+    __table_args__ = (
+        Index("idx_roci_battlefield_date", "trade_date", "data_cutoff_time"),
+        Index("idx_roci_battlefield_symbol", "symbol", "data_cutoff_time"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False, unique=True)
+    symbol = Column(String(20))
+    trade_date = Column(Date, nullable=False)
+    data_cutoff_time = Column(DateTime, nullable=False)
+    data_completeness_pct = Column(Float)
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    cache_used = Column(Boolean, nullable=False, default=False)
+    regime = Column(String(32), nullable=False, default="UNKNOWN")
+    market_reward = Column(Text)
+    market_penalty = Column(Text)
+    payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociForce(Base):
+    __tablename__ = "roci_forces"
+    __table_args__ = (
+        Index("idx_roci_forces_snapshot_side", "snapshot_key", "side"),
+        UniqueConstraint("snapshot_key", "force_id", name="uq_roci_force_snapshot_force"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    force_id = Column(String(80), nullable=False)
+    scope = Column(String(20), nullable=False)
+    name = Column(String(160), nullable=False)
+    side = Column(String(20), nullable=False)
+    strength = Column(Float)
+    direction = Column(String(20), nullable=False, default="UNKNOWN")
+    confidence = Column(Float)
+    persistence = Column(Float)
+    relevance = Column(Float)
+    evidence = Column(JSON, nullable=False, default=list)
+    skills = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociForceHistory(Base):
+    __tablename__ = "roci_force_history"
+    __table_args__ = (
+        Index("idx_roci_force_history_id_time", "force_id", "observed_at"),
+        UniqueConstraint("snapshot_key", "force_id", name="uq_roci_force_history_snapshot_force"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    force_id = Column(String(80), nullable=False)
+    snapshot_key = Column(String(80), nullable=False)
+    observed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    side = Column(String(20), nullable=False)
+    strength = Column(Float)
+    direction = Column(String(20), nullable=False, default="UNKNOWN")
+    evidence = Column(JSON, nullable=False, default=list)
+
+
+class RociPrimaryContradiction(Base):
+    __tablename__ = "roci_primary_contradictions"
+    __table_args__ = (
+        Index("idx_roci_contradiction_snapshot", "snapshot_key"),
+        UniqueConstraint("snapshot_key", name="uq_roci_contradiction_snapshot"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    statement = Column(Text, nullable=False)
+    candidate_key = Column(String(80), nullable=False)
+    confidence = Column(Float)
+    secondary_risks = Column(JSON, nullable=False, default=list)
+    supporting_evidence = Column(JSON, nullable=False, default=list)
+    opposing_evidence = Column(JSON, nullable=False, default=list)
+    what_would_resolve = Column(JSON, nullable=False, default=list)
+    what_would_worsen = Column(JSON, nullable=False, default=list)
+    status = Column(String(30), nullable=False, default="OBSERVING")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociRiskPricing(Base):
+    __tablename__ = "roci_risk_pricing"
+    __table_args__ = (
+        Index("idx_roci_risk_pricing_snapshot", "snapshot_key"),
+        UniqueConstraint("snapshot_key", "risk_key", name="uq_roci_risk_pricing_snapshot_risk"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    risk_key = Column(String(80), nullable=False)
+    risk_name = Column(String(160), nullable=False)
+    event_strength = Column(Float)
+    price_response = Column(Float)
+    relative_response = Column(Float)
+    recovery_speed = Column(Float)
+    pricing_state = Column(String(32), nullable=False, default="UNKNOWN")
+    evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociStressEvent(Base):
+    __tablename__ = "roci_stress_events"
+    __table_args__ = (
+        Index("idx_roci_stress_events_snapshot", "snapshot_key"),
+        UniqueConstraint("snapshot_key", "event_key", name="uq_roci_stress_snapshot_event"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    event_key = Column(String(80), nullable=False)
+    event_name = Column(String(160), nullable=False)
+    event_date = Column(Date)
+    severity = Column(Float)
+    source = Column(String(120))
+    expected_response = Column(Text)
+    evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociStressResponse(Base):
+    __tablename__ = "roci_stress_responses"
+    __table_args__ = (Index("idx_roci_stress_response_event", "stress_event_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stress_event_id = Column(Integer, ForeignKey("roci_stress_events.id"), nullable=False)
+    actual_response = Column(Text)
+    relative_response = Column(Float)
+    recovery_speed = Column(Float)
+    post_stress_followthrough = Column(Float)
+    resilience_state = Column(String(30), nullable=False, default="UNKNOWN")
+    evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociRiskOpportunityConversion(Base):
+    __tablename__ = "roci_risk_opportunity_conversions"
+    __table_args__ = (
+        Index("idx_roci_conversion_snapshot", "snapshot_key"),
+        UniqueConstraint("snapshot_key", name="uq_roci_conversion_snapshot"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    risk_event = Column(Text, nullable=False)
+    price_response = Column(Text)
+    supply_demand_response = Column(Text)
+    relative_strength = Column(Float)
+    follow_through = Column(Float)
+    conversion_state = Column(String(32), nullable=False, default="RISK_UNRESOLVED")
+    evidence = Column(JSON, nullable=False, default=list)
+    invalidations = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociOpportunityPattern(Base):
+    __tablename__ = "roci_opportunity_patterns"
+    __table_args__ = (
+        Index("idx_roci_patterns_category_status", "category", "status"),
+        Index("idx_roci_patterns_updated", "updated_at"),
+    )
+
+    pattern_id = Column(String(80), primary_key=True)
+    name = Column(String(160), nullable=False)
+    category = Column(String(40), nullable=False)
+    source_name = Column(String(255))
+    definition = Column(Text, nullable=False)
+    detection_rule = Column(JSON, nullable=False, default=dict)
+    status = Column(String(32), nullable=False, default="SHADOW")
+    applicable_regimes = Column(JSON, nullable=False, default=list)
+    candidate_count = Column(Integer, nullable=False, default=0)
+    last_triggered_at = Column(DateTime)
+    validation_summary = Column(JSON, nullable=False, default=dict)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RociPatternHit(Base):
+    __tablename__ = "roci_pattern_hits"
+    __table_args__ = (Index("idx_roci_pattern_hits_pattern_time", "pattern_id", "observed_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pattern_id = Column(String(80), ForeignKey("roci_opportunity_patterns.pattern_id"), nullable=False)
+    snapshot_key = Column(String(80), nullable=False)
+    symbol = Column(String(20))
+    observed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    triggered = Column(Boolean, nullable=False, default=False)
+    score = Column(Float)
+    confidence = Column(Float)
+    evidence = Column(JSON, nullable=False, default=list)
+    outcome = Column(JSON)
+
+
+class RociAsymmetryScore(Base):
+    __tablename__ = "roci_asymmetry_scores"
+    __table_args__ = (
+        Index("idx_roci_asymmetry_snapshot", "snapshot_key"),
+        UniqueConstraint("snapshot_key", name="uq_roci_asymmetry_snapshot"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    symbol = Column(String(20))
+    invalidation_distance = Column(Float)
+    expected_upside = Column(Float)
+    expected_downside = Column(Float)
+    estimated_win_probability = Column(Float)
+    reward_risk_ratio = Column(Float)
+    liquidity_risk = Column(Float)
+    gap_risk = Column(Float)
+    tail_risk = Column(Float)
+    time_cost = Column(Float)
+    score = Column(Float)
+    status = Column(String(30), nullable=False, default="UNKNOWN")
+    evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociAction(Base):
+    __tablename__ = "roci_actions"
+    __table_args__ = (
+        Index("idx_roci_actions_snapshot_time", "snapshot_key", "created_at"),
+        UniqueConstraint("snapshot_key", name="uq_roci_action_snapshot"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    symbol = Column(String(20))
+    action = Column(String(20), nullable=False)
+    reason = Column(Text, nullable=False)
+    confidence = Column(Float)
+    risk_budget = Column(Float)
+    invalidations = Column(JSON, nullable=False, default=list)
+    next_checks = Column(JSON, nullable=False, default=list)
+    shadow_excluded = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociActionEvidence(Base):
+    __tablename__ = "roci_action_evidence"
+    __table_args__ = (Index("idx_roci_action_evidence_action", "action_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    action_id = Column(Integer, ForeignKey("roci_actions.id"), nullable=False)
+    evidence_type = Column(String(20), nullable=False)
+    label = Column(String(300), nullable=False)
+    value = Column(JSON)
+    source = Column(String(200))
+    as_of = Column(DateTime)
+    supports = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociReplay(Base):
+    __tablename__ = "roci_replays"
+    __table_args__ = (Index("idx_roci_replays_symbol_date", "symbol", "trade_date"),)
+
+    replay_id = Column(String(80), primary_key=True)
+    symbol = Column(String(20))
+    trade_date = Column(Date, nullable=False)
+    requested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    data_cutoff_time = Column(DateTime, nullable=False)
+    status = Column(String(20), nullable=False, default="COMPLETED")
+    snapshot_payload = Column(JSON, nullable=False, default=dict)
+    outcome_payload = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociUserFeedback(Base):
+    __tablename__ = "roci_user_feedback"
+    __table_args__ = (Index("idx_roci_feedback_snapshot_time", "snapshot_key", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    user_key = Column(String(80), nullable=False, default="default")
+    target = Column(String(80))
+    rating = Column(Integer)
+    action = Column(String(20))
+    note = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociModelRiskEvent(Base):
+    __tablename__ = "roci_model_risk_events"
+    __table_args__ = (Index("idx_roci_model_risk_time", "severity", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    risk_type = Column(String(60), nullable=False)
+    severity = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="OPEN")
+    message = Column(Text, nullable=False)
+    evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)

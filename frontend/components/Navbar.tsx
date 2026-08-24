@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -65,6 +65,9 @@ export default function Navbar() {
         <Link href="/research" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${pathname.startsWith('/research') ? 'bg-[#1F6FEB22] text-accent font-medium' : 'text-text-secondary hover:text-text hover:bg-[#21262D]'}`}>
           <Microscope size={16} /> AI研究中心
         </Link>
+        <Link href="/roci" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${pathname.startsWith('/roci') ? 'bg-[#1F6FEB22] text-accent font-medium' : 'text-text-secondary hover:text-text hover:bg-[#21262D]'}`}>
+          <ShieldAlert size={16} /> 风险机会认知
+        </Link>
         <div
           className="relative"
           onMouseEnter={() => setProDropdownOpen(true)}
@@ -120,6 +123,9 @@ export default function Navbar() {
           </Link>
           <Link href="/market" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
             <BrainCircuit size={16} /> AI决策工作台
+          </Link>
+          <Link href="/roci" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
+            <ShieldAlert size={16} /> 风险机会认知
           </Link>
           <div className="border-t border-border my-2 pt-2">
             <div className="text-xs text-text-secondary px-3 mb-1">专业看板</div>

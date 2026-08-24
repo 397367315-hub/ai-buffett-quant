@@ -12,6 +12,7 @@ from api.trading_skill_routes import router as trading_skill_router
 from api.reflexivity_routes import router as reflexivity_router, skills_alias_router as reflexivity_skills_alias_router
 from api.v51_routes import router as v51_router
 from api.radar_routes import router as radar_router
+from api.roci_routes import router as roci_router, legacy_router as roci_legacy_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -31,6 +32,8 @@ async def lifespan(app: FastAPI):
     from services.trading_skill_registry import ensure_trading_skill_registry
     await seed()
     await ensure_trading_skill_registry()
+    from roci.service import roci_service
+    await roci_service.ensure_initialized()
     from quant.persistence import hydrate_strategy_store
     await hydrate_strategy_store()
     await history_cache.resume_incomplete_runs()
@@ -90,6 +93,8 @@ app.include_router(reflexivity_router)
 app.include_router(reflexivity_skills_alias_router)
 app.include_router(v51_router)
 app.include_router(radar_router)
+app.include_router(roci_router)
+app.include_router(roci_legacy_router)
 
 
 @app.get("/")

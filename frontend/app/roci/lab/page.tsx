@@ -1,0 +1,22 @@
+'use client';
+
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Beaker, CheckCircle2, FlaskConical, Search, ShieldX } from 'lucide-react';
+import { apiFetch, friendlyApiError } from '@/lib/api';
+import { RociFrame, RociSectionTitle, RociStatusPill } from '../components/RociFrame';
+
+type Skill = Record<string, any>;
+
+export default function RociLabPage() {
+  const [skills, setSkills] = useState<Skill[]>([]); const [query, setQuery] = useState(''); const [selected, setSelected] = useState<Skill | null>(null); const [result, setResult] = useState<any>(null); const [working, setWorking] = useState(false); const [error, setError] = useState('');
+  const load = useCallback(async () => { try { const response = await apiFetch<{ data: { items: Skill[] } }>('/roci/lab/skills'); setSkills(response.data.items || []); } catch (caught) { setError(friendlyApiError(caught, '验证实验室暂时不可用')); } }, []);
+  useEffect(() => { void load(); }, [load]);
+  const visible = useMemo(() => skills.filter((item) => !query || `${item.skill_id} ${item.name}`.toLowerCase().includes(query.toLowerCase())), [skills, query]);
+  const run = async (mode: 'backtest' | 'promote') => { if (!selected) return; setWorking(true); setResult(null); try { const response = await apiFetch<{ data: any }>(`/roci/lab/skills/${selected.skill_id}/${mode}`, { method: 'POST', body: JSON.stringify({ requested_by: 'user', cost_model: true, walk_forward: true }) }); setResult(response.data); } catch (caught) { setResult({ status: 'ERROR', reason: friendlyApiError(caught) }); } finally { setWorking(false); } };
+
+  return <RociFrame title="策略验证实验室" subtitle="Shadow → Active 必须通过 PIT、成本、Walk-forward、样本外、跨生态与衰减门槛" compact>
+    <div className="roci-lab-policy"><FlaskConical size={20} /><div><strong>任何资料战法都不能手工直接晋级 Active</strong><p>规则不可计算、样本不足或没有样本外结果时，系统应拒绝晋级，而不是显示漂亮但虚假的胜率。</p></div></div>
+    {error && <div className="roci-error">{error}</div>}
+    <div className="roci-lab-grid"><div className="roci-panel roci-lab-list"><RociSectionTitle eyebrow="REGISTRY" title="选择 Skill" /><label className="roci-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索编号或名称" /></label><div className="roci-lab-skill-scroll">{visible.map((item) => <button key={item.skill_id} className={`roci-lab-skill ${selected?.skill_id === item.skill_id ? 'active' : ''}`} onClick={() => { setSelected(item); setResult(null); }}><span><b>{item.skill_id}</b>{item.name}</span><RociStatusPill value={item.status} tone={item.status === 'ACTIVE' ? 'good' : item.status === 'SHADOW' ? 'warn' : 'blue'} /></button>)}</div></div><div className="roci-panel roci-lab-detail">{selected ? <><RociSectionTitle eyebrow={`${selected.skill_id} · ${selected.status}`} title={selected.name} /><div className="roci-performance-grid"><div><span>样本量</span><b>{selected.sample_size || '未验证'}</b></div><div><span>胜率</span><b>{selected.hit_rate == null ? '未验证' : `${selected.hit_rate}%`}</b></div><div><span>Profit Factor</span><b>{selected.profit_factor == null ? '未验证' : selected.profit_factor}</b></div><div><span>期望R</span><b>{selected.expectancy_r == null ? '未验证' : selected.expectancy_r}</b></div><div><span>最大回撤</span><b>{selected.max_drawdown == null ? '未验证' : selected.max_drawdown}</b></div><div><span>验证状态</span><b>{selected.validation_status}</b></div></div><div className="roci-lab-gates">{['规则可计算', 'PIT 无未来函数', '不可成交与成本', 'Walk-forward', '样本外稳定', '跨生态验证', '最近衰减监测'].map((item) => <div key={item}><ShieldX size={14} /><span>{item}</span><small>尚未通过</small></div>)}</div><div className="roci-lab-actions"><button className="roci-button" onClick={() => void run('backtest')} disabled={working}><Beaker size={14} />生成验证门槛报告</button><button className="roci-button roci-primary-button" onClick={() => void run('promote')} disabled={working}><CheckCircle2 size={14} />申请晋级 Active</button></div>{result && <div className={`roci-lab-result ${result.status === 'REJECTED' || result.status === 'NOT_VALIDATED' ? 'warn' : ''}`}><strong>{result.status}</strong><p>{result.reason || '实验已记录'}</p>{result.gates && <pre>{JSON.stringify(result.gates, null, 2)}</pre>}</div>}</> : <div className="roci-empty roci-lab-placeholder"><FlaskConical size={24} /><strong>选择一个 Skill</strong><p>查看样本、期望、回撤和晋级门槛。</p></div>}</div></div><div className="roci-panel roci-notice"><AlertTriangle size={15} /><span>高胜率不等于正期望。Lab 同时检查平均盈利R、平均亏损R、Profit Factor、最大回撤、最大连亏和生态分层。</span></div>
+  </RociFrame>;
+}
