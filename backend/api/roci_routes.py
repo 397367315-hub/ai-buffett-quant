@@ -135,7 +135,19 @@ async def roci_refresh_status():
 
     status = await market_way_v4_service.data_status()
     refresh_job = status.get("refresh_job") or {}
-    return {"code": 0, "data": {"refresh_job": refresh_job, "pipeline": status.get("pipeline") or {}, "message": "主看板刷新会继续在后台更新长任务；此状态来自任务本身。"}}
+    roci_job = roci_service.refresh_status()
+    return {
+        "code": 0,
+        "data": {
+            # ``refresh_job`` remains the V4-compatible field consumed by
+            # older boards. ``unified_refresh`` is the authoritative status
+            # for the one-click all-data cockpit refresh.
+            "refresh_job": refresh_job,
+            "unified_refresh": roci_job,
+            "pipeline": status.get("pipeline") or {},
+            "message": "主看板一次刷新所有依赖源；状态区分实时、缓存和不可用，不要求逐个打开其他功能。",
+        },
+    }
 
 
 @router.get("/intraday/current")

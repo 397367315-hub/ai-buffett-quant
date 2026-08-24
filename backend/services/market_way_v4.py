@@ -1720,6 +1720,28 @@ class MarketWayV4Service:
         await self._run_source_refresh()
         return dict(self._refresh_status)
 
+    async def wait_for_refresh(self, timeout: float | None = None) -> dict[str, Any]:
+        """Wait for the current source refresh without cancelling it on timeout.
+
+        The main dashboard uses a background refresh coordinator. A second
+        caller must be able to observe the same task rather than start another
+        full-market acquisition, and a request timeout must never cancel the
+        durable refresh that is already warming the caches.
+        """
+        task = self._refresh_task
+        if task and not task.done():
+            waiter = asyncio.shield(task)
+            try:
+                if timeout is None:
+                    await waiter
+                else:
+                    await asyncio.wait_for(waiter, timeout=timeout)
+            except asyncio.TimeoutError:
+                pass
+            except Exception:
+                pass
+        return dict(self._refresh_status)
+
     async def refresh_policy_source(self) -> dict[str, Any]:
         context = await self._policy_context(refresh=True)
         return {

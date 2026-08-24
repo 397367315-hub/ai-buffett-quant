@@ -422,5 +422,39 @@ class RociAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(cache_used)
 
 
+class RociRefreshCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_forced_dashboard_returns_cached_snapshot_without_waiting_for_sources(self):
+        service = RociService()
+        cached = {
+            "snapshot_key": "cached-snapshot",
+            "trade_date": "2026-08-24",
+            "source_status": {"workbench": "cached"},
+        }
+        with patch.object(service, "request_refresh", new=AsyncMock(return_value={"status": "queued"})), patch.object(
+            service, "_cached_dashboard", new=AsyncMock(return_value=cached)
+        ), patch.object(service, "build", new=AsyncMock(side_effect=AssertionError("forced dashboard rebuilt upstream"))):
+            result = await service.dashboard(force=True)
+        self.assertEqual(result["snapshot_key"], "cached-snapshot")
+        self.assertTrue(result["refresh_report"]["requested"])
+        self.assertEqual(result["refresh_report"]["coordinator"]["status"], "idle")
+
+    async def test_refresh_request_is_deduplicated_while_task_is_running(self):
+        service = RociService()
+        service.ensure_initialized = AsyncMock()
+        started = asyncio.Event()
+
+        async def fake_refresh():
+            started.set()
+            await asyncio.sleep(0.03)
+
+        with patch.object(service, "_run_refresh_all", side_effect=fake_refresh):
+            first = await service.request_refresh()
+            await started.wait()
+            second = await service.request_refresh()
+            self.assertIn(second["status"], {"queued", "running"})
+            self.assertEqual(first["updated_at"], second["updated_at"])
+            await service._refresh_task
+
+
 if __name__ == "__main__":
     unittest.main()

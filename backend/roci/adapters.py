@@ -189,8 +189,23 @@ async def load_daily_context(symbol: str | None = None, target: date | None = No
         return {"bars": [], "bars_by_code": {}, "data_date": None, "source": f"unavailable:{type(exc).__name__}"}
 
 
-async def load_existing_context(*, force: bool = False, symbol: str | None = None, as_of: date | None = None) -> dict[str, Any]:
-    """Collect the legacy outputs behind a stable, read-only contract."""
+async def load_existing_context(
+    *,
+    force: bool = False,
+    symbol: str | None = None,
+    as_of: date | None = None,
+    refresh_inputs: bool | None = None,
+) -> dict[str, Any]:
+    """Collect the legacy outputs behind a stable, read-only contract.
+
+    ``force`` has two jobs in the public API: bypass the derived ROCI snapshot
+    cache and ask upstream services to refresh.  The refresh coordinator needs
+    the first behaviour without starting a second fan-out after its source
+    jobs have completed, so callers can explicitly set ``refresh_inputs=False``
+    and rebuild from the latest persisted upstream caches.
+    """
+    if refresh_inputs is None:
+        refresh_inputs = force
     cached = await _cached(ROCI_CACHE_KEY)
     # Ignore an older ROCI cache after the risk-adapted recommendation layer
     # was introduced. Otherwise an off-hours process could serve the previous
@@ -208,10 +223,10 @@ async def load_existing_context(*, force: bool = False, symbol: str | None = Non
 
     if symbol:
         normalized = normalize_stock_code(symbol)
-        workbench_call = _load_workbench_context(force=force)
-        forecast_call = forecast_v5_service.dashboard(force=force, include_skills=False)
-        micro_call = v51_microstructure_service.diagnose(normalized, refresh=force, as_of=as_of)
-        reflex_call = reflexivity_service.diagnose(normalized, as_of=as_of, force=force)
+        workbench_call = _load_workbench_context(force=bool(refresh_inputs))
+        forecast_call = forecast_v5_service.dashboard(force=bool(refresh_inputs), include_skills=False)
+        micro_call = v51_microstructure_service.diagnose(normalized, refresh=bool(refresh_inputs), as_of=as_of)
+        reflex_call = reflexivity_service.diagnose(normalized, as_of=as_of, force=bool(refresh_inputs))
         workbench_result, forecast, micro, reflex = await asyncio.gather(
             workbench_call,
             _safe("forecast", forecast_call, {}),
@@ -220,12 +235,12 @@ async def load_existing_context(*, force: bool = False, symbol: str | None = Non
         )
         workbench, workbench_from_cache = workbench_result if isinstance(workbench_result, tuple) else (workbench_result, False)
     else:
-        workbench_call = _load_workbench_context(force=force)
+        workbench_call = _load_workbench_context(force=bool(refresh_inputs))
         # Forecast already consumes the legacy workbench internally. Running
         # both in parallel avoids introducing a dependency from old code into
         # the new sidecar and keeps the response useful if either fails.
-        forecast_call = forecast_v5_service.dashboard(force=force, include_skills=False)
-        micro_call = v51_microstructure_service.leadership_sectors(refresh=force)
+        forecast_call = forecast_v5_service.dashboard(force=bool(refresh_inputs), include_skills=False)
+        micro_call = v51_microstructure_service.leadership_sectors(refresh=bool(refresh_inputs))
         workbench_result, forecast, micro = await asyncio.gather(
             workbench_call,
             _safe("forecast", forecast_call, {}),

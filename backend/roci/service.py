@@ -223,6 +223,16 @@ class RociService:
         self._initialized = False
         self._init_lock = asyncio.Lock()
         self._persist_lock = asyncio.Lock()
+        self._refresh_lock = asyncio.Lock()
+        self._refresh_task: asyncio.Task | None = None
+        self._refresh_status: dict[str, Any] = {
+            "status": "idle",
+            "stage": "idle",
+            "progress": 0,
+            "message": "等待统一刷新",
+            "sources": {},
+            "updated_at": None,
+        }
 
     async def status(self) -> dict[str, Any]:
         await self.ensure_initialized()
@@ -346,45 +356,53 @@ class RociService:
                 break
         return list(reversed(history))
 
-    async def _context(self, *, force: bool = False, symbol: str | None = None, as_of: date | None = None) -> dict[str, Any]:
-        context = await load_existing_context(force=force, symbol=symbol, as_of=as_of)
+    async def _context(
+        self,
+        *,
+        force: bool = False,
+        symbol: str | None = None,
+        as_of: date | None = None,
+        refresh_inputs: bool | None = None,
+    ) -> dict[str, Any]:
+        context = await load_existing_context(
+            force=force,
+            symbol=symbol,
+            as_of=as_of,
+            refresh_inputs=refresh_inputs,
+        )
         if context.get("cached_roci") and not force and not symbol:
             return context
         context["pattern_definitions"] = all_pattern_definitions()
         return context
 
     async def _refresh_linked_sources(self) -> dict[str, dict[str, Any]]:
-        """Warm source caches used by ROCI-linked boards in one request.
+        """Warm source caches used by a direct ROCI sub-page refresh.
 
-        The core V4/V5 context is loaded by ``_context``.  These side sources
-        used to refresh only when their own page was opened, which made the
-        main cockpit show a mixture of fresh and stale sections.
+        The cockpit uses ``request_refresh`` below. This compatibility path is
+        kept for individual detail pages, but its writes are deliberately
+        serialized because Render's small database pool cannot safely absorb a
+        full-market event, auction and PIT fan-out at the same time.
         """
         from services.event_radar import event_radar_service
         from services.market_way_v4 import market_way_v4_service
         from services.v51_microstructure_service import v51_microstructure_service
 
-        jobs = {
-            "event_radar": event_radar_service.refresh(force=True),
-            # The canonical forced workbench call owns topic-strength refresh.
-            # Avoid concurrent writes to the same intraday evidence tables.
-            "topic_strength": asyncio.sleep(0, result={"status": "delegated_to_workbench"}),
-            "v51_auction": v51_microstructure_service.auction_dashboard(refresh=True),
-            # The forced V4 context refreshes the policy source once.
-            "v4_policy": asyncio.sleep(0, result={"status": "delegated_to_v4_context"}),
-            # The full V4 pipeline is persisted and resumed by its own service;
-            # queue it here so the dashboard click also warms the long-running
-            # financial/PIT sources without blocking the ROCI response.
-            "v4_data_pipeline": market_way_v4_service.refresh_sources(background=True),
+        jobs = (
+            ("event_radar", lambda: event_radar_service.refresh(force=True), 50),
+            ("v51_auction", lambda: v51_microstructure_service.auction_dashboard(refresh=True), 70),
+            ("v4_data_pipeline", lambda: market_way_v4_service.refresh_sources(background=True), 20),
+        )
+        result_map: dict[str, dict[str, Any]] = {
+            "topic_strength": {"status": "delegated_to_workbench"},
+            "v4_policy": {"status": "delegated_to_v4_context"},
         }
-
-        async def run(label: str, awaitable: Any) -> tuple[str, dict[str, Any]]:
+        for label, factory, timeout in jobs:
             try:
-                result = await asyncio.wait_for(awaitable, timeout=35.0)
+                result = await asyncio.wait_for(factory(), timeout=timeout)
                 if isinstance(result, dict) and result.get("status") in {"error", "unavailable", "UNAVAILABLE"}:
-                    return label, {"status": "degraded", "detail": result.get("status")}
-                if isinstance(result, dict) and result.get("status"):
-                    return label, {
+                    result_map[label] = {"status": "degraded", "detail": result.get("status")}
+                elif isinstance(result, dict) and result.get("status"):
+                    result_map[label] = {
                         "status": str(result.get("status")),
                         "progress": result.get("progress"),
                         "stage": result.get("stage"),
@@ -393,32 +411,55 @@ class RociService:
                         "data_date": result.get("data_date"),
                         "source": result.get("source"),
                     }
-                return label, {
-                    "status": "available",
-                    "data_date": result.get("data_date") if isinstance(result, dict) else None,
-                    "source": result.get("source") if isinstance(result, dict) else None,
-                }
+                else:
+                    result_map[label] = {
+                        "status": "available",
+                        "data_date": result.get("data_date") if isinstance(result, dict) else None,
+                        "source": result.get("source") if isinstance(result, dict) else None,
+                    }
             except Exception as exc:
-                return label, {"status": "unavailable", "error": type(exc).__name__}
+                result_map[label] = {"status": "unavailable", "error": type(exc).__name__}
+        return result_map
 
-        pairs = await asyncio.gather(*(run(label, awaitable) for label, awaitable in jobs.items()))
-        return dict(pairs)
-
-    async def build(self, *, force: bool = False, symbol: str | None = None, as_of: date | None = None, persist: bool = True, include_intraday: bool = False) -> dict[str, Any]:
+    async def build(
+        self,
+        *,
+        force: bool = False,
+        symbol: str | None = None,
+        as_of: date | None = None,
+        persist: bool = True,
+        include_intraday: bool = False,
+        refresh_linked: bool = True,
+        refresh_inputs: bool | None = None,
+        context_override: dict[str, Any] | None = None,
+        linked_refresh_override: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         await self.ensure_initialized()
-        linked_refresh: dict[str, dict[str, Any]] = {}
-        if force and symbol is None:
-            jobs: list[Any] = [self._context(force=True, symbol=symbol, as_of=as_of), self._refresh_linked_sources()]
-            results = await asyncio.gather(*jobs)
-            context, linked_refresh = results[0], results[1]
+        linked_refresh: dict[str, dict[str, Any]] = linked_refresh_override or {}
+        if context_override is not None:
+            context = context_override
+        elif force and symbol is None and refresh_linked:
+            # Keep the legacy direct-refresh path deterministic as well. The
+            # dashboard uses the background coordinator, while detail pages
+            # should not run their context and source writers concurrently.
+            context = await self._context(force=True, symbol=symbol, as_of=as_of)
+            linked_refresh = await self._refresh_linked_sources()
         else:
-            context = await self._context(force=force, symbol=symbol, as_of=as_of)
+            context = await self._context(
+                force=force,
+                symbol=symbol,
+                as_of=as_of,
+                refresh_inputs=refresh_inputs,
+            )
         if include_intraday and symbol is None and "intraday" not in context:
             # Use the already loaded workbench as the intraday adapter input so
             # the dashboard refresh does not perform a second workbench call.
             try:
                 context["intraday"] = await asyncio.wait_for(
-                    roci_intraday_service.current(force=force, context={"workbench": context.get("workbench")}),
+                    roci_intraday_service.current(
+                        force=force and refresh_inputs is not False,
+                        context={"workbench": context.get("workbench")},
+                    ),
                     timeout=25.0,
                 )
             except Exception:
@@ -643,8 +684,223 @@ class RociService:
         except Exception as exc:
             print(f"ROCI persistence failed: {type(exc).__name__}")
 
+    def refresh_status(self) -> dict[str, Any]:
+        """Return the single in-process refresh job used by all dashboards."""
+        status = deepcopy(self._refresh_status)
+        task = self._refresh_task
+        if task is not None and not task.done() and status.get("status") not in {"queued", "running"}:
+            status.update({"status": "running", "stage": "running", "message": "统一数据刷新进行中"})
+        return status
+
+    @staticmethod
+    def _refresh_result(result: Any, *, fallback_status: str = "available") -> dict[str, Any]:
+        if not isinstance(result, dict):
+            return {"status": fallback_status}
+        status = result.get("status")
+        if status is None:
+            status = "available" if result.get("count") is not None or result.get("timeline") or result.get("available") else fallback_status
+        summary = {
+            "status": str(status),
+            "progress": result.get("progress"),
+            "stage": result.get("stage"),
+            "message": result.get("message"),
+            "data_date": result.get("data_date") or result.get("forecast_date") or result.get("trade_date"),
+            "generated_at": result.get("generated_at"),
+            "cache_used": result.get("cache_used"),
+            "warnings": result.get("warnings") or [],
+        }
+        if result.get("error"):
+            summary["error"] = result.get("error")
+        if result.get("count") is not None:
+            summary["count"] = result.get("count")
+        return {key: value for key, value in summary.items() if value is not None}
+
+    async def _refresh_step(
+        self,
+        label: str,
+        awaitable: Any,
+        *,
+        stage: str,
+        progress: int,
+        timeout: float,
+        return_raw: bool = False,
+        source_key: str | None = None,
+    ) -> dict[str, Any]:
+        self._refresh_status.update({
+            "status": "running",
+            "stage": stage,
+            "progress": progress,
+            "message": f"正在刷新{label}",
+            "updated_at": _now().isoformat(),
+        })
+        raw_result: dict[str, Any] = {}
+        try:
+            result = await asyncio.wait_for(awaitable, timeout=timeout)
+            raw_result = result if isinstance(result, dict) else {}
+            summary = self._refresh_result(result)
+        except asyncio.TimeoutError:
+            summary = {"status": "timeout", "error": "TimeoutError", "fallback": "保留最近同口径缓存"}
+        except Exception as exc:
+            summary = {"status": "unavailable", "error": type(exc).__name__, "fallback": "保留最近同口径缓存"}
+        self._refresh_status.setdefault("sources", {})[source_key or label] = summary
+        self._refresh_status["updated_at"] = _now().isoformat()
+        return raw_result if return_raw else summary
+
+    async def request_refresh(self) -> dict[str, Any]:
+        """Queue one serialized refresh for every board feeding the cockpit.
+
+        The HTTP request only schedules the work and returns the current
+        snapshot. This keeps a slow free data provider from blocking the page,
+        while the status endpoint and the frontend poll expose the real
+        progress and the final snapshot is persisted automatically.
+        """
+        await self.ensure_initialized()
+        async with self._refresh_lock:
+            if self._refresh_task is not None and not self._refresh_task.done():
+                return self.refresh_status()
+            self._refresh_status = {
+                "status": "queued",
+                "stage": "queued",
+                "progress": 0,
+                "message": "统一数据刷新已排队",
+                "sources": {},
+                "updated_at": _now().isoformat(),
+            }
+            self._refresh_task = asyncio.create_task(self._run_refresh_all())
+        await asyncio.sleep(0)
+        return self.refresh_status()
+
+    async def _run_refresh_all(self) -> None:
+        """Refresh linked sources serially, then rebuild one coherent ROCI snapshot."""
+        from services.event_radar import event_radar_service
+        from services.forecast_v5 import forecast_v5_service
+        from services.market_decision_workbench import market_decision_workbench_service
+        from services.market_way_v4 import market_way_v4_service
+        from services.v51_microstructure_service import v51_microstructure_service
+
+        try:
+            await self._refresh_step(
+                "事件雷达", event_radar_service.refresh(force=True),
+                stage="event_radar", progress=8, timeout=50, source_key="event_radar",
+            )
+            await self._refresh_step(
+                "竞价与微结构", v51_microstructure_service.auction_dashboard(refresh=True),
+                stage="v51_auction", progress=18, timeout=70, source_key="v51_auction",
+            )
+
+            # V4 owns the long financial/PIT acquisition. Start it once and
+            # wait through its service-level task so no second request can
+            # start the same full-market scan concurrently.
+            await self._refresh_step(
+                "V4数据管线", market_way_v4_service.refresh_sources(background=True),
+                stage="v4_pipeline", progress=25, timeout=20, source_key="v4_data_pipeline_start",
+            )
+            v4_status = await self._refresh_step(
+                "V4数据管线收尾", market_way_v4_service.wait_for_refresh(timeout=180),
+                stage="v4_pipeline", progress=32, timeout=185, source_key="v4_data_pipeline",
+            )
+            # The start marker is useful while the task is being queued, but
+            # should not remain as a second contradictory status after the
+            # authoritative V4 task has completed.
+            self._refresh_status.setdefault("sources", {}).pop("v4_data_pipeline_start", None)
+            self._refresh_status["sources"]["v4_data_pipeline"] = v4_status
+
+            workbench_payload = await self._refresh_step(
+                "V4决策工作台", market_decision_workbench_service.get(force=True),
+                stage="workbench", progress=48, timeout=150, return_raw=True, source_key="workbench",
+            )
+            workbench = workbench_payload if workbench_payload.get("available") else None
+
+            forecast_payload = await self._refresh_step(
+                "V5多因子预测", forecast_v5_service.dashboard(
+                    force=True,
+                    include_skills=False,
+                    workbench_override=workbench,
+                ),
+                stage="forecast_v5", progress=64, timeout=180, return_raw=True, source_key="forecast_v5",
+            )
+
+            # Re-read persisted caches after the upstream jobs. This is the
+            # only context used for the final derived snapshot, so every ROCI
+            # section shares one cutoff instead of mixing page-open times.
+            context = await self._context(force=True, refresh_inputs=False)
+            if workbench:
+                context["workbench"] = workbench
+                context.setdefault("source_status", {})["workbench"] = "available"
+            if forecast_payload.get("timeline"):
+                context["forecast"] = forecast_payload
+                context.setdefault("source_status", {})["forecast_v5"] = "available"
+            try:
+                context["intraday"] = await asyncio.wait_for(
+                    roci_intraday_service.current(force=False, context={"workbench": context.get("workbench")}),
+                    timeout=35,
+                )
+            except Exception as exc:
+                self._refresh_status["sources"]["intraday"] = {"status": "degraded", "error": type(exc).__name__, "fallback": "保留最近盘中快照"}
+                context["intraday"] = {}
+
+            payload = await self.build(
+                force=True,
+                include_intraday=True,
+                refresh_linked=False,
+                refresh_inputs=False,
+                context_override=context,
+                linked_refresh_override=self.refresh_status().get("sources") or {},
+                persist=True,
+            )
+            self._refresh_status.update({
+                "status": "completed",
+                "stage": "completed",
+                "progress": 100,
+                "message": "所有看板数据源已完成统一刷新；失败源保留同口径缓存",
+                "snapshot_key": payload.get("snapshot_key"),
+                "updated_at": _now().isoformat(),
+            })
+        except asyncio.CancelledError:
+            self._refresh_status.update({"status": "cancelled", "stage": "cancelled", "message": "统一刷新被取消", "updated_at": _now().isoformat()})
+            raise
+        except Exception as exc:
+            self._refresh_status.update({
+                "status": "completed_with_gaps",
+                "stage": self._refresh_status.get("stage") or "unknown",
+                "message": "统一刷新部分完成，页面继续使用最近同口径缓存",
+                "error": type(exc).__name__,
+                "updated_at": _now().isoformat(),
+            })
+
+    def _attach_refresh_report(self, payload: dict[str, Any], *, requested: bool = False) -> dict[str, Any]:
+        result = deepcopy(payload)
+        report = dict(result.get("refresh_report") or {})
+        report["requested"] = requested or bool(report.get("requested"))
+        report["coordinator"] = self.refresh_status()
+        report["linked_sources"] = {
+            **(report.get("linked_sources") or {}),
+            **(self.refresh_status().get("sources") or {}),
+        }
+        report["policy"] = "看板一次刷新所有依赖源；实时源失败时显示真实降级状态并使用最近同口径缓存。"
+        result["refresh_report"] = report
+        return result
+
+    async def _cached_dashboard(self) -> dict[str, Any] | None:
+        """Read the last coherent snapshot without waking upstream services."""
+        try:
+            async with async_session() as session:
+                row = await session.get(MarketDataCache, ROCI_CACHE_KEY)
+            payload = dict(row.payload) if row and isinstance(row.payload, dict) else None
+            return payload if payload and payload.get("snapshot_key") else None
+        except Exception:
+            return None
+
     async def dashboard(self, *, force: bool = False) -> dict[str, Any]:
-        return await self.build(force=force, include_intraday=True)
+        if force:
+            await self.request_refresh()
+        # A forced click never waits for a network provider. It returns the
+        # latest coherent snapshot immediately; the background coordinator
+        # replaces it and the frontend reloads once the job reaches completed.
+        payload = await self._cached_dashboard() if force else None
+        if payload is None:
+            payload = await self.build(force=False, include_intraday=True)
+        return self._attach_refresh_report(payload, requested=force)
 
     async def battlefield(self, *, force: bool = False) -> dict[str, Any]:
         payload = await self.build(force=force)

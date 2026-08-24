@@ -858,7 +858,7 @@ class ForecastV5Service:
         except Exception as exc:
             print(f"V5 forecast persistence failed: {type(exc).__name__}")
 
-    async def build(self, *, force: bool = False) -> dict[str, Any]:
+    async def build(self, *, force: bool = False, workbench_override: dict[str, Any] | None = None) -> dict[str, Any]:
         now = shanghai_now().replace(tzinfo=None)
         phase = _phase(now)
         cached = await self._cache()
@@ -871,7 +871,10 @@ class ForecastV5Service:
             cached = await self._cache()
             if not force and cached and str(cached.get("phase") or "") == phase and _parse_time(cached.get("generated_at")) and (now - (_parse_time(cached.get("generated_at")) or now)).total_seconds() <= cache_seconds:
                 return {**cached, "cache_used": True}
-            workbench = await market_decision_workbench_service.get(force=force)
+            # The refresh coordinator may already have rebuilt the canonical
+            # workbench. Reusing that result avoids a second expensive network
+            # and database fan-out during one-click dashboard refresh.
+            workbench = workbench_override if isinstance(workbench_override, dict) else await market_decision_workbench_service.get(force=force)
             macro = await self._macro(cached)
             history = await self._sentiment_history()
             target_raw, workbench_updated = self._latest_market(workbench)
@@ -953,8 +956,9 @@ class ForecastV5Service:
         include_skills: bool = True,
         exclude_star_market: bool = True,
         exclude_gem: bool = True,
+        workbench_override: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        data = await self.build(force=force)
+        data = await self.build(force=force, workbench_override=workbench_override)
         if not include_skills:
             return data
         # Keep the skill layer downstream of the forecast layer. The runtime
