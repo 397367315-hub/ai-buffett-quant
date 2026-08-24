@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, Database, RefreshCw } from 'lucide-react';
 import { apiFetch, friendlyApiError } from '@/lib/api';
 import { RociBar, RociEvidence, RociFrame, RociSectionTitle, RociStatusPill } from './RociFrame';
+import RociExplainability from './RociExplainability';
 
 type RecordValue = Record<string, any>;
 
@@ -38,7 +39,7 @@ export function RociDataPage({ title, subtitle, endpoint, children }: { title: s
   return <RociFrame title={title} subtitle={subtitle} refresh={refreshing} onRefresh={() => void load(true)}>
     {loading && <div className="roci-loading"><div className="roci-spinner" /><span>正在读取可审计快照…</span></div>}
     {!loading && error && <div className="roci-error"><AlertTriangle size={20} /><div><strong>数据读取失败</strong><p>{error}</p><button className="roci-button" onClick={() => void load(true)}><RefreshCw size={14} />重新读取</button></div></div>}
-    {!loading && !error && data && <>{children(data)}<div className="roci-footer-audit"><span><Database size={13} /> 数据截止：{value(data.data_cutoff_time)}</span><span><CheckCircle2 size={13} /> 只读适配器：{data.audit?.read_only_adapters === false ? 'UNKNOWN' : '已启用'}</span><span>缺失字段不会被填充为中性值</span></div></>}
+    {!loading && !error && data && <><RociExplainability explanation={data.explanation || data.explanations?.market} compact />{children(data)}<div className="roci-footer-audit"><span><Database size={13} /> 数据截止：{value(data.data_cutoff_time)}</span><span><CheckCircle2 size={13} /> 只读适配器：{data.audit?.read_only_adapters === false ? 'UNKNOWN' : '已启用'}</span><span>缺失字段不会被填充为中性值</span></div></>}
   </RociFrame>;
 }
 

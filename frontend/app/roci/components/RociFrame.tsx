@@ -7,6 +7,7 @@ import { Activity, ArrowLeft, BrainCircuit, Crosshair, Database, FlaskConical, G
 
 export const ROCI_NAV = [
   { href: '/roci', label: '战场驾驶舱', icon: Gauge },
+  { href: '/roci/intraday', label: '实时盘中认知', icon: Activity },
   { href: '/roci/skills', label: 'Skill 技能中心', icon: BrainCircuit },
   { href: '/roci/battlefield', label: '敌友力量地图', icon: Swords },
   { href: '/roci/contradiction', label: '主要矛盾', icon: Crosshair },

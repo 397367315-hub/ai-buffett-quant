@@ -539,9 +539,17 @@ class TopicStrengthService:
         try:
             async with async_session() as session:
                 insert = postgresql_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
+                evidence_columns = {column.name for column in StockIntradayEvidence.__table__.columns}
+                # The API view may carry explanatory fields that were added
+                # after the original table contract. Keep those fields in the
+                # response/cache, but do not send unknown keys to SQLAlchemy.
+                evidence_rows_for_db = [
+                    {key: value for key, value in row.items() if key in evidence_columns}
+                    for row in evidence_rows
+                ]
                 for model, rows, keys in (
                     (StockMinuteBar, minute_rows, ["stock_code", "bar_time", "interval_minutes"]),
-                    (StockIntradayEvidence, evidence_rows, ["stock_code", "trade_date"]),
+                    (StockIntradayEvidence, evidence_rows_for_db, ["stock_code", "trade_date"]),
                 ):
                     for start in range(0, len(rows), 500):
                         batch = rows[start:start + 500]
@@ -556,7 +564,7 @@ class TopicStrengthService:
                         await session.execute(statement.on_conflict_do_update(index_elements=keys, set_=updates))
                 await session.commit()
         except Exception as exc:
-            print(f"Topic intraday evidence persistence failed: {type(exc).__name__}")
+            print(f"Topic intraday evidence persistence failed: {type(exc).__name__}: {exc}")
 
     async def _intraday_evidence(
         self,

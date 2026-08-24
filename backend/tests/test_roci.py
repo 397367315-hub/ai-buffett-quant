@@ -63,15 +63,19 @@ def _context() -> dict:
 
 
 class RociContractTests(unittest.TestCase):
-    def test_registry_has_76_unique_skills_and_ten_shadow_skills(self):
+    def test_registry_has_84_unique_skills_and_eighteen_shadow_skills(self):
         skills = all_skill_definitions()
-        self.assertEqual(len(skills), 76)
-        self.assertEqual(len({item["skill_id"] for item in skills}), 76)
+        self.assertEqual(len(skills), 84)
+        self.assertEqual(len({item["skill_id"] for item in skills}), 84)
         self.assertEqual(
             {item["skill_id"] for item in skills if 67 <= int(item["skill_id"].split("S")[-1]) <= 76},
             {f"ROCI-S{number:03d}" for number in range(67, 77)},
         )
-        self.assertTrue(all(item["status"] == "SHADOW" for item in skills if 67 <= int(item["skill_id"].split("S")[-1]) <= 76))
+        self.assertEqual(
+            {item["skill_id"] for item in skills if 90 <= int(item["skill_id"].split("S")[-1]) <= 97},
+            {f"ROCI-S{number:03d}" for number in range(90, 98)},
+        )
+        self.assertTrue(all(item["status"] == "SHADOW" for item in skills if 67 <= int(item["skill_id"].split("S")[-1]) <= 76 or 90 <= int(item["skill_id"].split("S")[-1]) <= 97))
 
     def test_missing_inputs_remain_unknown(self):
         empty = {}
@@ -282,7 +286,7 @@ class RociPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 "hits": await session.scalar(select(func.count()).select_from(RociPatternHit).where(RociPatternHit.snapshot_key == snapshot_key)),
             }
         self.assertEqual(counts["snapshots"], 1)
-        self.assertEqual(counts["skills"], 76)
+        self.assertEqual(counts["skills"], 84)
         self.assertEqual(counts["forces"], 4)
         self.assertEqual(counts["contradictions"], 1)
         self.assertEqual(counts["actions"], 1)
@@ -304,7 +308,7 @@ class RociPersistenceTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(
                 await session.scalar(select(func.count()).select_from(RociSkillRun).where(RociSkillRun.snapshot_key == snapshot_key)),
-                76,
+                84,
             )
 
     async def test_disabled_skill_is_not_triggered_or_reported_as_contribution(self):

@@ -1702,7 +1702,7 @@ class RociSkill(Base):
     source_claim = Column(Text)
     engineered_definition = Column(Text, nullable=False)
     status = Column(String(32), nullable=False, default="DETECT_ONLY")
-    version = Column(String(32), nullable=False, default="roci-v1.0")
+    version = Column(String(32), nullable=False, default="roci-v1.1.2")
     data_requirements = Column(JSON, nullable=False, default=list)
     applicable_regimes = Column(JSON, nullable=False, default=list)
     forbidden_regimes = Column(JSON, nullable=False, default=list)
@@ -2068,4 +2068,132 @@ class RociModelRiskEvent(Base):
     status = Column(String(20), nullable=False, default="OPEN")
     message = Column(Text, nullable=False)
     evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociExplanation(Base):
+    """Structured, point-in-time explanation attached to a ROCI result."""
+
+    __tablename__ = "roci_explanations"
+    __table_args__ = (
+        UniqueConstraint("snapshot_key", "entity_type", "entity_id", name="uq_roci_explanation_entity"),
+        Index("idx_roci_explanations_entity", "entity_type", "entity_id", "as_of"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_key = Column(String(80), nullable=False)
+    entity_type = Column(String(64), nullable=False)
+    entity_id = Column(String(128), nullable=False)
+    as_of = Column(DateTime, nullable=False)
+    conclusion_code = Column(String(64))
+    conclusion_label = Column(String(255))
+    summary = Column(Text)
+    confidence = Column(Float)
+    explanation_version = Column(String(32), nullable=False, default="roci-explanation-v1.1.2")
+    data_quality = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociExplanationDriver(Base):
+    __tablename__ = "roci_explanation_drivers"
+    __table_args__ = (Index("idx_roci_explanation_drivers_explanation", "explanation_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    explanation_id = Column(Integer, ForeignKey("roci_explanations.id", ondelete="CASCADE"), nullable=False)
+    driver_name = Column(String(255), nullable=False)
+    direction = Column(String(32))
+    importance = Column(Float)
+    evidence_strength = Column(Float)
+    description = Column(Text)
+    metrics = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociExplanationEvidence(Base):
+    __tablename__ = "roci_explanation_evidence"
+    __table_args__ = (Index("idx_roci_explanation_evidence_explanation", "explanation_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    explanation_id = Column(Integer, ForeignKey("roci_explanations.id", ondelete="CASCADE"), nullable=False)
+    evidence_type = Column(String(32), nullable=False)
+    claim = Column(Text, nullable=False)
+    evidence_strength = Column(Float)
+    evidence_grade = Column(String(8))
+    source_table = Column(String(128))
+    source_field = Column(String(128))
+    source_timestamp = Column(DateTime)
+    raw_data = Column(JSON, nullable=False, default=dict)
+    supports = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociExplanationAlternative(Base):
+    __tablename__ = "roci_explanation_alternatives"
+    __table_args__ = (Index("idx_roci_explanation_alternatives_explanation", "explanation_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    explanation_id = Column(Integer, ForeignKey("roci_explanations.id", ondelete="CASCADE"), nullable=False)
+    hypothesis = Column(String(255), nullable=False)
+    support_score = Column(Float)
+    supporting_evidence = Column(JSON, nullable=False, default=list)
+    contradictions = Column(JSON, nullable=False, default=list)
+    required_confirmation = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociExplanationChain(Base):
+    __tablename__ = "roci_explanation_chains"
+    __table_args__ = (Index("idx_roci_explanation_chains_explanation", "explanation_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    explanation_id = Column(Integer, ForeignKey("roci_explanations.id", ondelete="CASCADE"), nullable=False)
+    step_order = Column(Integer, nullable=False)
+    from_node = Column(String(255), nullable=False)
+    to_node = Column(String(255), nullable=False)
+    status = Column(String(32), nullable=False, default="INFERRED")
+    confidence = Column(Float)
+    evidence = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociExplanationValidation(Base):
+    __tablename__ = "roci_explanation_validations"
+    __table_args__ = (Index("idx_roci_explanation_validations_explanation", "explanation_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    explanation_id = Column(Integer, ForeignKey("roci_explanations.id", ondelete="CASCADE"), nullable=False)
+    validation_type = Column(String(20), nullable=False)
+    condition_text = Column(Text, nullable=False)
+    horizon = Column(String(32))
+    source_metric = Column(String(128))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RociIntradaySnapshot(Base):
+    """Read-only intraday market state snapshot with provider timing metadata."""
+
+    __tablename__ = "roci_intraday_snapshots"
+    __table_args__ = (
+        Index("idx_roci_intraday_trade_time", "trade_date", "snapshot_time"),
+        Index("idx_roci_intraday_status", "data_status", "snapshot_time"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    snapshot_time = Column(DateTime, nullable=False)
+    resolution = Column(String(16), nullable=False, default="1m")
+    market_state = Column(String(64), nullable=False, default="UNKNOWN")
+    breadth_state = Column(String(64), nullable=False, default="UNKNOWN")
+    volume_state = Column(String(64), nullable=False, default="UNKNOWN")
+    leadership_state = Column(String(64), nullable=False, default="UNKNOWN")
+    migration_state = Column(String(64), nullable=False, default="UNKNOWN")
+    risk_score = Column(Float)
+    opportunity_score = Column(Float)
+    confidence = Column(Float)
+    provider_timestamp = Column(DateTime)
+    ingest_timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    latency_ms = Column(Float)
+    data_status = Column(String(32), nullable=False, default="INSUFFICIENT_DATA")
+    is_realtime = Column(Boolean, nullable=False, default=False)
+    payload = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)

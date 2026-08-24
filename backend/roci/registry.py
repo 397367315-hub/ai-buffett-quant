@@ -12,7 +12,7 @@ from copy import deepcopy
 from typing import Any
 
 
-ROCI_VERSION = "roci-v1.0"
+ROCI_VERSION = "roci-v1.1.2"
 SKILL_STATES = (
     "KNOWLEDGE_ONLY",
     "HYPOTHESIS",
@@ -171,6 +171,14 @@ SKILL_DEFINITIONS: tuple[dict[str, Any], ...] = (
     _skill("ROCI-S074", "星星点灯", "十全武功", "caopan_zhishen", "十全武功", "低位逐步改善需要连续观察。", "检测低位相对强度、成交和宽度渐进改善；仅 Shadow。", status="SHADOW", requirements=("daily_bars", "sector_breadth")),
     _skill("ROCI-S075", "对称攻击", "十全武功", "caopan_zhishen", "十全武功", "对称结构是图形假设，不是买点。", "检测上攻与回撤的几何相似性；仅 Shadow。", status="SHADOW", requirements=("daily_bars", "geometry")),
     _skill("ROCI-S076", "完美风暴", "十全武功", "caopan_zhishen", "十全武功", "多个外部和内部条件同时变化时需严格验证。", "检测事件、资金、板块、价格和波动的联合异常；仅 Shadow。", status="SHADOW", requirements=("events", "fund_flow", "daily_bars")),
+    _skill("ROCI-S090", "竞价偏差识别", "盘中", "existing_v5", "V1.1.2 盘中实时分析", "竞价实际相对昨日预期和周度剧本的偏差需要开盘响应确认。", "比较昨日收盘预期、盘前剧本和竞价实际，输出正向、负向或中性偏差；仅 Shadow。", status="SHADOW", requirements=("auction", "weekly_scenario", "intraday_evidence")),
+    _skill("ROCI-S091", "开盘15分钟资金方向", "盘中", "existing_v5", "V1.1.2 盘中实时分析", "开盘前15分钟的成交结构需要结合板块、风格和后续承接观察。", "区分开盘攻击、防御、分配、轮动、恐慌和噪声，不把主动买卖代理直接归因于账户身份；仅 Shadow。", status="SHADOW", requirements=("minute_bars", "intraday_evidence", "sector_context")),
+    _skill("ROCI-S092", "盘中广度变化", "盘中", "existing_v5", "V1.1.2 盘中实时分析", "盘中广度的速度和分歧比单点涨跌家数更有信息。", "跟踪上涨占比速度、中位数收益速度、新低和跌停加速度及与指数的背离；仅 Shadow。", status="SHADOW", requirements=("intraday_evidence", "breadth", "equal_weight")),
+    _skill("ROCI-S093", "盘中领导力", "盘中", "existing_v5", "V1.1.2 盘中实时分析", "领涨方向必须由持续性、核心和板块内部宽度共同确认。", "识别强领导、窄领导、假领导、领导轮动或无领导，不用单个涨幅替代持续性；仅 Shadow。", status="SHADOW", requirements=("sector_leadership", "intraday_evidence", "sector_breadth")),
+    _skill("ROCI-S094", "盘中承接与抛压", "盘中", "existing_v5", "V1.1.2 盘中实时分析", "承接和抛压要结合跌速、量能、低点回收和板块同步判断。", "区分卖压占优、买方吸收占优和平衡，禁止只用内外盘推断参与者意图；仅 Shadow。", status="SHADOW", requirements=("minute_bars", "volume", "equal_weight", "intraday_evidence")),
+    _skill("ROCI-S095", "盘中搬家识别", "盘中", "existing_v5", "V1.1.2 盘中实时分析", "板块迁移需要比较多个时间切片的来源、目的、强度和持续性。", "对比09:45、10:30、11:30、13:30、14:30和收盘窗口，记录资金迁移代理；仅 Shadow。", status="SHADOW", requirements=("intraday_evidence", "sector_history", "fund_flow")),
+    _skill("ROCI-S096", "盘中剧本验证", "盘中", "existing_v5", "V1.1.2 盘中实时分析", "盘中事实可以支持或反对周度剧本，但不能直接改写正式概率。", "输出基准、向上、向下和混合剧本的支持事实、矛盾证据及建议变化，收盘后再正式更新；仅 Shadow。", status="SHADOW", requirements=("weekly_scenario", "intraday_evidence", "validation")),
+    _skill("ROCI-S097", "盘中异常转折", "盘中", "existing_v5", "V1.1.2 盘中实时分析", "指数、广度、领导力和成交性质的同步切换需要被记录并复核。", "识别指数广度反转、领导力失败、防御破坏、成长收复、恐慌反转、缩量和尾盘风险切换；仅 Shadow。", status="SHADOW", requirements=("intraday_evidence", "state_history", "volume")),
 )
 
 

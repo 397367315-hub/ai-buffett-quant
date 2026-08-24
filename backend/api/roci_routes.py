@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Body, HTTPException, Query
 
 from roci.service import roci_service
+from roci.intraday import roci_intraday_service
 
 
 router = APIRouter(prefix="/api/v1/roci", tags=["ROCI风险机会认知"])
@@ -96,6 +97,70 @@ async def roci_opportunities(refresh: bool = Query(False)):
 async def roci_recommendations(refresh: bool = Query(False)):
     """Risk-adapted sector and stock research shortlist."""
     return {"code": 0, "data": await roci_service.recommendations(force=refresh)}
+
+
+@router.get("/explanation/{entity_type}/{entity_id}")
+async def roci_explanation(entity_type: str, entity_id: str = "market", refresh: bool = Query(False)):
+    return {"code": 0, "data": await roci_service.explanation(entity_type, entity_id, force=refresh)}
+
+
+@router.get("/explanation/{entity_type}/{entity_id}/{section}")
+async def roci_explanation_section(entity_type: str, entity_id: str, section: str, refresh: bool = Query(False)):
+    if section not in {"drivers", "evidence", "alternatives", "chain", "lineage"}:
+        raise HTTPException(status_code=404, detail="解释分区不存在")
+    return {"code": 0, "data": await roci_service.explanation_section(entity_type, entity_id, section, force=refresh)}
+
+
+@router.get("/weekly-scenario/{forecast_id}/{section}")
+async def roci_weekly_scenario_section(forecast_id: str, section: str, refresh: bool = Query(False)):
+    if section not in {"why", "drivers", "evidence"}:
+        raise HTTPException(status_code=404, detail="周度剧本解释分区不存在")
+    data = await roci_service.weekly_scenario_explanation(forecast_id, force=refresh)
+    if data.get("status") == "UNKNOWN":
+        raise HTTPException(status_code=404, detail=data.get("reason") or "周度剧本不存在")
+    explanation = data.get("explanation") or {}
+    if section == "why":
+        result = explanation
+    elif section == "drivers":
+        result = {"forecast_id": forecast_id, "items": (explanation.get("why") or {}).get("primary_drivers") or [], "contribution_note": (explanation.get("why") or {}).get("contribution_note")}
+    else:
+        why = explanation.get("why") or {}
+        result = {"forecast_id": forecast_id, "supporting": why.get("supporting_evidence") or [], "counter": why.get("counter_evidence") or [], "lineage": explanation.get("lineage") or []}
+    return {"code": 0, "data": {**result, "formal_probability_unchanged": True}}
+
+
+@router.get("/refresh-status")
+async def roci_refresh_status():
+    from services.market_way_v4 import market_way_v4_service
+
+    status = await market_way_v4_service.data_status()
+    refresh_job = status.get("refresh_job") or {}
+    return {"code": 0, "data": {"refresh_job": refresh_job, "pipeline": status.get("pipeline") or {}, "message": "主看板刷新会继续在后台更新长任务；此状态来自任务本身。"}}
+
+
+@router.get("/intraday/current")
+async def roci_intraday_current(refresh: bool = Query(False)):
+    return {"code": 0, "data": await roci_intraday_service.current(force=refresh)}
+
+
+@router.get("/intraday/timeline")
+async def roci_intraday_timeline(
+    limit: int = Query(96, ge=1, le=240),
+    trade_date: date | None = Query(None),
+):
+    return {"code": 0, "data": await roci_intraday_service.timeline(trade_date=trade_date, limit=limit)}
+
+
+@router.get("/intraday/{section}")
+async def roci_intraday_section(section: str, refresh: bool = Query(False)):
+    if section not in {"breadth", "volume-regime", "leadership", "migration", "scenario-validation", "events", "alerts"}:
+        raise HTTPException(status_code=404, detail="盘中数据分区不存在")
+    return {"code": 0, "data": await roci_intraday_service.section(section, force=refresh)}
+
+
+@router.get("/intraday/stock/{symbol}")
+async def roci_intraday_stock(symbol: str, refresh: bool = Query(False)):
+    return {"code": 0, "data": await roci_intraday_service.stock(symbol, force=refresh)}
 
 
 @router.get("/opportunities/{pattern}")

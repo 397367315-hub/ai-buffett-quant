@@ -22,6 +22,12 @@ from models import (
     RociForce,
     RociForceHistory,
     RociModelRiskEvent,
+    RociExplanation,
+    RociExplanationAlternative,
+    RociExplanationChain,
+    RociExplanationDriver,
+    RociExplanationEvidence,
+    RociExplanationValidation,
     RociOpportunityPattern,
     RociPatternHit,
     RociPrimaryContradiction,
@@ -39,6 +45,8 @@ from models import (
 from services.data_collector import normalize_stock_code, shanghai_now
 
 from .adapters import ROCI_CACHE_KEY, load_existing_context
+from .explanation import attach_explanations, build_explanation
+from .intraday import roci_intraday_service
 from .engines import (
     ACTIONS,
     UNKNOWN,
@@ -85,6 +93,15 @@ def _date(value: Any) -> date | None:
         return None
 
 
+def _date_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    try:
+        return datetime.fromisoformat(str(value or "").replace("Z", "+00:00")).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return None
+
+
 def _now() -> datetime:
     return shanghai_now().replace(tzinfo=None)
 
@@ -110,6 +127,9 @@ def _requirement_state(skill: dict[str, Any], context: dict[str, Any], *, trigge
         available.update({"volume", "volatility", "relative_strength", "risk_levels", "asymmetry", "stress_events"})
     if micro.get("engines"):
         available.update({"auction", "intraday_evidence", "minute_bars", "vwap", "liquidity"})
+    intraday = context.get("intraday") or {}
+    if intraday:
+        available.update({"intraday_evidence", "breadth", "equal_weight", "sector_leadership", "sector_breadth", "sector_history", "fund_flow", "weekly_scenario", "validation", "state_history", "volume"})
     if context.get("source_status", {}).get("quant_snapshot") == "available":
         available.update({"fund_flow", "sector_history"})
     requirements = list(skill.get("data_requirements") or [])
@@ -147,6 +167,14 @@ def _skill_trigger(skill: dict[str, Any], ctx: dict[str, Any], battle: dict[str,
         observed = bool((ctx.get("microstructure") or {}).get("engines", {}).get("auction_microstructure"))
         triggered, score = observed, 60.0 if observed else None
         reasons.append({"type": "FACT", "label": "竞价快照", "value": "available" if observed else UNKNOWN, "source": "v51_microstructure", "supports": observed})
+    elif skill_id in {f"ROCI-S{number:03d}" for number in range(90, 98)}:
+        intraday_items = {str(item.get("skill_id")): item for item in (ctx.get("intraday") or {}).get("shadow_skills") or []}
+        runtime = intraday_items.get(skill_id) or {}
+        triggered, score = bool(runtime.get("triggered")), num(runtime.get("score"))
+        reasons.extend(runtime.get("evidence") or [{"type": "FACT", "label": "盘中技能状态", "value": runtime.get("state", UNKNOWN), "source": "roci_intraday_snapshots", "supports": triggered}])
+        confidence = num(runtime.get("confidence"))
+        state = {"regime": regime, "missing_inputs": runtime.get("availability", {}).get("missing", missing), "status": skill.get("status"), "shadow_excluded_from_action": True, "availability": runtime.get("availability") or _requirement_state(skill, ctx, triggered=triggered)}
+        return triggered, score, confidence if confidence is not None else round(min(95.0, data_pct * .7 + (25 if triggered else 0)), 1), reasons, state
     elif skill_id == "ROCI-S023":
         triggered, score = regime in {"RECOVERY", "NORMAL_OFFENSE"}, 62.0 if triggered else None
         reasons.append({"type": "INFERENCE", "label": "战场状态迁移", "value": regime, "source": "roci_battlefield"})
@@ -325,12 +353,80 @@ class RociService:
         context["pattern_definitions"] = all_pattern_definitions()
         return context
 
-    async def build(self, *, force: bool = False, symbol: str | None = None, as_of: date | None = None, persist: bool = True) -> dict[str, Any]:
+    async def _refresh_linked_sources(self) -> dict[str, dict[str, Any]]:
+        """Warm source caches used by ROCI-linked boards in one request.
+
+        The core V4/V5 context is loaded by ``_context``.  These side sources
+        used to refresh only when their own page was opened, which made the
+        main cockpit show a mixture of fresh and stale sections.
+        """
+        from services.event_radar import event_radar_service
+        from services.market_way_v4 import market_way_v4_service
+        from services.v51_microstructure_service import v51_microstructure_service
+
+        jobs = {
+            "event_radar": event_radar_service.refresh(force=True),
+            # The canonical forced workbench call owns topic-strength refresh.
+            # Avoid concurrent writes to the same intraday evidence tables.
+            "topic_strength": asyncio.sleep(0, result={"status": "delegated_to_workbench"}),
+            "v51_auction": v51_microstructure_service.auction_dashboard(refresh=True),
+            # The forced V4 context refreshes the policy source once.
+            "v4_policy": asyncio.sleep(0, result={"status": "delegated_to_v4_context"}),
+            # The full V4 pipeline is persisted and resumed by its own service;
+            # queue it here so the dashboard click also warms the long-running
+            # financial/PIT sources without blocking the ROCI response.
+            "v4_data_pipeline": market_way_v4_service.refresh_sources(background=True),
+        }
+
+        async def run(label: str, awaitable: Any) -> tuple[str, dict[str, Any]]:
+            try:
+                result = await asyncio.wait_for(awaitable, timeout=35.0)
+                if isinstance(result, dict) and result.get("status") in {"error", "unavailable", "UNAVAILABLE"}:
+                    return label, {"status": "degraded", "detail": result.get("status")}
+                if isinstance(result, dict) and result.get("status"):
+                    return label, {
+                        "status": str(result.get("status")),
+                        "progress": result.get("progress"),
+                        "stage": result.get("stage"),
+                        "message": result.get("message"),
+                        "warnings": result.get("warnings") or [],
+                        "data_date": result.get("data_date"),
+                        "source": result.get("source"),
+                    }
+                return label, {
+                    "status": "available",
+                    "data_date": result.get("data_date") if isinstance(result, dict) else None,
+                    "source": result.get("source") if isinstance(result, dict) else None,
+                }
+            except Exception as exc:
+                return label, {"status": "unavailable", "error": type(exc).__name__}
+
+        pairs = await asyncio.gather(*(run(label, awaitable) for label, awaitable in jobs.items()))
+        return dict(pairs)
+
+    async def build(self, *, force: bool = False, symbol: str | None = None, as_of: date | None = None, persist: bool = True, include_intraday: bool = False) -> dict[str, Any]:
         await self.ensure_initialized()
-        context = await self._context(force=force, symbol=symbol, as_of=as_of)
+        linked_refresh: dict[str, dict[str, Any]] = {}
+        if force and symbol is None:
+            jobs: list[Any] = [self._context(force=True, symbol=symbol, as_of=as_of), self._refresh_linked_sources()]
+            results = await asyncio.gather(*jobs)
+            context, linked_refresh = results[0], results[1]
+        else:
+            context = await self._context(force=force, symbol=symbol, as_of=as_of)
+        if include_intraday and symbol is None and "intraday" not in context:
+            # Use the already loaded workbench as the intraday adapter input so
+            # the dashboard refresh does not perform a second workbench call.
+            try:
+                context["intraday"] = await asyncio.wait_for(
+                    roci_intraday_service.current(force=force, context={"workbench": context.get("workbench")}),
+                    timeout=25.0,
+                )
+            except Exception:
+                context["intraday"] = {}
         if context.get("cached_roci") and not force and not symbol:
             payload = deepcopy(context["cached_roci"])
             payload["cache_used"] = True
+            attach_explanations(payload, context)
             return payload
         now = _now()
         skill_definitions = await self._registered_skills()
@@ -347,7 +443,10 @@ class RociService:
         complete_pct, missing = completeness(context)
         preliminary_asym = asymmetry(context, battle, pricing)
         opp = opportunities(context, battle, primary, pricing, stress, preliminary_asym)
-        source_status = context.get("source_status") or {}
+        source_status = {
+            **(context.get("source_status") or {}),
+            **{f"linked_{key}": value.get("status") for key, value in linked_refresh.items()},
+        }
         facts = []
         facts.extend(battle.get("facts") or [])
         facts.extend(primary.get("supporting_evidence") or [])
@@ -415,9 +514,17 @@ class RociService:
             "facts": facts,
             "inferences": inferences,
             "source_claims": source_claims,
+            "refresh_report": {
+                "requested": bool(force),
+                "linked_sources": linked_refresh,
+                "core_sources": context.get("source_status") or {},
+                "policy": "主看板刷新会先预热所有 ROCI 依赖源，再生成同一截止时间的只读快照。",
+            },
+            "intraday": context.get("intraday") or {},
             "agent_report": {"facts": facts, "inferences": inferences + [evidence("认知与模型风险", cognition.get("level"), "roci_cognitive_risk", "INFERENCE")], "source_claims": source_claims, "skills_used": [item["skill_id"] for item in skill_runs if item["triggered"] and item["status"] == "ACTIVE" and item.get("enabled", True)], "data_cutoff": cutoff, "confidence": decision.get("confidence"), "invalidations": decision.get("invalidations") or [], "risk_flags": cognition.get("model_risks") or []},
             "audit": {"no_future_data": True, "read_only_adapters": True, "shadow_excluded_from_action": True, "unknown_policy": "缺失关键输入不补造中性数值", "model_version": ROCI_VERSION},
         }
+        attach_explanations(payload, context)
         if persist:
             # Several ROCI pages may request the same source cutoff together.
             # Serialize replacement of that derived graph so both requests do
@@ -462,6 +569,11 @@ class RociService:
                     RociModelRiskEvent,
                 ):
                     await session.execute(delete(model).where(model.snapshot_key == snapshot_key))
+                explanation_ids = list((await session.execute(select(RociExplanation.id).where(RociExplanation.snapshot_key == snapshot_key))).scalars().all())
+                if explanation_ids:
+                    for model in (RociExplanationDriver, RociExplanationEvidence, RociExplanationAlternative, RociExplanationChain, RociExplanationValidation):
+                        await session.execute(delete(model).where(model.explanation_id.in_(explanation_ids)))
+                await session.execute(delete(RociExplanation).where(RociExplanation.snapshot_key == snapshot_key))
                 for item in skill_runs:
                     session.add(RociSkillRun(snapshot_key=snapshot_key, skill_id=item["skill_id"], symbol=payload.get("symbol"), trade_date=trade_date, snapshot_time=_now(), triggered=item["triggered"], score=item["score"], confidence=item["confidence"], contribution=item["contribution"], evidence=_json(item["evidence"]), state=_json(item["state"])))
                 for item in force_map.get("forces") or []:
@@ -488,6 +600,38 @@ class RociService:
                     session.add(RociActionEvidence(action_id=action_row.id, evidence_type=item.get("type", "INFERENCE"), label=item.get("label", ""), value=item.get("value"), source=item.get("source"), as_of=cutoff, supports=bool(item.get("supports", True))))
                 for risk_item in cognition.get("model_risks") or []:
                     session.add(RociModelRiskEvent(snapshot_key=snapshot_key, risk_type=risk_item.get("risk_type", "MODEL_RISK"), severity=risk_item.get("severity", "MEDIUM"), status="OPEN", message=str(risk_item.get("risk") or "ROCI模型风险"), evidence=_json(risk_item.get("evidence") or [])))
+                for entity_type, explanation in (payload.get("explanations") or {}).items():
+                    if not isinstance(explanation, dict):
+                        continue
+                    result = explanation.get("result") or {}
+                    why = explanation.get("why") or {}
+                    quality = explanation.get("data_quality") or {}
+                    explanation_row = RociExplanation(
+                        snapshot_key=snapshot_key,
+                        entity_type=str(entity_type),
+                        entity_id=str(explanation.get("entity_id") or payload.get("symbol") or "market"),
+                        as_of=cutoff,
+                        conclusion_code=result.get("type"),
+                        conclusion_label=result.get("label"),
+                        summary=why.get("summary"),
+                        confidence=result.get("confidence"),
+                        explanation_version=str(explanation.get("version") or "roci-explanation-v1.1.2"),
+                        data_quality=_json(quality),
+                    )
+                    session.add(explanation_row)
+                    await session.flush()
+                    for driver in why.get("primary_drivers") or []:
+                        session.add(RociExplanationDriver(explanation_id=explanation_row.id, driver_name=str(driver.get("name") or "UNKNOWN"), direction=driver.get("direction"), importance=driver.get("importance"), evidence_strength=driver.get("evidence_strength"), description=driver.get("description"), metrics=driver.get("source_metrics") or []))
+                    for item in (why.get("supporting_evidence") or []) + (why.get("counter_evidence") or []):
+                        session.add(RociExplanationEvidence(explanation_id=explanation_row.id, evidence_type=str(item.get("type") or "EVIDENCE"), claim=str(item.get("claim") or "UNKNOWN"), evidence_strength=item.get("evidence_strength"), evidence_grade=item.get("evidence_grade"), source_table=item.get("source_table"), source_field=item.get("source_field"), source_timestamp=_date_time(item.get("source_timestamp")), raw_data=_json({"value": item.get("value"), "formula": item.get("formula")}), supports=bool(item.get("supports", True))))
+                    for alternative in why.get("alternative_hypotheses") or []:
+                        session.add(RociExplanationAlternative(explanation_id=explanation_row.id, hypothesis=str(alternative.get("hypothesis") or "UNKNOWN"), support_score=alternative.get("support_score"), supporting_evidence=alternative.get("supporting_evidence") or [], contradictions=alternative.get("contradictions") or [], required_confirmation=alternative.get("required_confirmation") or []))
+                    for index, link in enumerate(why.get("transmission_chain") or [], 1):
+                        session.add(RociExplanationChain(explanation_id=explanation_row.id, step_order=index, from_node=str(link.get("from") or "UNKNOWN"), to_node=str(link.get("to") or "UNKNOWN"), status=str(link.get("status") or "INFERRED"), confidence=link.get("confidence"), evidence=link.get("evidence") or []))
+                    for item in why.get("validation_signals") or []:
+                        session.add(RociExplanationValidation(explanation_id=explanation_row.id, validation_type="VALIDATE", condition_text=str(item), horizon="next_observation", source_metric=None))
+                    for item in why.get("invalidation_signals") or []:
+                        session.add(RociExplanationValidation(explanation_id=explanation_row.id, validation_type="INVALIDATE", condition_text=str(item), horizon="next_observation", source_metric=None))
                 cache = await session.get(MarketDataCache, ROCI_CACHE_KEY)
                 if payload.get("symbol") is None:
                     if cache is None:
@@ -500,11 +644,11 @@ class RociService:
             print(f"ROCI persistence failed: {type(exc).__name__}")
 
     async def dashboard(self, *, force: bool = False) -> dict[str, Any]:
-        return await self.build(force=force)
+        return await self.build(force=force, include_intraday=True)
 
     async def battlefield(self, *, force: bool = False) -> dict[str, Any]:
         payload = await self.build(force=force)
-        return {"snapshot_key": payload.get("snapshot_key"), "trade_date": payload.get("trade_date"), "data_cutoff_time": payload.get("data_cutoff_time"), **(payload.get("battlefield") or {})}
+        return {"snapshot_key": payload.get("snapshot_key"), "trade_date": payload.get("trade_date"), "data_cutoff_time": payload.get("data_cutoff_time"), "explanation": (payload.get("explanations") or {}).get("battlefield"), **(payload.get("battlefield") or {})}
 
     async def forces(self, *, force: bool = False) -> dict[str, Any]:
         payload = await self.build(force=force)
@@ -512,15 +656,15 @@ class RociService:
 
     async def contradiction(self, *, force: bool = False) -> dict[str, Any]:
         payload = await self.build(force=force)
-        return {"snapshot_key": payload.get("snapshot_key"), **(payload.get("primary_contradiction") or {})}
+        return {"snapshot_key": payload.get("snapshot_key"), "explanation": (payload.get("explanations") or {}).get("contradiction"), **(payload.get("primary_contradiction") or {})}
 
     async def risk_pricing(self, *, force: bool = False) -> dict[str, Any]:
         payload = await self.build(force=force)
-        return {"snapshot_key": payload.get("snapshot_key"), **(payload.get("risk_pricing") or {})}
+        return {"snapshot_key": payload.get("snapshot_key"), "explanation": (payload.get("explanations") or {}).get("risk_pricing"), **(payload.get("risk_pricing") or {})}
 
     async def stress_tests(self, *, force: bool = False, symbol: str | None = None) -> dict[str, Any]:
         payload = await self.build(force=force, symbol=symbol)
-        return {"snapshot_key": payload.get("snapshot_key"), **(payload.get("stress_test") or {})}
+        return {"snapshot_key": payload.get("snapshot_key"), "explanation": (payload.get("explanations") or {}).get("market"), **(payload.get("stress_test") or {})}
 
     async def cognitive_risk(self, *, force: bool = False) -> dict[str, Any]:
         payload = await self.build(force=force)
@@ -533,6 +677,7 @@ class RociService:
             "trade_date": payload.get("trade_date"),
             "data_cutoff_time": payload.get("data_cutoff_time"),
             "audit": payload.get("audit") or {},
+            "explanation": (payload.get("explanations") or {}).get("opportunities"),
             **(payload.get("opportunities") or {}),
         }
 
@@ -541,8 +686,108 @@ class RociService:
         return {
             "snapshot_key": payload.get("snapshot_key"),
             "data_cutoff_time": payload.get("data_cutoff_time"),
+            "explanation": (payload.get("explanations") or {}).get("recommendations"),
             **((payload.get("opportunities") or {}).get("risk_adapted") or {}),
         }
+
+    async def explanation(self, entity_type: str, entity_id: str = "market", *, force: bool = False) -> dict[str, Any]:
+        payload = await self.build(force=force, symbol=entity_id if entity_type == "stock" else None)
+        explanations = payload.get("explanations") or {}
+        return explanations.get(entity_type) or explanations.get("market") or {
+            "version": "roci-explanation-v1.1.2",
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "result": {"type": "UNKNOWN", "label": "UNKNOWN", "score": None, "confidence": None},
+            "why": {"summary": "当前没有可用解释快照。", "facts": [], "primary_drivers": [], "supporting_evidence": [], "counter_evidence": [], "alternative_hypotheses": [], "transmission_chain": [], "validation_signals": [], "invalidation_signals": []},
+            "data_quality": {"score": 0, "score_pct": 0, "missing_fields": ["explanation"], "conflicting_sources": []},
+        }
+
+    async def explanation_section(self, entity_type: str, entity_id: str, section: str, *, force: bool = False) -> dict[str, Any]:
+        explanation = await self.explanation(entity_type, entity_id, force=force)
+        if section == "drivers":
+            return {"entity_type": entity_type, "entity_id": entity_id, "items": (explanation.get("why") or {}).get("primary_drivers") or [], "contribution_note": (explanation.get("why") or {}).get("contribution_note")}
+        if section == "evidence":
+            why = explanation.get("why") or {}
+            return {"entity_type": entity_type, "entity_id": entity_id, "supporting": why.get("supporting_evidence") or [], "counter": why.get("counter_evidence") or [], "lineage": explanation.get("lineage") or []}
+        if section == "alternatives":
+            return {"entity_type": entity_type, "entity_id": entity_id, "items": (explanation.get("why") or {}).get("alternative_hypotheses") or []}
+        if section == "chain":
+            return {"entity_type": entity_type, "entity_id": entity_id, "items": (explanation.get("why") or {}).get("transmission_chain") or []}
+        if section == "lineage":
+            return {"entity_type": entity_type, "entity_id": entity_id, "items": explanation.get("lineage") or []}
+        return explanation
+
+    async def weekly_scenario_explanation(self, forecast_id: str, *, force: bool = False) -> dict[str, Any]:
+        """Build an evidence-bound explanation for one V5 weekly scenario.
+
+        The forecast service remains the only owner of formal probabilities.
+        This method reads its result and adds reasons, counter-evidence and
+        validation conditions without changing the forecast payload.
+        """
+        from services.forecast_v5 import forecast_v5_service
+
+        forecast = await forecast_v5_service.dashboard(force=force, include_skills=False)
+        timeline = forecast.get("timeline") or []
+        selected_horizon = next((item for item in timeline if str(item.get("horizon") or item.get("id")) == forecast_id or str(item.get("id")) == forecast_id), None)
+        scenario = None
+        if selected_horizon:
+            scenario = next((item for item in selected_horizon.get("scenarios") or [] if item.get("id") == "main"), None)
+        if scenario is None:
+            for horizon in timeline:
+                candidate = next((item for item in horizon.get("scenarios") or [] if str(item.get("id")) == forecast_id), None)
+                if candidate:
+                    selected_horizon, scenario = horizon, candidate
+                    break
+        if scenario is None:
+            return {"status": "UNKNOWN", "forecast_id": forecast_id, "reason": "没有找到该周度剧本快照；系统不使用当前数据替代历史剧本。"}
+
+        factors = forecast.get("factors") or {}
+        leading = factors.get("leading") or []
+        propagation = factors.get("propagation") or []
+        all_factors = [item for item in [*leading, *propagation, *(factors.get("confirmation") or [])] if isinstance(item, dict)]
+        observed_factors = [item for item in all_factors if item.get("observed") or item.get("value") is not None]
+        fact_items = [
+            {"type": "FACT", "claim": f"剧本概率 {scenario.get('probability_pct', 'UNKNOWN')}%", "value": scenario.get("probability_pct"), "source_table": "forecast_v5", "source_field": "probability_pct", "supports": True},
+            *[{"type": "FACT", "claim": str(item.get("name") or item.get("factor_id") or "因子"), "value": item.get("value", item.get("state", "UNKNOWN")), "source_table": str(item.get("source") or "factor_registry"), "source_field": str(item.get("factor_id") or "value"), "supports": True} for item in observed_factors[:8]],
+        ]
+        drivers = []
+        for index, item in enumerate(observed_factors[:4]):
+            drivers.append({
+                "name": item.get("name") or item.get("factor_id") or "主要因子",
+                "direction": item.get("direction") or "MIXED",
+                "importance": round(max(0.0, 0.34 - index * 0.06), 2),
+                "evidence_strength": item.get("reliability") or item.get("data_quality") or 0.6,
+                "description": item.get("explanation") or item.get("definition") or "当前因子已被结构化引擎纳入剧本判断。",
+                "source_metrics": [item.get("factor_id") or item.get("id") or "UNKNOWN"],
+            })
+        while len(drivers) < 3:
+            drivers.append({"name": "剧本验证条件", "direction": "MIXED", "importance": 0.1, "evidence_strength": None, "description": "该驱动尚缺足够可审计输入，保持 UNKNOWN。", "source_metrics": []})
+        scenario_payload = {
+            "regime": (forecast.get("risk_preference") or {}).get("label") or "UNKNOWN",
+            "battlefield": {"regime": (forecast.get("risk_preference") or {}).get("state") or "UNKNOWN"},
+            "primary_contradiction": {"statement": "周度剧本能否由关键因子与后续市场响应共同验证", "supporting_evidence": fact_items[:4], "opposing_evidence": [{"type": "COUNTER_EVIDENCE", "claim": "未来事件和未观测因子可能改变当前路径", "value": "UNKNOWN", "source_table": "forecast_v5", "source_field": "audit", "supports": False}]},
+            "risk_pricing": {"status": (forecast.get("risk_preference") or {}).get("label") or "UNKNOWN"},
+            "stress_test": {"state": "UNKNOWN"},
+            "facts": fact_items,
+            "data_completeness_pct": ((forecast.get("data_health") or {}).get("completeness_pct") or (forecast.get("data_health") or {}).get("coverage_pct")),
+            "source_status": {"forecast_v5": "available" if forecast else "unavailable"},
+            "action": {"confidence": None},
+        }
+        explanation = build_explanation(
+            scenario_payload,
+            entity_type="weekly_scenario",
+            entity_id=forecast_id,
+            result_override={"type": "WEEKLY_SCENARIO", "label": scenario.get("label") or forecast_id, "score": scenario.get("probability_pct"), "confidence": None},
+        )
+        why = explanation.setdefault("why", {})
+        why["summary"] = f"{scenario.get('label') or '当前剧本'}的正式概率为 {scenario.get('probability_pct', 'UNKNOWN')}%；以下是结构化因子支持、反证与验证条件，不代表未来必然重复。"
+        why["primary_drivers"] = drivers
+        why["supporting_evidence"] = fact_items[:10]
+        why["counter_evidence"] = [{"type": "COUNTER_EVIDENCE", "claim": item, "value": "待验证", "source": "forecast_v5.scenario", "supports": False} for item in (scenario.get("invalidation_points") or [])[:6]] or why.get("counter_evidence")
+        why["validation_signals"] = scenario.get("verification_points") or scenario.get("trigger_conditions") or ["等待下一个交易窗口验证"]
+        why["invalidation_signals"] = scenario.get("invalidation_points") or ["关键因子方向反转且市场响应不再支持该剧本"]
+        why["transmission_chain"] = [{"from": "领先/传播因子", "to": scenario.get("label") or "周度剧本", "status": "SUPPORTED", "confidence": None, "evidence": scenario.get("key_factors") or []}, {"from": scenario.get("label") or "周度剧本", "to": "验证或失效", "status": "HYPOTHESIS", "confidence": None, "evidence": scenario.get("verification_points") or []}]
+        return {"status": "AVAILABLE", "forecast_id": forecast_id, "horizon": selected_horizon.get("horizon") if selected_horizon else None, "scenario": scenario, "formal_probability_unchanged": True, "explanation": explanation}
 
     async def opportunity(self, pattern_id: str, *, force: bool = False) -> dict[str, Any]:
         data = await self.opportunities(force=force)
