@@ -12,6 +12,7 @@ from database import async_session
 from models import MarketDataCache, StockDailyBar
 from quant.market_cache import load_quant_market_snapshot
 from services.data_collector import is_a_share_market_session, normalize_stock_code, shanghai_now
+from services.market_decision_contract import WORKBENCH_CACHE_KEY
 from services.forecast_v5 import forecast_v5_service
 from services.market_decision_workbench import market_decision_workbench_service
 from services.reflexivity_service import reflexivity_service
@@ -20,6 +21,7 @@ from services.v51_microstructure_service import v51_microstructure_service
 
 ROCI_CACHE_KEY = "roci_dashboard_v1"
 ROCI_TIMEOUT_SECONDS = 18.0
+ROCI_WORKBENCH_TIMEOUT_SECONDS = 35.0
 ROCI_MARKET_CACHE_SECONDS = 90
 ROCI_OFF_HOURS_CACHE_SECONDS = 1800
 
@@ -55,6 +57,27 @@ def cache_freshness(payload: dict[str, Any], now: datetime | None = None) -> tup
     return age_seconds <= ttl, round(age_seconds, 1), ttl
 
 
+def roci_cache_has_usable_recommendations(payload: dict[str, Any] | None) -> bool:
+    """Only reuse a ROCI snapshot when the recommendation layer produced data.
+
+    An adapter timeout is intentionally represented as UNKNOWN, but that
+    result must not become a long-lived cache hit.  Otherwise one cold-start
+    timeout can hide a later healthy workbench indefinitely.
+    """
+    risk_adapted = ((payload or {}).get("opportunities") or {}).get("risk_adapted") or {}
+    return bool(
+        risk_adapted.get("status") == "AVAILABLE"
+        and (risk_adapted.get("sectors") or risk_adapted.get("stocks"))
+    )
+
+
+def _workbench_has_recommendation_inputs(payload: dict[str, Any] | None) -> bool:
+    """Check for observed sector rows before using a workbench fallback."""
+    if not isinstance(payload, dict) or payload.get("__adapter_error__"):
+        return False
+    return bool(payload.get("main_lines"))
+
+
 async def _safe(label: str, call: Awaitable[Any], fallback: Any, timeout: float = ROCI_TIMEOUT_SECONDS) -> Any:
     try:
         return await asyncio.wait_for(call, timeout=timeout)
@@ -71,6 +94,30 @@ async def _cached(key: str) -> dict[str, Any] | None:
             return dict(row.payload) if row and isinstance(row.payload, dict) else None
     except Exception:
         return None
+
+
+async def _load_workbench_context(*, force: bool = False) -> tuple[dict[str, Any], bool]:
+    """Read the canonical V4 cache before waiting on a cold workbench call.
+
+    The scheduler persists the same-date V4 workbench in PostgreSQL.  ROCI is
+    a read-only consumer, so that cache is the correct fallback when a live
+    rebuild is slow or one of its optional adapters is unavailable.
+    """
+    cached = await _cached(WORKBENCH_CACHE_KEY)
+    if not force and _workbench_has_recommendation_inputs(cached):
+        return cached or {}, True
+
+    live = await _safe(
+        "workbench",
+        market_decision_workbench_service.get(force=force),
+        {},
+        timeout=ROCI_WORKBENCH_TIMEOUT_SECONDS,
+    )
+    if _workbench_has_recommendation_inputs(live):
+        return live, bool((live.get("meta") or {}).get("cache_used"))
+    if _workbench_has_recommendation_inputs(cached):
+        return cached or {}, True
+    return live if isinstance(live, dict) else {}, False
 
 
 async def load_daily_context(symbol: str | None = None, target: date | None = None, limit: int = 90) -> dict[str, Any]:
@@ -148,7 +195,7 @@ async def load_existing_context(*, force: bool = False, symbol: str | None = Non
     # Ignore an older ROCI cache after the risk-adapted recommendation layer
     # was introduced. Otherwise an off-hours process could serve the previous
     # payload for up to 30 minutes after a deploy.
-    cache_has_recommendations = bool(((cached or {}).get("opportunities") or {}).get("risk_adapted"))
+    cache_has_recommendations = roci_cache_has_usable_recommendations(cached)
     if not force and cached and cache_has_recommendations and not symbol:
         fresh, age_seconds, ttl_seconds = cache_freshness(cached)
         if fresh:
@@ -161,28 +208,30 @@ async def load_existing_context(*, force: bool = False, symbol: str | None = Non
 
     if symbol:
         normalized = normalize_stock_code(symbol)
-        workbench_call = market_decision_workbench_service.get(force=force)
+        workbench_call = _load_workbench_context(force=force)
         forecast_call = forecast_v5_service.dashboard(force=force, include_skills=False)
         micro_call = v51_microstructure_service.diagnose(normalized, refresh=force, as_of=as_of)
         reflex_call = reflexivity_service.diagnose(normalized, as_of=as_of, force=force)
-        workbench, forecast, micro, reflex = await asyncio.gather(
-            _safe("workbench", workbench_call, {}),
+        workbench_result, forecast, micro, reflex = await asyncio.gather(
+            workbench_call,
             _safe("forecast", forecast_call, {}),
             _safe("v51", micro_call, {}),
             _safe("reflexivity", reflex_call, {}),
         )
+        workbench, workbench_from_cache = workbench_result if isinstance(workbench_result, tuple) else (workbench_result, False)
     else:
-        workbench_call = market_decision_workbench_service.get(force=force)
+        workbench_call = _load_workbench_context(force=force)
         # Forecast already consumes the legacy workbench internally. Running
         # both in parallel avoids introducing a dependency from old code into
         # the new sidecar and keeps the response useful if either fails.
         forecast_call = forecast_v5_service.dashboard(force=force, include_skills=False)
         micro_call = v51_microstructure_service.leadership_sectors(refresh=force)
-        workbench, forecast, micro = await asyncio.gather(
-            _safe("workbench", workbench_call, {}),
+        workbench_result, forecast, micro = await asyncio.gather(
+            workbench_call,
             _safe("forecast", forecast_call, {}),
             _safe("v51", micro_call, {}),
         )
+        workbench, workbench_from_cache = workbench_result if isinstance(workbench_result, tuple) else (workbench_result, False)
         reflex = {}
 
     daily = await load_daily_context(symbol, as_of)
@@ -194,10 +243,10 @@ async def load_existing_context(*, force: bool = False, symbol: str | None = Non
         "reflexivity": reflex if isinstance(reflex, dict) else {},
         "daily": daily if isinstance(daily, dict) else {},
         "quant_snapshot": quant_snapshot if isinstance(quant_snapshot, dict) else {},
-        "cache_used": False,
+        "cache_used": bool(workbench_from_cache),
         "collected_at": shanghai_now().replace(tzinfo=None).isoformat(),
         "source_status": {
-            "workbench": "available" if isinstance(workbench, dict) and not workbench.get("__adapter_error__") else "unavailable",
+            "workbench": "cached" if workbench_from_cache else "available" if isinstance(workbench, dict) and not workbench.get("__adapter_error__") else "unavailable",
             "forecast_v5": "available" if isinstance(forecast, dict) and not forecast.get("__adapter_error__") else "unavailable",
             "v51": "available" if isinstance(micro, dict) and not micro.get("__adapter_error__") else "unavailable",
             "reflexivity": "available" if isinstance(reflex, dict) and not reflex.get("__adapter_error__") else "unavailable",

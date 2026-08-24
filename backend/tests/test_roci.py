@@ -19,7 +19,12 @@ from models import (
     RociSkillRun,
     StockDailyBar,
 )
-from roci.adapters import cache_freshness, load_daily_context
+from roci.adapters import (
+    _load_workbench_context,
+    cache_freshness,
+    load_daily_context,
+    roci_cache_has_usable_recommendations,
+)
 from roci.engines import UNKNOWN, action, asymmetry, battlefield, risk_adapted_recommendations, risk_pricing, stress_test
 from roci.registry import all_skill_definitions
 from roci.service import RociService
@@ -99,6 +104,25 @@ class RociContractTests(unittest.TestCase):
             datetime(2026, 8, 24, 16, 0),
         )[0])
 
+    def test_empty_recommendation_snapshot_is_not_a_valid_roci_cache(self):
+        self.assertFalse(roci_cache_has_usable_recommendations({
+            "opportunities": {
+                "risk_adapted": {
+                    "status": UNKNOWN,
+                    "sectors": [],
+                    "stocks": [],
+                },
+            },
+        }))
+        self.assertTrue(roci_cache_has_usable_recommendations({
+            "opportunities": {
+                "risk_adapted": {
+                    "status": "AVAILABLE",
+                    "sectors": [{"name": "主线"}],
+                    "stocks": [],
+                },
+            },
+        }))
     def test_risk_pricing_keeps_unpriced_risk_as_highest_priority(self):
         context = _context()
         context["workbench"]["crowding_risk"] = {"score": 82}
@@ -376,6 +400,22 @@ class RociPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(context["market_bars"]), 90)
         self.assertEqual(context["market_bars"][0]["sample_size"], 2)
         self.assertAlmostEqual(context["market_bars"][0]["change_pct"], 0.0)
+
+
+class RociAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_workbench_cache_is_used_when_live_refresh_fails(self):
+        cached_workbench = {
+            "available": True,
+            "main_lines": [{"name": "缓存主线", "strength_score": 72}],
+            "meta": {"decision_date": "2026-08-24"},
+        }
+        with patch("roci.adapters._cached", new=AsyncMock(return_value=cached_workbench)), patch(
+            "roci.adapters.market_decision_workbench_service.get",
+            new=AsyncMock(return_value={"__adapter_error__": "workbench:TimeoutError"}),
+        ):
+            payload, cache_used = await _load_workbench_context(force=True)
+        self.assertEqual(payload["main_lines"][0]["name"], "缓存主线")
+        self.assertTrue(cache_used)
 
 
 if __name__ == "__main__":
