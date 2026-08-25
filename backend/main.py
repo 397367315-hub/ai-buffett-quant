@@ -13,6 +13,7 @@ from api.reflexivity_routes import router as reflexivity_router, skills_alias_ro
 from api.v51_routes import router as v51_router
 from api.radar_routes import router as radar_router
 from api.roci_routes import router as roci_router, legacy_router as roci_legacy_router
+from api.strong_stock_decision_routes import router as strong_stock_decision_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -30,8 +31,10 @@ async def lifespan(app: FastAPI):
     from services.midday_research import midday_research_service
     from services.weekend_research import weekend_research_service
     from services.trading_skill_registry import ensure_trading_skill_registry
+    from strong_stock_decision.registry import ensure_book_skill_registry
     await seed()
     await ensure_trading_skill_registry()
+    await ensure_book_skill_registry()
     from roci.service import roci_service
     await roci_service.ensure_initialized()
     from quant.persistence import hydrate_strategy_store
@@ -65,6 +68,8 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3002",
         "http://localhost:3100",
         "http://127.0.0.1:3100",
     ],
@@ -95,6 +100,7 @@ app.include_router(v51_router)
 app.include_router(radar_router)
 app.include_router(roci_router)
 app.include_router(roci_legacy_router)
+app.include_router(strong_stock_decision_router)
 
 
 @app.get("/")

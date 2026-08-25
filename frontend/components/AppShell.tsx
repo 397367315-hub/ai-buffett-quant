@@ -12,7 +12,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
 
   const isLoginPage = pathname === '/login';
-  const isFullscreenWorkbench = pathname === '/market';
+  const isFullscreenWorkbench = pathname === '/market' || pathname === '/strong-stock-decision';
 
   useEffect(() => {
     if (isAuthReady && !isLoggedIn && !isLoginPage) {

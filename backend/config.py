@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     openclaw_api_key: str = ""
     openclaw_tool_timeout: float = 45.0
 
+    # Independent, read-only Shadow module based on the three strong-stock
+    # trading books. It never changes existing strategy scores or actions.
+    feature_strong_stock_decision: bool = True
+
     # 可视化量化策略模块。生产环境可将目录指向 Render 持久化磁盘；
     # 未配置时使用仓库内的 JSON 数据目录，适合本地开发和单进程部署。
     quant_data_dir: str = ""

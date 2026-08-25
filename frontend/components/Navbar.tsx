@@ -17,6 +17,7 @@ const proSubItems = [
   { href: '/pro/limit-board', label: '涨跌停板', icon: Zap },
   { href: '/pro/potential', label: '潜力股分析', icon: Sparkles },
   { href: '/pro/stock-picker', label: '智能选股', icon: BrainCircuit },
+  { href: '/strong-stock-decision', label: '强势股交易决策', icon: Flame },
   { href: '/pro/personal', label: '个人投资池', icon: Bookmark },
   { href: '/pro/robot', label: 'AI机器人池', icon: Bot },
   { href: '/pro/portfolio', label: '仓位管理', icon: PieChart },

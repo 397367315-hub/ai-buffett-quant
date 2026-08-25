@@ -2197,3 +2197,145 @@ class RociIntradaySnapshot(Base):
     is_realtime = Column(Boolean, nullable=False, default=False)
     payload = Column(JSON, nullable=False, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BookSkillRegistry(Base):
+    """Locked book terminology and auditable engineering metadata."""
+
+    __tablename__ = "book_skill_registry"
+    __table_args__ = (
+        Index("idx_book_skill_registry_book", "book", "enabled"),
+        Index("idx_book_skill_registry_section", "section"),
+    )
+
+    skill_id = Column(String(80), primary_key=True)
+    book = Column(String(120), nullable=False)
+    chapter = Column(String(120), nullable=False)
+    section = Column(String(160), nullable=False)
+    original_name = Column(String(160), nullable=False)
+    description = Column(Text, nullable=False)
+    required_features = Column(JSON, nullable=False, default=list)
+    prerequisite = Column(JSON, nullable=False, default=list)
+    positive_evidence = Column(JSON, nullable=False, default=list)
+    negative_evidence = Column(JSON, nullable=False, default=list)
+    invalidation = Column(JSON, nullable=False, default=list)
+    chart_annotations = Column(JSON, nullable=False, default=list)
+    book_rule_version = Column(String(32), nullable=False, default="three-books-v1.0")
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StockSkillSignal(Base):
+    """Point-in-time signal emitted by the independent strong-stock engine."""
+
+    __tablename__ = "stock_skill_signal"
+    __table_args__ = (
+        Index("idx_stock_skill_signal_code_date", "symbol", "trade_date", "trade_time"),
+        Index("idx_stock_skill_signal_skill_status", "skill_id", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    trade_time = Column(DateTime)
+    skill_id = Column(String(80), nullable=False)
+    status = Column(String(24), nullable=False, default="NOT_FOUND")
+    confidence = Column(Float)
+    evidence_json = Column(JSON, nullable=False, default=list)
+    invalidation_json = Column(JSON, nullable=False, default=list)
+    next_confirmation_json = Column(JSON, nullable=False, default=list)
+    source_interval = Column(String(32), nullable=False, default="DAILY")
+    engine_version = Column(String(32), nullable=False, default="STRONG_STOCK_DECISION_V1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StrongDecisionState(Base):
+    """State-machine output; stored separately from existing ACTION systems."""
+
+    __tablename__ = "decision_state"
+    __table_args__ = (
+        Index("idx_strong_decision_state_code_date", "symbol", "trade_date", "created_at"),
+        Index("idx_strong_decision_state_action", "action", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    state_code = Column(String(16), nullable=False)
+    state_name = Column(String(120), nullable=False)
+    primary_skill = Column(String(160))
+    secondary_skills_json = Column(JSON, nullable=False, default=list)
+    risk_skills_json = Column(JSON, nullable=False, default=list)
+    action = Column(String(24), nullable=False, default="NO_TRADE")
+    reason_json = Column(JSON, nullable=False, default=dict)
+    next_confirmation_json = Column(JSON, nullable=False, default=list)
+    invalidation_json = Column(JSON, nullable=False, default=list)
+    mode = Column(String(16), nullable=False, default="SHADOW")
+    engine_version = Column(String(32), nullable=False, default="STRONG_STOCK_DECISION_V1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MainForceEvidence(Base):
+    """Observable volume/price evidence; wording intentionally remains 主力."""
+
+    __tablename__ = "main_force_evidence"
+    __table_args__ = (
+        Index("idx_main_force_evidence_code_date", "symbol", "trade_date", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    main_force_state = Column(String(32), nullable=False, default="不明显")
+    main_force_direction = Column(String(32), nullable=False, default="暂不明确")
+    main_force_persistence = Column(String(32), nullable=False, default="减弱")
+    volume_pattern = Column(String(160))
+    price_pattern = Column(String(160))
+    turnover_pattern = Column(String(160))
+    evidence_json = Column(JSON, nullable=False, default=list)
+    confidence = Column(Float)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PatternAnnotation(Base):
+    """K-line annotation metadata for the independent chart layer."""
+
+    __tablename__ = "pattern_annotation"
+    __table_args__ = (
+        Index("idx_pattern_annotation_code_time", "symbol", "start_time", "end_time"),
+        Index("idx_pattern_annotation_type", "pattern_type", "created_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    pattern_type = Column(String(160), nullable=False)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    upper_boundary = Column(Float)
+    lower_boundary = Column(Float)
+    key_price = Column(Float)
+    annotation_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StrongCaseLibrary(Base):
+    """Positive, negative and look-alike cases for 望星空 comparison."""
+
+    __tablename__ = "case_library"
+    __table_args__ = (
+        Index("idx_strong_case_library_book_skill", "book", "skill_id"),
+        Index("idx_strong_case_library_symbol_dates", "symbol", "start_date", "end_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    book = Column(String(120), nullable=False)
+    skill_id = Column(String(80), nullable=False)
+    symbol = Column(String(20), nullable=False)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    case_type = Column(String(24), nullable=False, default="LOOK_ALIKE")
+    feature_snapshot_json = Column(JSON, nullable=False, default=dict)
+    outcome_json = Column(JSON, nullable=False, default=dict)
+    notes = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
