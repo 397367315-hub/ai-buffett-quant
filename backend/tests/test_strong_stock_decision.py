@@ -63,6 +63,20 @@ class StrongStockRegistryTests(unittest.TestCase):
         self.assertTrue(any(e.get("value") == "CLOSE_PROXY" for e in triangle["evidence"]))
         self.assertLessEqual(triangle["confidence"] or 0, 48)
 
+    def test_composite_score_matches_exposed_components(self):
+        service = StrongStockDecisionService()
+        result = service._build({
+            "symbol": "000001", "name": "测试", "bars": make_bars(), "flow": [],
+            "sector_flow": [], "sector": None, "quote": None,
+            "quote_is_realtime": False, "source_status": {},
+        })
+        score = result["composite_score"]
+        components = [item for item in score["components"] if item["available"]]
+        expected = sum(item["value"] * item["weight"] for item in components) / sum(item["weight"] for item in components)
+        self.assertEqual(score["component_count"], 6)
+        self.assertEqual(score["available_count"], len(components))
+        self.assertAlmostEqual(score["value"], expected, places=1)
+
     def test_risk_c_zone_has_priority_over_attack(self):
         service = StrongStockDecisionService()
         bars = make_bars(90, close_start=30)

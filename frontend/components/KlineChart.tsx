@@ -17,6 +17,7 @@ export interface KlineRow {
 interface Props {
   rows: KlineRow[];
   height?: number | string;
+  showMovingAverages?: boolean;
 }
 
 function finite(value: number | null | undefined): number {
@@ -29,7 +30,17 @@ function hasCompletePrice(row: KlineRow): boolean {
   );
 }
 
-export default function KlineChart({ rows, height = 360 }: Props) {
+function movingAverage(rows: KlineRow[], window: number): Array<number | null> {
+  return rows.map((_row, index) => {
+    if (index + 1 < window) return null;
+    const closes = rows.slice(index + 1 - window, index + 1).map((row) => row.close);
+    const numericCloses = closes.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    if (numericCloses.length !== window) return null;
+    return numericCloses.reduce((total, value) => total + value, 0) / window;
+  });
+}
+
+export default function KlineChart({ rows, height = 360, showMovingAverages = false }: Props) {
   const chartRows = useMemo(() => rows.filter(hasCompletePrice), [rows]);
   const option = useMemo(() => {
     const dates = chartRows.map((row) => row.date);
@@ -44,6 +55,25 @@ export default function KlineChart({ rows, height = 360 }: Props) {
       itemStyle: { color: finite(row.close) >= finite(row.open) ? '#EF5350' : '#26A69A' },
       itemIndex: index,
     }));
+    const movingAverageSeries = showMovingAverages
+      ? [
+          { name: 'MA5', data: movingAverage(chartRows, 5), color: '#f0c44b' },
+          { name: 'MA10', data: movingAverage(chartRows, 10), color: '#37d9b0' },
+          { name: 'MA20', data: movingAverage(chartRows, 20), color: '#d36fff' },
+          { name: 'MA60', data: movingAverage(chartRows, 60), color: '#39c66e' },
+        ].map((line) => ({
+          name: line.name,
+          type: 'line',
+          data: line.data,
+          symbol: 'none',
+          showSymbol: false,
+          connectNulls: false,
+          smooth: false,
+          z: 3,
+          lineStyle: { width: 1.15, color: line.color },
+          emphasis: { disabled: true },
+        }))
+      : [];
     const start = chartRows.length > 80 ? Math.max(0, 100 - (80 / chartRows.length) * 100) : 0;
 
     return {
@@ -119,7 +149,7 @@ export default function KlineChart({ rows, height = 360 }: Props) {
           textStyle: { color: '#8B949E', fontSize: 9 },
         },
       ],
-      series: [
+        series: [
         {
           name: 'K线',
           type: 'candlestick',
@@ -131,6 +161,7 @@ export default function KlineChart({ rows, height = 360 }: Props) {
             borderColor0: '#26A69A',
           },
         },
+        ...movingAverageSeries,
         {
           name: '成交量',
           type: 'bar',
@@ -141,7 +172,7 @@ export default function KlineChart({ rows, height = 360 }: Props) {
         },
       ],
     };
-  }, [chartRows]);
+  }, [chartRows, showMovingAverages]);
 
   if (chartRows.length === 0) {
     return <div className="grid h-[260px] place-items-center text-xs text-text-secondary">暂无可核验K线</div>;

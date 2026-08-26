@@ -399,6 +399,102 @@ def _volume_price_ma(features: dict[str, Any]) -> dict[str, Any]:
     return {"event": event, "ma_state": ma_state, "推动": push, "status": "AVAILABLE", "evidence": [_evidence(event, feature="volume_ratio", value=vr), _evidence(ma_state, feature="ma_alignment")]}
 
 
+def _decision_score(
+    qts: dict[str, Any],
+    main_force: dict[str, Any],
+    volume_ma: dict[str, Any],
+    zone: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one auditable score from the same values shown in the UI.
+
+    Each component is kept on a 0-100 scale. Missing inputs stay missing and
+    the final value is normalised by the weight of available components; a
+    partial score therefore never turns an unavailable feed into a zero.
+    """
+    event_scores = {
+        "量价同步异动": 82.0,
+        "量先异动": 68.0,
+        "价先异动": 60.0,
+        "无明显异动": 48.0,
+    }
+    ma_scores = {
+        "均线展开": 85.0,
+        "均线归位中": 72.0,
+        "均线聚合": 58.0,
+        "均线未归位": 35.0,
+    }
+    zone_scores = {
+        "强势A区": 88.0,
+        "强势B区": 68.0,
+        "风险C区": 25.0,
+    }
+    main_confidence = _finite(main_force.get("confidence"))
+    components = [
+        {
+            "key": "risk_control",
+            "label": "风险控制",
+            "value": _clamp(100.0 - qts["risk"]) if _finite(qts.get("risk")) is not None else None,
+            "weight": 0.22,
+            "basis": "100 - 量时空风险",
+        },
+        {
+            "key": "quantity_time_space",
+            "label": "量时空",
+            "value": _clamp(qts["opportunity"]) if _finite(qts.get("opportunity")) is not None else None,
+            "weight": 0.28,
+            "basis": "量时空机会分",
+        },
+        {
+            "key": "main_force",
+            "label": "主力证据",
+            "value": _clamp(main_confidence) if main_confidence is not None else None,
+            "weight": 0.16,
+            "basis": "上涨/下跌成交量结构的证据置信度",
+        },
+        {
+            "key": "volume_price",
+            "label": "量价异动",
+            "value": event_scores.get(volume_ma.get("event")),
+            "weight": 0.12,
+            "basis": "量价事件映射分",
+        },
+        {
+            "key": "moving_average",
+            "label": "均线归位",
+            "value": ma_scores.get(volume_ma.get("ma_state")),
+            "weight": 0.12,
+            "basis": "均线状态映射分",
+        },
+        {
+            "key": "trading_zone",
+            "label": "A/B/C区",
+            "value": zone_scores.get(zone.get("zone")),
+            "weight": 0.10,
+            "basis": "交易区状态映射分",
+        },
+    ]
+    available = [item for item in components if item["value"] is not None]
+    available_weight = sum(float(item["weight"]) for item in available)
+    value = (
+        sum(float(item["value"]) * float(item["weight"]) for item in available) / available_weight
+        if available_weight > 0
+        else None
+    )
+    for item in components:
+        item["available"] = item["value"] is not None
+        item["value"] = _round(item["value"], 1)
+    return {
+        "value": _round(value, 1),
+        "status": "AVAILABLE" if len(available) == len(components) else "PARTIAL" if available else "UNAVAILABLE",
+        "method": "可用组件按权重归一化",
+        "components": components,
+        "available_count": len(available),
+        "component_count": len(components),
+        "coverage_pct": _round(available_weight * 100.0, 1),
+        "note": "评分只用于结构排序参考，不代表收益概率；不可用数据不会以0分代替。",
+    }
+
+
 def _zone(features: dict[str, Any], qts: dict[str, Any], main_force: dict[str, Any]) -> dict[str, Any]:
     if qts.get("status") != "AVAILABLE":
         return {"zone": "未形成明确交易区", "confidence": None, "reasons": ["量时空数据不足"], "risk_points": [], "next_confirmation": [], "invalidation": []}
@@ -821,6 +917,7 @@ class StrongStockDecisionService:
         main_force = _main_force(features)
         volume_ma = _volume_price_ma(features)
         zone = _zone(features, qts, main_force)
+        composite_score = _decision_score(qts, main_force, volume_ma, zone)
         # Individual-stock flow belongs to the stock pattern layer; sector
         # flow is kept for the independent topic confirmation layer.
         big = _big_patterns(features, qts, context.get("flow") or context.get("sector_flow") or [])
@@ -884,7 +981,7 @@ class StrongStockDecisionService:
                 "missing_features": missing_features,
                 "note": "缺失字段保持为空，不以估算值替代；可用数据仍用于对应层级的研究观察。",
             },
-            "decision": decision, "quantity_time_space": qts, "main_force": main_force, "volume_price_ma": volume_ma,
+            "decision": decision, "composite_score": composite_score, "quantity_time_space": qts, "main_force": main_force, "volume_price_ma": volume_ma,
             "best_trading_zone": zone, "big_patterns": list(big.values()), "rising_stars": list(stars.values()),
             "profit_patterns": [signals[sid] for sid in ("HQS_011", "HQS_012", "HQS_013", "HQS_014")],
             "sell_signals": [signals[sid] for sid in ("HQS_015", "HQS_016", "HQS_017")],

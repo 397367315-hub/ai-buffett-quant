@@ -10,25 +10,18 @@ import {
   BarChart3,
   BookOpen,
   BrainCircuit,
-  Check,
-  ChevronRight,
-  CircleHelp,
   Clock3,
   Database,
   Flame,
   Gauge,
-  History,
   Layers3,
   LineChart,
   Loader2,
-  Menu,
   RefreshCw,
   Search,
-  Settings2,
   ShieldAlert,
   Target,
   TrendingUp,
-  X,
 } from 'lucide-react';
 import type { KlineRow } from '@/components/KlineChart';
 import { apiFetch, friendlyApiError } from '@/lib/api';
@@ -58,23 +51,6 @@ const SIGNAL_LABELS: Record<string, string> = {
   WEAKENING: '减弱',
   INVALID: '失效',
 };
-
-const SIDEBAR_ITEMS = [
-  { id: 'overview', label: '总览看板', icon: Gauge },
-  { id: 'risk', label: '风险监控', icon: ShieldAlert },
-  { id: 'qts', label: '量时空', icon: Activity },
-  { id: 'main-force', label: '主力分析', icon: TrendingUp },
-  { id: 'volume-price', label: '量价异动', icon: BarChart3 },
-  { id: 'ma', label: '均线归位', icon: LineChart },
-  { id: 'zone', label: 'A/B/C 区', icon: Target },
-  { id: 'big-pattern', label: '暴涨大形态', icon: Layers3 },
-  { id: 'star', label: '暴涨之星', icon: Flame },
-  { id: 'profit', label: '经典盈利模式', icon: BookOpen },
-  { id: 'stacking', label: '量能体叠加术', icon: Database },
-  { id: 'topic', label: '题材互证', icon: BrainCircuit },
-  { id: 'sell', label: '卖出风险', icon: AlertTriangle },
-  { id: 'timeline', label: '历史记录', icon: History },
-] as const;
 
 const DETAIL_TABS = [
   { id: 'overview', label: '决策总览' },
@@ -214,11 +190,55 @@ function emptyMessage(value: unknown): string {
   return value ? safeText(value) : '暂无可核验记录';
 }
 
+const SCORE_WEIGHTS = [0.22, 0.28, 0.16, 0.12, 0.12, 0.1];
+
+function fallbackScoreComponents(qts: AnyMap, mainForce: AnyMap, volumeMa: AnyMap, zone: AnyMap): AnyMap[] {
+  const eventScores: Record<string, number> = {
+    '量价同步异动': 82,
+    '量先异动': 68,
+    '价先异动': 60,
+    '无明显异动': 48,
+  };
+  const maScores: Record<string, number> = {
+    '均线展开': 85,
+    '均线归位中': 72,
+    '均线聚合': 58,
+    '均线未归位': 35,
+  };
+  const zoneScores: Record<string, number> = {
+    '强势A区': 88,
+    '强势B区': 68,
+    '风险C区': 25,
+  };
+  return [
+    { key: 'risk_control', label: '风险控制', value: finite(qts.risk) ? Math.max(0, Math.min(100, 100 - qts.risk)) : null, weight: SCORE_WEIGHTS[0], available: finite(qts.risk) },
+    { key: 'quantity_time_space', label: '量时空', value: finite(qts.opportunity) ? qts.opportunity : null, weight: SCORE_WEIGHTS[1], available: finite(qts.opportunity) },
+    { key: 'main_force', label: '主力证据', value: finite(mainForce.confidence) ? mainForce.confidence : null, weight: SCORE_WEIGHTS[2], available: finite(mainForce.confidence) },
+    { key: 'volume_price', label: '量价异动', value: eventScores[volumeMa.event] ?? null, weight: SCORE_WEIGHTS[3], available: eventScores[volumeMa.event] !== undefined },
+    { key: 'moving_average', label: '均线归位', value: maScores[volumeMa.ma_state] ?? null, weight: SCORE_WEIGHTS[4], available: maScores[volumeMa.ma_state] !== undefined },
+    { key: 'trading_zone', label: 'A/B/C区', value: zoneScores[zone.zone] ?? null, weight: SCORE_WEIGHTS[5], available: zoneScores[zone.zone] !== undefined },
+  ];
+}
+
+function weightedScore(components: AnyMap[]): number | null {
+  const available = components.filter((item) => finite(item.value) && finite(item.weight));
+  const weight = available.reduce((total, item) => total + item.weight, 0);
+  return weight > 0 ? available.reduce((total, item) => total + item.value * item.weight, 0) / weight : null;
+}
+
+function scoreText(value: unknown): string {
+  return finite(value) ? `${Math.round(value)}分` : '--';
+}
+
+function scoreTone(value: unknown): string {
+  if (!finite(value)) return 'text-text-secondary';
+  return value >= 70 ? 'text-up' : value >= 50 ? 'text-warn' : 'text-down';
+}
+
 export default function StrongStockDecisionPage() {
   const [symbol, setSymbol] = useState('002123');
   const [input, setInput] = useState('002123');
   const [data, setData] = useState<AnyMap | null>(null);
-  const [activeTab, setActiveTab] = useState('overview');
   const [detailTab, setDetailTab] = useState('overview');
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -226,7 +246,6 @@ export default function StrongStockDecisionPage() {
   const [intraday, setIntraday] = useState<AnyMap | null>(null);
   const [cases, setCases] = useState<AnyMap | null>(null);
   const [refreshingDetail, setRefreshingDetail] = useState(false);
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const loadOverview = useCallback(async (code: string, refresh = false) => {
     const normalized = code.trim().toUpperCase().replace(/\.(SH|SZ|BJ)$/i, '');
@@ -238,6 +257,7 @@ export default function StrongStockDecisionPage() {
     setProgress(10);
     setError('');
     setIntraday(null);
+    setCases(null);
     const timer = window.setInterval(() => setProgress((current) => Math.min(91, current + Math.max(1, Math.round((91 - current) / 8)))), 260);
     try {
       const response = await apiFetch<{ data: AnyMap }>(`/strong-stock-decision/${normalized}/overview?refresh=${refresh ? 'true' : 'false'}`, { timeoutMs: 35000 });
@@ -325,19 +345,16 @@ export default function StrongStockDecisionPage() {
   const sellTop = sellSignals.find((item) => item.skill_id === 'HQS_015') || null;
   const sellResistance = sellSignals.find((item) => item.skill_id === 'HQS_016') || null;
   const sellZone = sellSignals.find((item) => item.skill_id === 'HQS_017') || null;
-  const confirmedCount = (data?.signals || []).filter((item: AnyMap) => item.status === 'CONFIRMED').length;
   const riskCount = (data?.signals || []).filter((item: AnyMap) => item.status === 'CONFIRMED' && /风险|卖出|现顶/.test(item.name || '')).length;
-  const score = finite(qts.opportunity) && finite(qts.risk)
-    ? Math.max(0, Math.min(100, qts.opportunity * 0.58 + (100 - qts.risk) * 0.28 + Math.min(14, confirmedCount * 1.5) - riskCount * 12))
-    : null;
+  const backendScore = data?.composite_score || {};
+  const scoreComponents: AnyMap[] = Array.isArray(backendScore.components) && backendScore.components.length
+    ? backendScore.components
+    : fallbackScoreComponents(qts, mainForce, volumeMa, zone);
+  const score = finite(backendScore.value) ? backendScore.value : weightedScore(scoreComponents);
+  const scoreCoverage = finite(backendScore.coverage_pct)
+    ? backendScore.coverage_pct
+    : scoreComponents.reduce((total, item) => total + (item.available !== false && finite(item.value) ? Number(item.weight || 0) * 100 : 0), 0);
   const sourceName = String(sourceStatus.daily_bars_source || '').includes('tencent') ? '腾讯行情' : sourceStatus.daily_bars_source ? '系统日线缓存' : undefined;
-
-  const selectPanel = (id: string) => {
-    setActiveTab(id);
-    setMobileNavOpen(false);
-    const detail = DETAIL_TABS.some((tab) => tab.id === id) ? id : id === 'risk' || id === 'sell' ? 'hunter' : id === 'qts' || id === 'zone' || id === 'ma' ? 'hunter' : id;
-    setDetailTab(detail);
-  };
 
   const renderDetail = () => {
     if (!data) return null;
@@ -362,37 +379,9 @@ export default function StrongStockDecisionPage() {
           <div className="strong-title-row"><h1>强势股交易决策系统 V1.0</h1><span className="strong-shadow-badge">Shadow模式</span></div>
           <p>基于《猎取强势股》《暴涨大形态》《暴涨之星》三书体系</p>
         </div>
-        <div className="strong-header-actions">
-          <span className="strong-run-switch">独立运行：<b>ON</b></span>
-          <button type="button" title="系统设置"><Settings2 size={15} />系统设置</button>
-          <button type="button" title="使用说明"><CircleHelp size={15} />使用说明</button>
-          <button type="button" title="回测中心" onClick={() => { setDetailTab('cases'); setActiveTab('timeline'); }}>回测中心</button>
-        </div>
       </header>
 
-      <div className="strong-mobile-toolbar">
-        <button type="button" onClick={() => setMobileNavOpen((value) => !value)} aria-label="打开功能导航"><Menu size={18} />功能导航</button>
-        <span>{safeText(data?.name, '强势股交易决策')}</span>
-        <button type="button" onClick={() => void loadOverview(symbol, true)} aria-label="刷新数据"><RefreshCw size={16} className={loading ? 'animate-spin' : ''} /></button>
-      </div>
-
-      <div className="strong-terminal-layout">
-        <aside className={`strong-sidebar ${mobileNavOpen ? 'strong-sidebar-open' : ''}`}>
-          <div className="strong-sidebar-head"><span>功能导航</span><button type="button" onClick={() => setMobileNavOpen(false)} aria-label="关闭功能导航"><X size={15} /></button></div>
-          <nav className="strong-sidebar-nav">
-            {SIDEBAR_ITEMS.map((item, index) => {
-              const Icon = item.icon;
-              return <button type="button" key={item.id} onClick={() => selectPanel(item.id)} className={activeTab === item.id ? 'is-active' : ''}><Icon size={15} /><span>{index + 1}. {item.label}</span></button>;
-            })}
-          </nav>
-          <div className="strong-sidebar-footer">
-            <div>数据时间：<b>{safeText(data?.trade_date, '加载中')}</b></div>
-            <div className={data?.is_realtime ? 'text-up' : 'text-text-secondary'}><i />数据状态：{data?.is_realtime ? '实时' : '历史/缓存'}</div>
-            <div className="mt-2 text-[9px] leading-4 text-text-secondary">模块独立运行，不回写现有策略。</div>
-          </div>
-        </aside>
-
-        <main className="strong-terminal-main">
+      <main className="strong-terminal-main">
           <section className="strong-stock-strip">
             <div className="strong-search-cell"><label>股票代码</label><div className="strong-code-search"><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void loadOverview(input); }} /><button type="button" onClick={() => void loadOverview(input)} aria-label="查询股票"><Search size={15} /></button></div></div>
             <div className="strong-stock-name"><span>股票名称</span><b>{safeText(data?.name, '等待查询')}</b></div>
@@ -411,12 +400,12 @@ export default function StrongStockDecisionPage() {
             <div className="strong-primary-grid">
               <Panel title="实时K线图（日线）" icon={LineChart} meta={<span>{data?.trade_date || '--'} · {bars.length}根日线</span>} className="strong-kline-panel">
                 <div className="strong-ma-legend"><span>MA5:{numberText(data?.engine_features?.ma5)}</span><span>MA10:{numberText(data?.engine_features?.ma10)}</span><span>MA20:{numberText(data?.engine_features?.ma20)}</span><span>MA60:{numberText(data?.engine_features?.ma60)}</span></div>
-                <KlineChart rows={klineRows.slice(-150)} height={280} />
+                <KlineChart rows={klineRows.slice(-150)} height={280} showMovingAverages />
                 <div className="strong-chart-annotations">{[zone.zone, strongestBig?.name, strongestStar?.name].filter(Boolean).map((item) => <span key={item}>{item}</span>)}</div>
               </Panel>
               <Panel title="决策总览（综合评分）" icon={Gauge} className="strong-score-panel">
-                <div className="strong-score-content"><ProgressGauge value={score} /><div className="strong-score-list"><MetricLine label="风险控制" value={finite(qts.risk) ? Math.round(100 - qts.risk) : '--'} valueClass="text-up" /><MetricLine label="量时空" value={finite(qts.opportunity) ? Math.round(qts.opportunity) : '--'} valueClass="text-up" /><MetricLine label="主力" value={finite(mainForce.confidence) ? Math.round(mainForce.confidence) : '--'} valueClass="text-up" /><MetricLine label="量价异动" value={volumeMa.status === 'AVAILABLE' ? '可用' : '不足'} valueClass={volumeMa.status === 'AVAILABLE' ? 'text-up' : 'text-warn'} /><MetricLine label="均线归位" value={safeText(volumeMa.ma_state, '不足')} valueClass="text-text" /><MetricLine label="A/B/C区" value={safeText(zone.zone, '不足')} valueClass={zone.zone === '风险C区' ? 'text-down' : 'text-up'} /></div></div>
-                <div className="strong-score-note">工程综合评分仅用于排序参考；书内术语与工程特征分开记录。</div>
+                <div className="strong-score-content"><ProgressGauge value={score} /><div className="strong-score-list">{scoreComponents.map((item) => <MetricLine key={item.key} label={safeText(item.label, item.key)} value={scoreText(item.value)} valueClass={scoreTone(item.value)} />)}</div></div>
+                <div className="strong-score-note">{safeText(backendScore.method, '可用组件按权重归一化')} · 数据覆盖 {finite(scoreCoverage) ? `${Math.round(scoreCoverage)}%` : '--'} · 评分仅用于结构排序参考。</div>
               </Panel>
               <Panel title="ACTION 建议" icon={Target} className="strong-action-panel" risk={decision.action === 'RISK' || decision.action === 'EXIT'}>
                 <div className={`strong-action-heading ${decision.action === 'RISK' || decision.action === 'EXIT' ? 'is-risk' : ''}`}>{safeText(decision.primary_skill, '等待结构')}<span>→</span>{actionLabel(decision.action)}</div>
@@ -459,14 +448,13 @@ export default function StrongStockDecisionPage() {
             </div>
 
             <section className="strong-detail-shell">
-              <div className="strong-detail-tabs">{DETAIL_TABS.map((tab) => <button type="button" key={tab.id} onClick={() => { setDetailTab(tab.id); setActiveTab(tab.id); }} className={detailTab === tab.id ? 'is-active' : ''}>{tab.label}</button>)}</div>
+              <div className="strong-detail-tabs">{DETAIL_TABS.map((tab) => <button type="button" key={tab.id} onClick={() => setDetailTab(tab.id)} className={detailTab === tab.id ? 'is-active' : ''}>{tab.label}</button>)}</div>
               <div className="strong-detail-content">{renderDetail()}</div>
             </section>
 
             <footer className="strong-terminal-footer"><span>免责声明：本系统基于三本书理论与可核验数据开发，仅供学习和研究参考，不构成投资建议。</span><span><b>ⓘ</b> Shadow模式：仅分析不执行交易</span></footer>
           </>}
-        </main>
-      </div>
+      </main>
     </div>
   );
 }
