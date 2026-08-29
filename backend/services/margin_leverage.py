@@ -240,6 +240,7 @@ def _relation(
 
 class MarginLeverageService:
     PREWARM_LIMIT = 120
+    METRIC_CALCULATION_CHUNK_SIZE = 100
 
     def __init__(self) -> None:
         self._sync_lock = asyncio.Lock()
@@ -969,39 +970,47 @@ class MarginLeverageService:
                 .where(MarginStockDaily.trade_date == target_date)
                 .order_by(desc(MarginStockDaily.financing_balance))
             )).scalars().all())
-            margin_rows = list((await session.execute(
-                select(MarginStockDaily)
-                .where(
-                    MarginStockDaily.stock_code.in_(codes),
-                    MarginStockDaily.trade_date <= target_date,
-                )
-                .order_by(MarginStockDaily.stock_code, MarginStockDaily.trade_date)
-            )).scalars().all()) if codes else []
-            price_rows = list((await session.execute(
-                select(StockDailyBar)
-                .where(
-                    StockDailyBar.stock_code.in_(codes),
-                    StockDailyBar.trade_date >= target_date - timedelta(days=65),
-                    StockDailyBar.trade_date <= target_date,
-                )
-                .order_by(StockDailyBar.stock_code, StockDailyBar.trade_date)
-            )).scalars().all()) if codes else []
-        margin_by_code: dict[str, list[MarginStockDaily]] = {}
-        prices_by_code: dict[str, list[StockDailyBar]] = {}
-        for row in margin_rows:
-            margin_by_code.setdefault(row.stock_code, []).append(row)
-        for row in price_rows:
-            prices_by_code.setdefault(row.stock_code, []).append(row)
-        metrics = [
-            metric
-            for code in codes
-            if (metric := self._metric_from_rows(
-                code, margin_by_code.get(code, []), prices_by_code.get(code, [])
-            )) is not None
-        ]
-        return await self._upsert(
-            StockLeverageMetric, metrics, ["stock_code", "trade_date"], batch_size=250
-        )
+
+        written = 0
+        for start in range(0, len(codes), self.METRIC_CALCULATION_CHUNK_SIZE):
+            chunk = codes[start:start + self.METRIC_CALCULATION_CHUNK_SIZE]
+            async with async_session() as session:
+                margin_rows = list((await session.execute(
+                    select(MarginStockDaily)
+                    .where(
+                        MarginStockDaily.stock_code.in_(chunk),
+                        MarginStockDaily.trade_date <= target_date,
+                    )
+                    .order_by(MarginStockDaily.stock_code, MarginStockDaily.trade_date)
+                )).scalars().all())
+                price_rows = list((await session.execute(
+                    select(StockDailyBar)
+                    .where(
+                        StockDailyBar.stock_code.in_(chunk),
+                        StockDailyBar.trade_date >= target_date - timedelta(days=65),
+                        StockDailyBar.trade_date <= target_date,
+                    )
+                    .order_by(StockDailyBar.stock_code, StockDailyBar.trade_date)
+                )).scalars().all())
+
+            margin_by_code: dict[str, list[MarginStockDaily]] = {}
+            prices_by_code: dict[str, list[StockDailyBar]] = {}
+            for row in margin_rows:
+                margin_by_code.setdefault(row.stock_code, []).append(row)
+            for row in price_rows:
+                prices_by_code.setdefault(row.stock_code, []).append(row)
+            metrics = [
+                metric
+                for code in chunk
+                if (metric := self._metric_from_rows(
+                    code, margin_by_code.get(code, []), prices_by_code.get(code, [])
+                )) is not None
+            ]
+            written += await self._upsert(
+                StockLeverageMetric, metrics, ["stock_code", "trade_date"], batch_size=100
+            )
+            await asyncio.sleep(0)
+        return written
 
     async def _prewarm_own_histories(self, target_date: date) -> int:
         async with async_session() as session:

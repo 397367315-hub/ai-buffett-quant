@@ -163,6 +163,45 @@ class MarginLeverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["rankings"][0]["stock_name"], "甲公司")
         self.assertEqual(result["rankings"][0]["metric"]["lri_score"], 88)
 
+    async def test_recent_metrics_are_calculated_and_written_in_bounded_chunks(self):
+        target = date(2026, 8, 28)
+        codes = ["600001", "600002", "600003"]
+        async with self.session_factory() as session:
+            for index, code in enumerate(codes):
+                session.add_all([
+                    MarginStockDaily(
+                        stock_code=code, stock_name=code,
+                        trade_date=target - timedelta(days=1),
+                        financing_balance=1_000_000 + index * 1_000,
+                        financing_ratio=3.0,
+                    ),
+                    MarginStockDaily(
+                        stock_code=code, stock_name=code, trade_date=target,
+                        financing_balance=1_050_000 + index * 1_000,
+                        financing_ratio=3.2,
+                    ),
+                ])
+            await session.commit()
+
+        self.service.METRIC_CALCULATION_CHUNK_SIZE = 2
+        original_upsert = self.service._upsert
+        batches = []
+
+        async def recording_upsert(model, rows, keys, batch_size=300):
+            batches.append([row["stock_code"] for row in rows])
+            return await original_upsert(model, rows, keys, batch_size)
+
+        with patch.object(self.service, "_upsert", side_effect=recording_upsert):
+            written = await self.service._calculate_recent_metrics(target)
+
+        self.assertEqual(written, 3)
+        self.assertEqual([len(batch) for batch in batches], [2, 1])
+        async with self.session_factory() as session:
+            metrics = list((await session.execute(
+                StockLeverageMetric.__table__.select()
+            )).all())
+        self.assertEqual(len(metrics), 3)
+
     async def test_rankings_ignore_newer_partial_exchange_rows(self):
         complete_date = date(2026, 8, 27)
         partial_date = date(2026, 8, 28)
