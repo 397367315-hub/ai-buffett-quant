@@ -145,6 +145,7 @@ class EastMoneyDataCollector:
     PAGE_FETCH_CONCURRENCY = 8
     MARGIN_PAGE_FETCH_ATTEMPTS = 3
     MARGIN_PAGE_RETRY_BASE_SECONDS = 0.4
+    MARGIN_HISTORY_PAGE_FETCH_CONCURRENCY = 3
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         "Referer": "https://data.eastmoney.com/",
@@ -1178,25 +1179,34 @@ class EastMoneyDataCollector:
             date_filter += f"(DATE<='{end_date.isoformat()}')"
 
         async def fetch_page(page: int) -> tuple[list[dict], int]:
-            data = await self.fetch_json(self.DATACENTER_URL, {
-                "reportName": "RPTA_WEB_RZRQ_GGMX", "columns": "ALL",
-                "sortColumns": "DATE,SCODE", "sortTypes": "-1,1",
-                "pageNumber": str(page), "pageSize": str(bounded_page_size),
-                "filter": (
-                    f"(SCODE in ({code_filter})){date_filter}"
-                ),
-                "source": "WEB", "client": "WEB",
-            })
-            result = data.get("result") or {}
-            return result.get("data") or [], as_int(result.get("count"))
+            for attempt in range(1, self.MARGIN_PAGE_FETCH_ATTEMPTS + 1):
+                try:
+                    data = await self.fetch_json(self.DATACENTER_URL, {
+                        "reportName": "RPTA_WEB_RZRQ_GGMX", "columns": "ALL",
+                        "sortColumns": "DATE,SCODE", "sortTypes": "-1,1",
+                        "pageNumber": str(page), "pageSize": str(bounded_page_size),
+                        "filter": (
+                            f"(SCODE in ({code_filter})){date_filter}"
+                        ),
+                        "source": "WEB", "client": "WEB",
+                    })
+                    result = data.get("result") or {}
+                    return result.get("data") or [], as_int(result.get("count"))
+                except (httpx.HTTPError, RuntimeError, ValueError):
+                    if attempt >= self.MARGIN_PAGE_FETCH_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(self.MARGIN_PAGE_RETRY_BASE_SECONDS * attempt)
+
+            raise RuntimeError(f"两融历史批量查询第{page}页请求失败")
 
         first, total = await fetch_page(1)
         if not first:
             return {code: [] for code in codes}
         pages = max(1, (total + bounded_page_size - 1) // bounded_page_size)
         by_page: dict[int, list[dict]] = {1: first}
-        for start in range(2, pages + 1, self.PAGE_FETCH_CONCURRENCY):
-            numbers = list(range(start, min(start + self.PAGE_FETCH_CONCURRENCY, pages + 1)))
+        concurrency = self.MARGIN_HISTORY_PAGE_FETCH_CONCURRENCY
+        for start in range(2, pages + 1, concurrency):
+            numbers = list(range(start, min(start + concurrency, pages + 1)))
             responses = await asyncio.gather(*(fetch_page(page) for page in numbers))
             for page, (rows, _count) in zip(numbers, responses):
                 if not rows:
