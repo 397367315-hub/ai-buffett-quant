@@ -13,6 +13,34 @@ from services.data_collector import (
 
 
 class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_margin_stock_snapshot_retries_a_transient_page_failure(self):
+        collector = EastMoneyDataCollector()
+        attempts = {1: 0, 2: 0}
+
+        async def fake_fetch_json(url, params, headers=None):
+            del url, headers
+            page = int(params["pageNumber"])
+            attempts[page] += 1
+            if page == 2 and attempts[page] == 1:
+                raise RuntimeError("temporary proxy timeout")
+            start = 1 if page == 1 else 101
+            end = 101 if page == 1 else 102
+            return {
+                "result": {
+                    "count": 101,
+                    "data": [{"SCODE": f"{value:06d}"} for value in range(start, end)],
+                }
+            }
+
+        collector.fetch_json = fake_fetch_json
+        with patch("services.data_collector.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            result = await collector.fetch_margin_stock_snapshot(date(2026, 8, 27), page_size=100)
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(len(result["records"]), 101)
+        self.assertEqual(attempts, {1: 1, 2: 2})
+        sleep.assert_awaited_once()
+
     async def test_rotation_does_not_call_positive_inflow_an_outflow(self):
         collector = EastMoneyDataCollector()
         collector.fetch_all_concept_flow = AsyncMock(return_value=[

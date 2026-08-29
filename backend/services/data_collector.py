@@ -143,6 +143,8 @@ class EastMoneyDataCollector:
     TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q="
     MAX_LIST_PAGE_SIZE = 100
     PAGE_FETCH_CONCURRENCY = 8
+    MARGIN_PAGE_FETCH_ATTEMPTS = 3
+    MARGIN_PAGE_RETRY_BASE_SECONDS = 0.4
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         "Referer": "https://data.eastmoney.com/",
@@ -1097,15 +1099,23 @@ class EastMoneyDataCollector:
         bounded_page_size = min(max(int(page_size), 100), 500)
 
         async def fetch_page(page: int) -> tuple[list[dict], int]:
-            data = await self.fetch_json(self.DATACENTER_URL, {
-                "reportName": "RPTA_WEB_RZRQ_GGMX", "columns": "ALL",
-                "sortColumns": "SCODE", "sortTypes": "1",
-                "pageNumber": str(page), "pageSize": str(bounded_page_size),
-                "filter": f"(DATE='{target_date.isoformat()}')",
-                "source": "WEB", "client": "WEB",
-            })
-            result = data.get("result") or {}
-            return result.get("data") or [], as_int(result.get("count"))
+            for attempt in range(1, self.MARGIN_PAGE_FETCH_ATTEMPTS + 1):
+                try:
+                    data = await self.fetch_json(self.DATACENTER_URL, {
+                        "reportName": "RPTA_WEB_RZRQ_GGMX", "columns": "ALL",
+                        "sortColumns": "SCODE", "sortTypes": "1",
+                        "pageNumber": str(page), "pageSize": str(bounded_page_size),
+                        "filter": f"(DATE='{target_date.isoformat()}')",
+                        "source": "WEB", "client": "WEB",
+                    })
+                    result = data.get("result") or {}
+                    return result.get("data") or [], as_int(result.get("count"))
+                except (httpx.HTTPError, RuntimeError, ValueError):
+                    if attempt >= self.MARGIN_PAGE_FETCH_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(self.MARGIN_PAGE_RETRY_BASE_SECONDS * attempt)
+
+            raise RuntimeError(f"两融个股快照第{page}页请求失败")
 
         first, total = await fetch_page(1)
         if not first:
