@@ -241,6 +241,7 @@ def _relation(
 class MarginLeverageService:
     PREWARM_LIMIT = 120
     METRIC_CALCULATION_CHUNK_SIZE = 100
+    COMPLETE_SNAPSHOT_MIN_RECORDS = 1000
 
     def __init__(self) -> None:
         self._sync_lock = asyncio.Lock()
@@ -938,7 +939,26 @@ class MarginLeverageService:
                     .order_by(desc(StockLeverageMetric.trade_date))
                     .limit(1)
                 )).scalar_one_or_none()
+                complete_date = (await session.execute(
+                    select(func.max(MarginMarketDaily.trade_date))
+                )).scalar_one_or_none()
+                complete_snapshot_count = (await session.execute(
+                    select(func.count(MarginStockDaily.id)).where(
+                        MarginStockDaily.trade_date == complete_date
+                    )
+                )).scalar_one() if complete_date is not None else 0
             if latest is None:
+                if (
+                    complete_date is not None
+                    and int(complete_snapshot_count or 0) >= self.COMPLETE_SNAPSHOT_MIN_RECORDS
+                ):
+                    return {
+                        "status": "not_margin_eligible",
+                        "message": "当前股票不是融资融券标的",
+                        "stock_code": code,
+                        "data_date": complete_date.isoformat(),
+                        "source": "audited_margin_snapshot_cache",
+                    }
                 raw_rows = await collector.fetch_margin_stock_history(code, days=260)
                 if not raw_rows:
                     return {
@@ -1572,8 +1592,8 @@ class MarginLeverageService:
                 "message": "当前股票不是融资融券标的",
                 "risk_message": "暂无两融风险评分",
                 "meta": {
-                    "data_date": None, "is_realtime": False,
-                    "source": "eastmoney_margin_disclosure",
+                    "data_date": sync_state.get("data_date"), "is_realtime": False,
+                    "source": sync_state.get("source") or "eastmoney_margin_disclosure",
                     "disclosure_note": MARGIN_DISCLOSURE_NOTE,
                 },
             }

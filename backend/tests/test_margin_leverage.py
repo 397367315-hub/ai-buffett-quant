@@ -131,6 +131,34 @@ class MarginLeverageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["message"], "当前股票不是融资融券标的")
         self.assertEqual(result["risk_message"], "暂无两融风险评分")
 
+    async def test_complete_snapshot_identifies_non_margin_stock_without_live_request(self):
+        target = date(2026, 8, 27)
+        self.service.COMPLETE_SNAPSHOT_MIN_RECORDS = 2
+        async with self.session_factory() as session:
+            session.add(MarginMarketDaily(
+                trade_date=target, financing_balance=2_600_000_000_000, components={},
+            ))
+            session.add_all([
+                MarginStockDaily(
+                    stock_code=f"600{index:03d}", stock_name=str(index), trade_date=target,
+                    financing_balance=1_000_000, financing_ratio=3,
+                )
+                for index in range(2)
+            ])
+            await session.commit()
+
+        with patch(
+            "services.margin_leverage.collector.fetch_margin_stock_history",
+            new_callable=AsyncMock,
+        ) as fetch_history:
+            result = await self.service.stock_detail("000007")
+
+        fetch_history.assert_not_awaited()
+        self.assertFalse(result["available"])
+        self.assertFalse(result["eligible"])
+        self.assertEqual(result["meta"]["data_date"], target.isoformat())
+        self.assertEqual(result["meta"]["source"], "audited_margin_snapshot_cache")
+
     async def test_market_payload_is_explicitly_non_realtime(self):
         async with self.session_factory() as session:
             session.add(MarginMarketDaily(
