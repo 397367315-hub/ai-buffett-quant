@@ -176,6 +176,8 @@ class EastMoneyDataCollector:
         "f2": "close_price",
         "f3": "change_pct",
         "f4": "change_amount",
+        "f6": "amount",
+        "f8": "turnover",
         "f12": "code",
         "f14": "name",
         "f62": "main_net_inflow",
@@ -190,6 +192,7 @@ class EastMoneyDataCollector:
         "f104": "up_count",
         "f105": "down_count",
         "f106": "flat_count",
+        "f124": "quote_timestamp",
         "f128": "leading_stock",
         "f140": "leading_stock_code",
         "f136": "leading_stock_change_pct",
@@ -1039,6 +1042,186 @@ class EastMoneyDataCollector:
                 "source": "eastmoney",
             })
         return result
+
+    async def fetch_margin_market_history(self, days: int = 250) -> list[dict]:
+        """Return the EastMoney all-market T-close margin series."""
+        data = await self.fetch_json(self.DATACENTER_URL, {
+            "reportName": "RPTA_RZRQ_LSHJ", "columns": "ALL",
+            "sortColumns": "DIM_DATE", "sortTypes": "-1",
+            "pageNumber": "1", "pageSize": str(min(max(int(days), 20), 500)),
+            "source": "WEB", "client": "WEB",
+        })
+        output = []
+        for item in ((data.get("result") or {}).get("data") or []):
+            trade_date = str(item.get("DIM_DATE") or "")[:10]
+            if not trade_date:
+                continue
+            output.append({
+                "trade_date": trade_date,
+                "margin_balance": as_int(item.get("RZRQYE")),
+                "financing_balance": as_int(item.get("RZYE")),
+                "securities_balance": as_int(item.get("RQYE")),
+                "financing_buy": as_int(item.get("RZMRE")),
+                "financing_repay": as_int(item.get("RZCHE")),
+                "financing_net_buy": as_int(item.get("RZJME")),
+                "float_market_cap": as_int(item.get("LTSZ")),
+                "financing_ratio": as_optional_float(item.get("RZYEZB")),
+                "market_index_close": as_optional_float(item.get("NEW")),
+                "market_index_change_pct": as_optional_float(item.get("ZDF")),
+            })
+        return output
+
+    async def fetch_margin_latest_date(self) -> date | None:
+        """Return the latest complete all-market disclosure date.
+
+        The stock-detail report can publish one exchange before the others.
+        Its maximum DATE is therefore not necessarily a complete A-share
+        snapshot.  The official aggregate series advances only after the
+        market-wide total is available, so it is the alignment authority.
+        """
+        data = await self.fetch_json(self.DATACENTER_URL, {
+            "reportName": "RPTA_RZRQ_LSHJ", "columns": "DIM_DATE",
+            "sortColumns": "DIM_DATE", "sortTypes": "-1",
+            "pageNumber": "1", "pageSize": "1",
+            "source": "WEB", "client": "WEB",
+        })
+        rows = ((data.get("result") or {}).get("data") or [])
+        value = str((rows[0] if rows else {}).get("DIM_DATE") or "")[:10]
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+
+    async def fetch_margin_stock_snapshot(self, target_date: date, page_size: int = 500) -> dict:
+        """Fetch a complete disclosed stock/ETF margin snapshot."""
+        bounded_page_size = min(max(int(page_size), 100), 500)
+
+        async def fetch_page(page: int) -> tuple[list[dict], int]:
+            data = await self.fetch_json(self.DATACENTER_URL, {
+                "reportName": "RPTA_WEB_RZRQ_GGMX", "columns": "ALL",
+                "sortColumns": "SCODE", "sortTypes": "1",
+                "pageNumber": str(page), "pageSize": str(bounded_page_size),
+                "filter": f"(DATE='{target_date.isoformat()}')",
+                "source": "WEB", "client": "WEB",
+            })
+            result = data.get("result") or {}
+            return result.get("data") or [], as_int(result.get("count"))
+
+        first, total = await fetch_page(1)
+        if not first:
+            return {"records": [], "total": total, "complete": False, "trade_date": target_date.isoformat()}
+        pages = max(1, (total + bounded_page_size - 1) // bounded_page_size)
+        by_page = {1: first}
+        for start in range(2, pages + 1, self.PAGE_FETCH_CONCURRENCY):
+            numbers = list(range(start, min(start + self.PAGE_FETCH_CONCURRENCY, pages + 1)))
+            responses = await asyncio.gather(*(fetch_page(page) for page in numbers))
+            for page, (rows, _count) in zip(numbers, responses):
+                if not rows:
+                    raise RuntimeError(f"两融个股快照第{page}页为空")
+                by_page[page] = rows
+        records = [item for page in sorted(by_page) for item in by_page[page]]
+        codes = {str(item.get("SCODE") or "") for item in records}
+        if len(records) < total or len(codes) < total:
+            raise RuntimeError(f"两融个股快照不完整: expected={total}, received={len(codes)}")
+        return {
+            "records": records, "total": total, "complete": True,
+            "trade_date": target_date.isoformat(), "source": "eastmoney_RPTA_WEB_RZRQ_GGMX",
+        }
+
+    async def fetch_margin_stock_history(self, stock_code: str, days: int = 260) -> list[dict]:
+        code = normalize_stock_code(stock_code)
+        data = await self.fetch_json(self.DATACENTER_URL, {
+            "reportName": "RPTA_WEB_RZRQ_GGMX", "columns": "ALL",
+            "sortColumns": "DATE", "sortTypes": "-1",
+            "pageNumber": "1", "pageSize": str(min(max(int(days), 20), 500)),
+            "filter": f"(SCODE={code})", "source": "WEB", "client": "WEB",
+        })
+        return ((data.get("result") or {}).get("data") or [])
+
+    async def fetch_margin_stock_histories(
+        self,
+        stock_codes: list[str],
+        days: int = 260,
+        page_size: int = 500,
+        end_date: date | None = None,
+    ) -> dict[str, list[dict]]:
+        """Fetch bounded own-history series for a small audited stock set.
+
+        The ranking snapshot is cross-sectional and cannot replace a stock's
+        own 60/120/250-session financing history. This batched query keeps the
+        nightly pre-warm practical while preserving that distinction.
+        """
+        codes = list(dict.fromkeys(normalize_stock_code(code) for code in stock_codes))
+        if not codes:
+            return {}
+        if len(codes) > 40:
+            raise ValueError("单次两融历史批量查询最多40只股票")
+        bounded_days = min(max(int(days), 20), 500)
+        bounded_page_size = min(max(int(page_size), 100), 500)
+        # 1.9 calendar days per requested trading session leaves room for
+        # holidays and long festival closures without pulling all history.
+        anchor_date = end_date or shanghai_now().date()
+        cutoff = anchor_date - timedelta(days=int(bounded_days * 1.9) + 35)
+        code_filter = ",".join(codes)
+        date_filter = f"(DATE>='{cutoff.isoformat()}')"
+        if end_date is not None:
+            date_filter += f"(DATE<='{end_date.isoformat()}')"
+
+        async def fetch_page(page: int) -> tuple[list[dict], int]:
+            data = await self.fetch_json(self.DATACENTER_URL, {
+                "reportName": "RPTA_WEB_RZRQ_GGMX", "columns": "ALL",
+                "sortColumns": "DATE,SCODE", "sortTypes": "-1,1",
+                "pageNumber": str(page), "pageSize": str(bounded_page_size),
+                "filter": (
+                    f"(SCODE in ({code_filter})){date_filter}"
+                ),
+                "source": "WEB", "client": "WEB",
+            })
+            result = data.get("result") or {}
+            return result.get("data") or [], as_int(result.get("count"))
+
+        first, total = await fetch_page(1)
+        if not first:
+            return {code: [] for code in codes}
+        pages = max(1, (total + bounded_page_size - 1) // bounded_page_size)
+        by_page: dict[int, list[dict]] = {1: first}
+        for start in range(2, pages + 1, self.PAGE_FETCH_CONCURRENCY):
+            numbers = list(range(start, min(start + self.PAGE_FETCH_CONCURRENCY, pages + 1)))
+            responses = await asyncio.gather(*(fetch_page(page) for page in numbers))
+            for page, (rows, _count) in zip(numbers, responses):
+                if not rows:
+                    raise RuntimeError(f"两融历史批量查询第{page}页为空")
+                by_page[page] = rows
+
+        grouped: dict[str, list[dict]] = {code: [] for code in codes}
+        for page in sorted(by_page):
+            for item in by_page[page]:
+                code = str(item.get("SCODE") or "").zfill(6)
+                if code in grouped and len(grouped[code]) < bounded_days:
+                    grouped[code].append(item)
+        return grouped
+
+    async def fetch_margin_sector_rankings(self, sector_type_code: str = "005") -> dict[str, list[dict]]:
+        """Fetch current and 5/20-session board margin aggregations."""
+        if sector_type_code not in {"004", "005", "006"}:
+            raise ValueError("两融板块类型仅支持地域004、行业005、概念006")
+
+        async def fetch_period(period: str) -> tuple[str, list[dict]]:
+            one_day = period == "1"
+            data = await self.fetch_json(self.DATACENTER_URL, {
+                "reportName": "RPTA_WEB_BKJYMXN" if one_day else "RPTA_WEB_BKQJYMXN",
+                "columns": "ALL", "pageNumber": "1", "pageSize": "500",
+                "sortColumns": "BOARD_CODE", "sortTypes": "1",
+                "filter": (
+                    f"(BOARD_TYPE_CODE={sector_type_code})" if one_day
+                    else f"(INTERVAL_TYPE=\"{period}日\")(BOARD_TYPE_CODE={sector_type_code})"
+                ),
+                "source": "WEB", "client": "WEB",
+            })
+            return period, ((data.get("result") or {}).get("data") or [])
+
+        periods = await asyncio.gather(*(fetch_period(period) for period in ("1", "5", "20")))
+        return {period: rows for period, rows in periods}
 
     @staticmethod
     def _history_cutoff(days: int) -> date:

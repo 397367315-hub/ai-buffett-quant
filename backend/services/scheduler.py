@@ -227,6 +227,17 @@ async def refresh_dragon_board_cache():
         return None
 
 
+async def refresh_margin_leverage_cache():
+    """Refresh T-close/T+1 margin disclosures without blocking the app."""
+    from services.margin_leverage import margin_leverage_service
+
+    try:
+        return await margin_leverage_service.sync(full=True, prewarm=True)
+    except Exception as exc:
+        print(f"[Scheduler] 两融杠杆中心更新失败，保留最近缓存: {type(exc).__name__}")
+        return None
+
+
 async def run_overnight_preliminary_scan():
     from services.overnight_strategy import overnight_strategy_service
 
@@ -627,6 +638,18 @@ async def start_scheduler(data_collector=None, db_session=None):
         CronTrigger(hour=15, minute=35, day_of_week="mon-fri"),
         id="dragon_board_close_cache", name="龙虎榜盘后缓存", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
+    )
+    scheduler.add_job(
+        refresh_margin_leverage_cache,
+        CronTrigger(hour=18, minute=30, day_of_week="mon-fri"),
+        id="margin_leverage_first_disclosure", name="两融杠杆首次披露同步", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        refresh_margin_leverage_cache,
+        CronTrigger(hour=20, minute=30, day_of_week="mon-fri"),
+        id="margin_leverage_final_disclosure", name="两融杠杆晚间补充同步", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
     scheduler.add_job(
         refresh_personal_report_calendar,

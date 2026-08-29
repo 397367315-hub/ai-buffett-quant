@@ -93,6 +93,8 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             "ai_robot_anomaly_check",
             "ai_robot_performance_close",
             "dragon_board_close_cache",
+            "margin_leverage_first_disclosure",
+            "margin_leverage_final_disclosure",
             "personal_report_calendar",
             "overnight_preliminary_scan",
             "overnight_entry_scan",
@@ -106,6 +108,8 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(calls["ai_robot_short_daily"].args[0], scheduler_module.refresh_ai_robot_short)
         self.assertIs(calls["ai_robot_long_daily"].args[0], scheduler_module.refresh_ai_robot_long)
         self.assertIs(calls["dragon_board_close_cache"].args[0], scheduler_module.refresh_dragon_board_cache)
+        self.assertIs(calls["margin_leverage_first_disclosure"].args[0], scheduler_module.refresh_margin_leverage_cache)
+        self.assertIs(calls["margin_leverage_final_disclosure"].args[0], scheduler_module.refresh_margin_leverage_cache)
         self.assertIs(calls["personal_report_calendar"].args[0], scheduler_module.refresh_personal_report_calendar)
         self.assertIs(calls["overnight_preliminary_scan"].args[0], scheduler_module.run_overnight_preliminary_scan)
         self.assertIs(calls["overnight_entry_scan"].args[0], scheduler_module.run_overnight_entry_scan)

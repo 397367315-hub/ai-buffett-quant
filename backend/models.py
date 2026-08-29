@@ -478,6 +478,151 @@ class NorthboundDealDaily(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MarginMarketDaily(Base):
+    """End-of-day A-share margin-financing market aggregate."""
+
+    __tablename__ = "margin_market_daily"
+    __table_args__ = (Index("idx_margin_market_date", "trade_date"),)
+
+    trade_date = Column(Date, primary_key=True)
+    margin_balance = Column(BigInteger)
+    financing_balance = Column(BigInteger)
+    securities_balance = Column(BigInteger)
+    financing_buy = Column(BigInteger)
+    financing_repay = Column(BigInteger)
+    financing_net_buy = Column(BigInteger)
+    float_market_cap = Column(BigInteger)
+    market_index_close = Column(Float)
+    market_index_change_pct = Column(Float)
+    market_turnover_amount = Column(BigInteger)
+    financing_ratio = Column(Float)
+    lmi_score = Column(Float)
+    lmi_level = Column(String(40))
+    components = Column(JSON, nullable=False, default=dict)
+    source = Column(String(80), nullable=False, default="eastmoney")
+    source_updated_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MarginSectorDaily(Base):
+    """Industry/concept margin snapshot and multi-window aggregation."""
+
+    __tablename__ = "margin_sector_daily"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "sector_type", "sector_code", name="uq_margin_sector_date_type_code"),
+        Index("idx_margin_sector_date_balance", "trade_date", "financing_balance"),
+        Index("idx_margin_sector_date_lri", "trade_date", "crowding_score"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    sector_type = Column(String(30), nullable=False, default="industry")
+    sector_code = Column(String(30), nullable=False)
+    sector_name = Column(String(120), nullable=False)
+    financing_balance = Column(BigInteger)
+    securities_balance = Column(BigInteger)
+    margin_balance = Column(BigInteger)
+    financing_buy = Column(BigInteger)
+    financing_repay = Column(BigInteger)
+    financing_net_buy = Column(BigInteger)
+    financing_net_buy_5d = Column(BigInteger)
+    financing_net_buy_20d = Column(BigInteger)
+    window_end_date_5d = Column(Date)
+    window_end_date_20d = Column(Date)
+    financing_change_5d = Column(Float)
+    financing_change_20d = Column(Float)
+    financing_buy_ratio = Column(Float)
+    float_market_cap = Column(BigInteger)
+    financing_ratio = Column(Float)
+    price_change_pct = Column(Float)
+    crowding_score = Column(Float)
+    divergence_type = Column(String(60))
+    source = Column(String(80), nullable=False, default="eastmoney")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MarginStockDaily(Base):
+    """Persistent stock-level T-close margin-financing disclosure."""
+
+    __tablename__ = "margin_stock_daily"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trade_date", name="uq_margin_stock_code_date"),
+        Index("idx_margin_stock_date_balance", "trade_date", "financing_balance"),
+        Index("idx_margin_stock_code_date", "stock_code", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    stock_code = Column(String(10), nullable=False)
+    stock_name = Column(String(100), nullable=False)
+    exchange = Column(String(10))
+    trade_market = Column(String(80))
+    sector_name = Column(String(120))
+    financing_balance = Column(BigInteger)
+    financing_buy = Column(BigInteger)
+    financing_repay = Column(BigInteger)
+    financing_net_buy = Column(BigInteger)
+    financing_net_buy_3d = Column(BigInteger)
+    financing_net_buy_5d = Column(BigInteger)
+    financing_net_buy_10d = Column(BigInteger)
+    securities_balance = Column(BigInteger)
+    securities_sell = Column(BigInteger)
+    securities_repay = Column(BigInteger)
+    margin_balance = Column(BigInteger)
+    close_price = Column(Float)
+    pct_change = Column(Float)
+    price_change_3d = Column(Float)
+    price_change_5d = Column(Float)
+    price_change_10d = Column(Float)
+    turnover_amount = Column(BigInteger)
+    turnover_rate = Column(Float)
+    float_market_cap = Column(BigInteger)
+    financing_ratio = Column(Float)
+    financing_buy_ratio = Column(Float)
+    source = Column(String(80), nullable=False, default="eastmoney")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class StockLeverageMetric(Base):
+    """Auditable LRI, historical percentile and price-financing relation."""
+
+    __tablename__ = "stock_leverage_metrics"
+    __table_args__ = (
+        UniqueConstraint("stock_code", "trade_date", name="uq_stock_leverage_code_date"),
+        Index("idx_stock_leverage_date_lri", "trade_date", "lri_score"),
+        Index("idx_stock_leverage_code_date", "stock_code", "trade_date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    stock_code = Column(String(10), nullable=False)
+    financing_ratio = Column(Float)
+    financing_buy_ratio = Column(Float)
+    financing_change_1d = Column(Float)
+    financing_change_3d = Column(Float)
+    financing_change_5d = Column(Float)
+    financing_change_10d = Column(Float)
+    financing_change_20d = Column(Float)
+    percentile_60 = Column(Float)
+    percentile_120 = Column(Float)
+    percentile_250 = Column(Float)
+    price_change_5d = Column(Float)
+    price_change_20d = Column(Float)
+    volatility_20d = Column(Float)
+    turnover_anomaly_score = Column(Float)
+    divergence_type = Column(String(60))
+    divergence_score = Column(Float)
+    lri_score = Column(Float)
+    lri_level = Column(String(40))
+    coverage_pct = Column(Float)
+    components = Column(JSON, nullable=False, default=dict)
+    risk_reasons = Column(JSON, nullable=False, default=list)
+    validation_conditions = Column(JSON, nullable=False, default=list)
+    invalidation_conditions = Column(JSON, nullable=False, default=list)
+    source = Column(String(80), nullable=False, default="calculated")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class StockDailyBar(Base):
     """A 股日线缓存，按代码和交易日唯一。"""
 

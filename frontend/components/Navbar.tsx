@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert } from 'lucide-react';
+import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -10,6 +10,7 @@ const proSubItems = [
   { href: '/market', label: 'AI决策工作台', icon: BrainCircuit },
   { href: '/research/midday', label: '午间AI研究台', icon: Activity },
   { href: '/pro/stock', label: '个股决策画像', icon: BarChart3 },
+  { href: '/pro/margin', label: '两融杠杆中心', icon: Gauge },
   { href: '/pro', label: '资金排名', icon: TrendingUp },
   { href: '/pro/sentiment', label: '市场情绪', icon: TrendingUp },
   { href: '/pro/topic-strength', label: '题材强弱', icon: Flame },

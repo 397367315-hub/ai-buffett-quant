@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from database import Base
 from models import MarketSentimentDaily, StockDailyBar
+from services.data_collector import shanghai_now
 from services.strategic_market_data import StrategicMarketDataService
 
 
@@ -24,7 +25,10 @@ class StrategicMarketDataTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     async def test_history_exposes_complete_breadth_amount_and_limit_statistics(self):
-        start = date(2026, 7, 20)
+        latest = shanghai_now().date()
+        while latest.weekday() >= 5:
+            latest -= timedelta(days=1)
+        start = latest - timedelta(days=19)
         async with self.session_factory() as session:
             session.add_all([
                 MarketSentimentDaily(
