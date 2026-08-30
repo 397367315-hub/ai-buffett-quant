@@ -25,14 +25,24 @@ from models import (
     ConceptFundFlowDaily,
     IndustryFundFlowDaily,
     MainForceEvidence,
+    MainForceState,
     MarketBoard,
     PatternAnnotation,
+    BigPatternInstance,
+    BuyPointState,
+    SellRiskState,
+    StockCharacterState,
     StockDailyBar,
     StockFundFlowDaily,
     StockSkillSignal,
     StockUniverseSnapshot,
     StrongCaseLibrary,
     StrongDecisionState,
+    ThemeState,
+    ThreeBooksConsensus,
+    ThreeDegreeState,
+    TradingZoneGeometry,
+    StarInstance,
 )
 from services.data_collector import collector, normalize_stock_code, shanghai_now
 
@@ -44,6 +54,7 @@ from .registry import (
     STATE_LABELS,
     skill_definition,
 )
+from .v2_engine import V2_ENGINE_VERSION, build_v2
 
 
 # These values are ENGINE_FEATURE configuration.  They are intentionally
@@ -58,6 +69,36 @@ ENGINE_CONFIG = {
     "triangle_contraction_pct": 0.72,
     "breakout_margin_pct": 0.5,
     "risk_drawdown_pct": 15.0,
+}
+
+# Read-only metadata for the engineering thresholds. These values describe
+# the current Shadow implementation; they are not book rules and cannot
+# change runtime ACTION until validation promotes them.
+_ENGINE_CONFIG_BOUNDS = {
+    "minimum_daily_bars": (20, 400),
+    "volume_shock_ratio": (1.0, 5.0),
+    "volume_contraction_ratio": (0.4, 1.0),
+    "near_high_pct": (1.0, 20.0),
+    "controlled_pullback_pct": (3.0, 35.0),
+    "box_width_pct": (5.0, 40.0),
+    "triangle_contraction_pct": (0.4, 0.95),
+    "breakout_margin_pct": (0.0, 5.0),
+    "risk_drawdown_pct": (5.0, 40.0),
+}
+ENGINE_CONFIG_METADATA = {
+    key: {
+        "feature_name": key,
+        "default_value": value,
+        "min_value": _ENGINE_CONFIG_BOUNDS[key][0],
+        "max_value": _ENGINE_CONFIG_BOUNDS[key][1],
+        "market_regime": "ALL",
+        "market_cap_bucket": "ALL",
+        "timeframe": "1d",
+        "source": "ENGINE_FEATURE:strong_stock_decision",
+        "version": "v2.0",
+        "knowledge_layer": "ENGINE_FEATURE",
+    }
+    for key, value in ENGINE_CONFIG.items()
 }
 
 
@@ -93,6 +134,27 @@ def _pct_change(current: float | None, previous: float | None) -> float | None:
     if current is None or previous in (None, 0):
         return None
     return (current / previous - 1.0) * 100.0
+
+
+def _max_drawdown_pct(values: Iterable[float | None], entry: float | None = None) -> float | None:
+    """Return the worst peak-to-trough percentage in a forward window.
+
+    The entry price is included as the first observation so a drawdown that
+    starts immediately after a signal is not hidden by the first future close.
+    This is an outcome statistic only; it never participates in signal
+    calculation.
+    """
+    clean = [value for value in values if value is not None and value > 0]
+    if entry is not None and entry > 0:
+        clean.insert(0, entry)
+    if len(clean) < 2:
+        return None
+    peak = clean[0]
+    worst = 0.0
+    for value in clean[1:]:
+        peak = max(peak, value)
+        worst = min(worst, (value / peak - 1.0) * 100.0)
+    return worst
 
 
 def _status(status: str, confidence: float | None, *, evidence: list[dict[str, Any]] | None = None,
@@ -699,15 +761,52 @@ class StrongStockDecisionService:
     def __init__(self) -> None:
         self._cache: dict[tuple[str, str | None], tuple[float, dict[str, Any]]] = {}
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Multiple panels can request the same flow snapshot concurrently.
+        # Serialise writes per symbol to avoid same-day unique-key races.
+        self._flow_cache_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.cache_seconds = 90
 
     @staticmethod
     def _enabled() -> bool:
         return bool(settings.feature_strong_stock_decision)
 
+    @staticmethod
+    def _v2_enabled() -> bool:
+        return bool(getattr(settings, "feature_strong_stock_decision_v2", True))
+
+    @staticmethod
+    def _v2_disabled_envelope() -> dict[str, Any]:
+        return {
+            "module_id": V2_ENGINE_VERSION,
+            "engine_version": V2_ENGINE_VERSION,
+            "mode": "SHADOW",
+            "status": "DISABLED",
+            "enabled": False,
+            "signals": [],
+            "data_quality": {
+                "status": "DISABLED",
+                "note": "FEATURE_STRONG_STOCK_DECISION_V2 已关闭；V1 结果继续可用。",
+            },
+        }
+
+    def rule_config(self) -> dict[str, Any]:
+        """Expose threshold provenance without enabling runtime tuning."""
+        return {
+            "module_id": V2_ENGINE_VERSION,
+            "version": "v2.0",
+            "status": "SHADOW_ONLY",
+            "runtime_applied": False,
+            "editable": False,
+            "configs": deepcopy(list(ENGINE_CONFIG_METADATA.values())),
+            "runtime_defaults": deepcopy(ENGINE_CONFIG),
+            "note": "参数仅用于审计和回测登记；未通过样本外验证前不改变正式ACTION。",
+        }
+
     async def registry(self, book: str | None = None) -> dict[str, Any]:
         values = [deepcopy(item) for item in BOOK_SKILL_DEFINITIONS if not book or item["book"] == book]
-        return {"module_id": "STRONG_STOCK_DECISION_V1", "engine_version": ENGINE_VERSION, "mode": "SHADOW", "enabled": self._enabled(), "skills": values, "books": ["猎取强势股", "暴涨大形态", "暴涨之星"], "signal_statuses": list(SIGNAL_STATUSES), "actions": list(ACTIONS), "state_labels": deepcopy(STATE_LABELS), "engine_config": deepcopy(ENGINE_CONFIG), "terminology_policy": {"main_force_label": "主力", "locked_terms": True}}
+        from .registry import list_v2_book_skills
+        v2_values = list_v2_book_skills(book=book)
+        return {"module_id": "STRONG_STOCK_DECISION_V1", "engine_version": ENGINE_VERSION, "v2_engine_version": V2_ENGINE_VERSION, "mode": "SHADOW", "enabled": self._enabled(), "v2_enabled": self._v2_enabled(), "skills": values, "v2_skills": v2_values, "books": ["猎取强势股", "暴涨大形态", "暴涨之星"], "signal_statuses": list(SIGNAL_STATUSES), "actions": list(ACTIONS), "state_labels": deepcopy(STATE_LABELS), "engine_config": deepcopy(ENGINE_CONFIG), "terminology_policy": {"main_force_label": "主力", "locked_terms": True, "unverifiable_intent_policy": "只描述可观察证据"}}
 
     async def _load_context(self, symbol: str, as_of: date | None) -> dict[str, Any]:
         code = normalize_stock_code(symbol)
@@ -881,32 +980,33 @@ class StrongStockDecisionService:
             }
         if not candidates:
             return
-        try:
-            async with async_session() as session:
-                existing_rows = list((await session.execute(
-                    select(StockFundFlowDaily).where(
-                        StockFundFlowDaily.stock_code == code,
-                        StockFundFlowDaily.trade_date.in_(list(candidates)),
+        async with self._flow_cache_locks[code]:
+            try:
+                async with async_session() as session:
+                    existing_rows = list((await session.execute(
+                        select(StockFundFlowDaily).where(
+                            StockFundFlowDaily.stock_code == code,
+                            StockFundFlowDaily.trade_date.in_(list(candidates)),
+                        )
+                    )).scalars().all())
+                    existing = {row.trade_date: row for row in existing_rows}
+                    fields = (
+                        "stock_name", "main_net_inflow", "super_large_net_inflow",
+                        "large_net_inflow", "medium_net_inflow", "small_net_inflow",
+                        "close_price", "change_pct",
                     )
-                )).scalars().all())
-                existing = {row.trade_date: row for row in existing_rows}
-                fields = (
-                    "stock_name", "main_net_inflow", "super_large_net_inflow",
-                    "large_net_inflow", "medium_net_inflow", "small_net_inflow",
-                    "close_price", "change_pct",
-                )
-                for trade_date, values in candidates.items():
-                    target = existing.get(trade_date)
-                    if target is None:
-                        session.add(StockFundFlowDaily(stock_code=code, **values))
-                    else:
-                        for field in fields:
-                            value = values.get(field)
-                            if value is not None:
-                                setattr(target, field, value)
-                await session.commit()
-        except Exception as exc:
-            print(f"Strong stock flow cache write failed: {type(exc).__name__}")
+                    for trade_date, values in candidates.items():
+                        target = existing.get(trade_date)
+                        if target is None:
+                            session.add(StockFundFlowDaily(stock_code=code, **values))
+                        else:
+                            for field in fields:
+                                value = values.get(field)
+                                if value is not None:
+                                    setattr(target, field, value)
+                    await session.commit()
+            except Exception as exc:
+                print(f"Strong stock flow cache write failed: {type(exc).__name__}")
 
     def _build(self, context: dict[str, Any], *, persistable: bool = True) -> dict[str, Any]:
         bars = context.get("bars") or []
@@ -992,6 +1092,36 @@ class StrongStockDecisionService:
         }
         result["explanation"] = self._explanation(result)
         result["timeline"] = self._timeline(result)
+        # V2 is an additive Shadow layer. Keep the legacy payload and its
+        # ACTION intact while exposing the richer three-book research result
+        # for the new page and the V2 API.
+        result["legacy_module_id"] = result.get("module_id")
+        result["v2_engine_version"] = V2_ENGINE_VERSION
+        result["v2_enabled"] = self._v2_enabled()
+        if not self._v2_enabled():
+            result["v2"] = self._v2_disabled_envelope()
+            result["v2_signals"] = []
+        else:
+            try:
+                v2_context = dict(context)
+                v2_context["data_cutoff_time"] = result["data_cutoff_time"]
+                v2 = build_v2(v2_context, legacy=result)
+                result["v2"] = v2
+                result["v2_signals"] = v2.get("signals") or []
+            except Exception as exc:
+                # A new research layer must never take the existing decision page
+                # offline. Return an explicit unavailable envelope for diagnosis.
+                result["v2"] = {
+                    "module_id": V2_ENGINE_VERSION,
+                    "engine_version": V2_ENGINE_VERSION,
+                    "mode": "SHADOW",
+                    "status": "UNAVAILABLE",
+                    "enabled": True,
+                    "error_type": type(exc).__name__,
+                    "signals": [],
+                    "data_quality": {"status": "UNAVAILABLE", "note": "V2计算异常，旧版结果仍可用。"},
+                }
+                result["v2_signals"] = []
         return result
 
     @staticmethod
@@ -1054,6 +1184,115 @@ class StrongStockDecisionService:
                         if not isinstance(annotation, dict):
                             continue
                         session.add(PatternAnnotation(symbol=result["symbol"], pattern_type=str(annotation.get("type") or signal.get("name")), start_time=datetime.combine(trade_date, datetime.min.time()), end_time=datetime.combine(trade_date, datetime.min.time()), upper_boundary=annotation.get("upper_boundary"), lower_boundary=annotation.get("lower_boundary"), key_price=annotation.get("key_price"), annotation_json=annotation))
+                v2 = result.get("v2") or {}
+                if not self._v2_enabled() or v2.get("status") in {"DISABLED", "UNAVAILABLE"}:
+                    await session.commit()
+                    return
+                # V2 persistence is additive and intentionally best-effort.
+                # These snapshots make the Shadow layer replayable while the
+                # legacy tables above remain untouched for existing clients.
+                v2_time = datetime.combine(trade_date, datetime.min.time())
+                v2_main = v2.get("main_force") or {}
+                session.add(MainForceState(
+                    symbol=result["symbol"], trade_time=v2_time, timeframe="1d",
+                    main_force_presence=v2_main.get("presence") or v2_main.get("state") or "不明显",
+                    main_force_direction=v2_main.get("direction") or "暂不明确",
+                    main_force_stage=v2_main.get("stage") or "样本不足",
+                    main_force_intent=v2_main.get("intent") or "暂不判断",
+                    main_force_continuity=v2_main.get("continuity") or "未知",
+                    evidence_json=v2_main.get("evidence") or [],
+                ))
+                v2_zone = v2.get("zones") or {}
+                session.add(TradingZoneGeometry(
+                    symbol=result["symbol"], trade_time=v2_time,
+                    zone=v2_zone.get("zone") or "未形成明确交易区",
+                    zone_stage=v2_zone.get("stage") or "UNKNOWN",
+                    zone_start=v2_time,
+                    zone_upper=v2_zone.get("upper"), zone_lower=v2_zone.get("lower"),
+                    short_attack_line=v2_zone.get("short_attack_line"),
+                    mid_long_cost_line=v2_zone.get("mid_long_cost_line"),
+                    small_a_point=v2_zone.get("small_a_point"),
+                    invalidation_price=v2_zone.get("invalidation_price"),
+                    geometry_json=v2_zone.get("geometry") or {},
+                ))
+                for pattern in (v2.get("big_patterns") or []):
+                    if pattern.get("status") == "NOT_FOUND":
+                        continue
+                    annotation = (pattern.get("chart_annotations") or [{}])[0]
+                    session.add(BigPatternInstance(
+                        symbol=result["symbol"], pattern_skill_id=pattern.get("skill_id") or "UNKNOWN",
+                        subtype=pattern.get("subtype") or pattern.get("name"), start_time=v2_time,
+                        end_time=v2_time, stage=pattern.get("lifecycle") or pattern.get("status") or "NOT_FOUND",
+                        upper_boundary=annotation.get("upper_boundary"), lower_boundary=annotation.get("lower_boundary"),
+                        key_price=annotation.get("key_price"), breakout_price=pattern.get("metrics", {}).get("breakout_price"),
+                        retest_price=pattern.get("metrics", {}).get("retest_price"), evidence_json=pattern.get("evidence") or [],
+                    ))
+                for star in (v2.get("stars") or []):
+                    if star.get("status") == "NOT_FOUND":
+                        continue
+                    session.add(StarInstance(
+                        symbol=result["symbol"], star_skill_id=star.get("skill_id") or "UNKNOWN", trade_time=v2_time,
+                        status=star.get("status") or "NOT_FOUND", pre_context_json={"subtype": star.get("subtype"), "mechanism": star.get("mechanism")},
+                        star_body_json=star.get("metrics") or {}, volume_json={"engine_features": star.get("engine_features") or []},
+                        ma_json={"zone": v2_zone.get("zone")}, main_force_json={"direction": v2_main.get("direction"), "stage": v2_main.get("stage")},
+                        confirmation_json=star.get("next_confirmation") or [], invalidation_json=star.get("invalidation") or [],
+                    ))
+                degrees = v2.get("three_degree") or {}
+                session.add(ThreeDegreeState(
+                    symbol=result["symbol"], trade_time=v2_time,
+                    thickness_state=(degrees.get("thickness") or {}).get("state") or "未知",
+                    strength_state=(degrees.get("strength") or {}).get("state") or "未知",
+                    speed_state=(degrees.get("speed") or {}).get("state") or "未知",
+                    thickness_evidence_json=(degrees.get("thickness") or {}).get("evidence") or [],
+                    strength_evidence_json=(degrees.get("strength") or {}).get("evidence") or [],
+                    speed_evidence_json=(degrees.get("speed") or {}).get("evidence") or [],
+                ))
+                character = v2.get("stock_character") or {}
+                session.add(StockCharacterState(
+                    symbol=result["symbol"], trade_time=v2_time,
+                    character_summary=character.get("summary") or "有效历史样本不足",
+                    feature_json=character.get("features") or {},
+                    historical_samples=int(character.get("historical_samples") or 0),
+                    confidence=character.get("confidence"),
+                ))
+                theme = v2.get("theme") or {}
+                session.add(ThemeState(
+                    symbol=result["symbol"], trade_time=v2_time, theme_name=theme.get("theme_name"),
+                    theme_type=theme.get("theme_type") or "未知", hotspot_level=theme.get("hotspot_level") or "未知",
+                    theme_stage=theme.get("theme_stage") or "未接入", evidence_json=theme.get("evidence") or [],
+                ))
+                buy = v2.get("buy_point") or {}
+                session.add(BuyPointState(
+                    symbol=result["symbol"], trade_time=v2_time, buy_level=buy.get("level") or "臆想买点",
+                    matched_skills_json=buy.get("matched_skills") or [], missing_evidence_json=buy.get("missing_evidence") or [],
+                    counter_evidence_json=buy.get("counter_evidence") or [],
+                ))
+                sell = v2.get("sell") or {}
+                session.add(SellRiskState(
+                    symbol=result["symbol"], trade_time=v2_time,
+                    obvious_top_state=(sell.get("obvious_top") or {}).get("state") or "NOT_FOUND",
+                    meet_top_state=(sell.get("meet_top") or {}).get("state") or "NOT_FOUND",
+                    c_zone_state=(sell.get("c_zone") or {}).get("state") or "NOT_FOUND",
+                    classic_top_state=(sell.get("classic_top") or {}).get("state") or "NOT_FOUND",
+                    risk_evidence_json=(sell.get("signals") or []),
+                ))
+                consensus = v2.get("consensus") or {}
+                session.add(ThreeBooksConsensus(
+                    symbol=result["symbol"], trade_time=v2_time,
+                    hunter_state_json=consensus.get("hunter") or {}, big_pattern_state_json=consensus.get("big_pattern") or {},
+                    star_state_json=consensus.get("star") or {}, consensus_level=consensus.get("level") or "冲突",
+                    conflicts_json=consensus.get("conflicts") or [], dominant_signal=consensus.get("dominant_side") or "NEUTRAL",
+                ))
+                for signal in (v2.get("signals") or []):
+                    if signal.get("status") == "NOT_FOUND":
+                        continue
+                    session.add(StockSkillSignal(
+                        symbol=result["symbol"], trade_date=trade_date, trade_time=v2_time,
+                        skill_id=signal.get("skill_id") or "UNKNOWN", status=signal.get("status") or "NOT_FOUND",
+                        confidence=signal.get("confidence"), evidence_json=signal.get("evidence") or [],
+                        invalidation_json=signal.get("invalidation") or [], next_confirmation_json=signal.get("next_confirmation") or [],
+                        source_interval="DAILY", engine_version=V2_ENGINE_VERSION,
+                    ))
                 await session.commit()
         except Exception as exc:
             # A storage problem must not change the read-only calculation.
@@ -1088,11 +1327,175 @@ class StrongStockDecisionService:
             states = list((await session.execute(select(StrongDecisionState).where(StrongDecisionState.symbol == code).order_by(desc(StrongDecisionState.created_at)).limit(limit))).scalars().all())
         return {"symbol": code, "signals": [{"skill_id": row.skill_id, "status": row.status, "confidence": row.confidence, "trade_date": row.trade_date.isoformat(), "evidence": row.evidence_json or [], "created_at": row.created_at.isoformat() if row.created_at else None} for row in rows[:limit]], "states": [{"state_code": row.state_code, "state_name": row.state_name, "action": row.action, "trade_date": row.trade_date.isoformat(), "primary_skill": row.primary_skill, "mode": row.mode} for row in states]}
 
+    async def research_history(
+        self,
+        symbol: str,
+        *,
+        limit: int = 80,
+        start: date | None = None,
+        end: date | None = None,
+    ) -> dict[str, Any]:
+        """Build a causal V2 state timeline from historical daily bars.
+
+        Every point is evaluated with bars and auxiliary flow rows available
+        on that date only.  The endpoint is intentionally separate from the
+        persisted signal timeline: it remains useful on a fresh deployment,
+        and it does not depend on how often a user happened to open a page.
+        """
+        code = normalize_stock_code(symbol)
+        limit = max(1, min(int(limit or 80), 180))
+        context = await self._load_context(code, end)
+        bars = context.get("bars") or []
+        indexed: list[tuple[int, date]] = []
+        for index, row in enumerate(bars):
+            row_date = _bar_date(row)
+            if row_date is None:
+                continue
+            if start is not None and row_date < start:
+                continue
+            if end is not None and row_date > end:
+                continue
+            indexed.append((index, row_date))
+
+        # Keep enough lookback for the long moving averages while returning a
+        # bounded payload. If the symbol has fewer bars, expose the latest
+        # point with an explicit insufficient-data status instead of hiding it.
+        eligible = [item for item in indexed if item[0] + 1 >= ENGINE_CONFIG["minimum_daily_bars"]]
+        if not eligible and indexed:
+            eligible = [indexed[-1]]
+        selected = eligible[-limit:]
+        points: list[dict[str, Any]] = []
+        pressure_history: list[dict[str, Any]] = []
+        main_force_history: list[dict[str, Any]] = []
+        evolution: list[dict[str, Any]] = []
+
+        def rows_until(rows: Iterable[Any], cutoff: date) -> list[Any]:
+            return [row for row in rows if (_flow_date(row) is not None and _flow_date(row) <= cutoff)]
+
+        for index, cutoff in selected:
+            point_context = dict(context)
+            point_context["bars"] = bars[: index + 1]
+            point_context["flow"] = rows_until(context.get("flow") or [], cutoff)
+            point_context["sector_flow"] = rows_until(context.get("sector_flow") or [], cutoff)
+            point_context["quote"] = None
+            point_context["quote_is_realtime"] = False
+            point_context["data_cutoff_time"] = f"{cutoff.isoformat()}T15:00:00"
+            point = self._build(point_context, persistable=False)
+            v2 = point.get("v2") or {}
+            risk = v2.get("risk") or {}
+            main_force = v2.get("main_force") or {}
+            zones = v2.get("zones") or {}
+            active = [
+                item.get("skill_id")
+                for item in v2.get("signals") or []
+                if item.get("status") in {"POSSIBLE", "FORMING", "CONFIRMED"}
+            ]
+            risk_signals = {item.get("skill_id"): item for item in risk.get("signals") or []}
+            pressure_history.append({
+                "date": cutoff.isoformat(),
+                "overall_score": _round(risk.get("overall_score"), 1),
+                "top": _round((risk_signals.get("HQS_RISK_001") or {}).get("confidence"), 1),
+                "trend": _round((risk_signals.get("HQS_RISK_002") or {}).get("confidence"), 1),
+                "gap": _round((risk_signals.get("HQS_RISK_003") or {}).get("confidence"), 1),
+                "crash_origin": _round((risk_signals.get("HQS_RISK_004") or {}).get("confidence"), 1),
+            })
+            main_force_history.append({
+                "date": cutoff.isoformat(),
+                "presence": main_force.get("presence"),
+                "direction": main_force.get("direction"),
+                "stage": main_force.get("stage"),
+                "intent": main_force.get("intent"),
+                "continuity": main_force.get("continuity"),
+                "confidence": _round(main_force.get("confidence"), 1),
+            })
+            evolution.append({
+                "date": cutoff.isoformat(),
+                "state_name": point.get("decision", {}).get("state_name"),
+                "action": point.get("decision", {}).get("action"),
+                "zone": zones.get("zone"),
+                "zone_stage": zones.get("stage"),
+                "ma_stage": (v2.get("moving_average") or {}).get("stage"),
+                "risk_score": _round(risk.get("overall_score"), 1),
+                "active_skill_count": len(active),
+            })
+            points.append({
+                "date": cutoff.isoformat(),
+                "state_name": point.get("decision", {}).get("state_name"),
+                "action": point.get("decision", {}).get("action"),
+                "zone": zones.get("zone"),
+                "zone_stage": zones.get("stage"),
+                "ma_stage": (v2.get("moving_average") or {}).get("stage"),
+                "risk_score": _round(risk.get("overall_score"), 1),
+                "opportunity_score": _round((v2.get("quantity_time_space") or {}).get("opportunity"), 1),
+                "main_force": main_force.get("direction"),
+                "main_force_stage": main_force.get("stage"),
+                "active_skill_count": len(active),
+                "active_skills": active[:12],
+            })
+
+        latest_v2 = (self._build({**context, "quote": None, "quote_is_realtime": False}, persistable=False).get("v2") or {}) if bars else {}
+        return {
+            "symbol": code,
+            "name": context.get("name"),
+            "status": "AVAILABLE" if points else "INSUFFICIENT_DATA",
+            "point_count": len(points),
+            "first_date": points[0]["date"] if points else None,
+            "last_date": points[-1]["date"] if points else None,
+            "points": points,
+            "evolution": evolution,
+            "pressure_history": pressure_history,
+            "main_force_history": main_force_history,
+            "latest_pressure_map": (latest_v2.get("risk") or {}).get("pressure_map") or [],
+            "data_quality": (latest_v2.get("data_quality") or {"bar_count": len(bars), "status": "INSUFFICIENT_DATA"}),
+            "source_status": context.get("source_status") or {},
+            "method": "每个日期只使用该日期及之前的日线和资金流；后续数据只在回测结果统计中使用。",
+            "note": "历史轨迹用于复盘结构变化，不代表未来收益或交易指令。",
+        }
+
     async def cases(self, symbol: str) -> dict[str, Any]:
         code = normalize_stock_code(symbol)
         async with async_session() as session:
             rows = list((await session.execute(select(StrongCaseLibrary).where(StrongCaseLibrary.symbol == code).order_by(desc(StrongCaseLibrary.end_date)).limit(50))).scalars().all())
         return {"symbol": code, "cases": [{"id": row.id, "book": row.book, "skill_id": row.skill_id, "start_date": row.start_date.isoformat(), "end_date": row.end_date.isoformat(), "case_type": row.case_type, "feature_snapshot": row.feature_snapshot_json or {}, "outcome": row.outcome_json or {}, "notes": row.notes} for row in rows], "note": "V1 默认不把未经标注的历史形态伪装成正例；可通过回放和回测逐步积累案例。"}
+
+    async def case_library_status(self, symbol: str | None = None) -> dict[str, Any]:
+        """Return labelled case inventory without fabricating historical labels."""
+        async with async_session() as session:
+            query = select(StrongCaseLibrary)
+            if symbol:
+                query = query.where(StrongCaseLibrary.symbol == normalize_stock_code(symbol))
+            rows = list((await session.execute(query.order_by(desc(StrongCaseLibrary.end_date)).limit(500))).scalars().all())
+        by_type: dict[str, int] = {}
+        for row in rows:
+            by_type[row.case_type] = by_type.get(row.case_type, 0) + 1
+        return {"symbol": normalize_stock_code(symbol) if symbol else None, "status": "AVAILABLE", "total": len(rows), "by_case_type": by_type, "success_cases": by_type.get("SUCCESS", 0) + by_type.get("POSITIVE", 0), "failure_cases": by_type.get("FAILURE", 0) + by_type.get("NEGATIVE", 0), "look_alike_cases": by_type.get("LOOK_ALIKE", 0), "note": "只有人工或规则明确标注的案例才进入成功/失败统计。"}
+
+    async def wang_xing_kong(self, symbol: str, *, as_of: date | None = None) -> dict[str, Any]:
+        """Compare the current point-in-time snapshot with labelled cases."""
+        result = await self.evaluate(symbol, as_of=as_of, persist=False)
+        code = normalize_stock_code(symbol)
+        current = result.get("engine_features") or {}
+        active_skills = {item.get("skill_id") for item in result.get("signals") or [] if item.get("status") in {"POSSIBLE", "FORMING", "CONFIRMED"}}
+        async with async_session() as session:
+            rows = list((await session.execute(select(StrongCaseLibrary).order_by(desc(StrongCaseLibrary.end_date)).limit(200))).scalars().all())
+        matches: list[dict[str, Any]] = []
+        for row in rows:
+            snapshot = row.feature_snapshot_json or {}
+            comparable: list[float] = []
+            for key in ("returns5", "returns20", "volume_ratio", "position120", "ma20"):
+                left, right = _finite(current.get(key)), _finite(snapshot.get(key))
+                if left is not None and right is not None:
+                    comparable.append(max(0.0, 1.0 - min(abs(left - right) / max(abs(right), 1.0), 1.0)))
+            skill_match = 1.0 if row.skill_id in active_skills else 0.0
+            similarity = (sum(comparable) / len(comparable) * 0.75 + skill_match * 0.25) if comparable else skill_match * 0.25
+            matches.append({"id": row.id, "book": row.book, "skill_id": row.skill_id, "symbol": row.symbol, "case_type": row.case_type, "start_date": row.start_date.isoformat(), "end_date": row.end_date.isoformat(), "similarity": _round(similarity * 100, 1), "notes": row.notes, "outcome": row.outcome_json or {}, "feature_snapshot": snapshot})
+        matches.sort(key=lambda item: item["similarity"] or 0, reverse=True)
+        success_types = {"SUCCESS", "POSITIVE"}
+        failure_types = {"FAILURE", "NEGATIVE"}
+        success = [item for item in matches if item["case_type"] in success_types][:5]
+        failure = [item for item in matches if item["case_type"] in failure_types][:5]
+        look_alike = [item for item in matches if item["case_type"] not in (success_types | failure_types)][:5]
+        return {"symbol": code, "status": "AVAILABLE" if rows else "NO_LABELLED_CASES", "current_trade_date": result.get("trade_date"), "success_cases": success, "failure_cases": failure, "look_alike_cases": look_alike, "closest_success": success[0] if success else None, "closest_failure": failure[0] if failure else None, "why_similar": ["技能状态有重合", "价格、量能、位置特征接近"], "why_different": ["案例标签、市场阶段和外部环境可能不同"], "note": "历史相似度仅作结构参考，不代表未来重复。"}
 
     async def backtest(self, symbol: str, *, skill_id: str | None = None, start: date | None = None, end: date | None = None, horizons: list[int] | None = None) -> dict[str, Any]:
         code = normalize_stock_code(symbol)
@@ -1111,22 +1514,87 @@ class StrongStockDecisionService:
                 continue
             partial = dict(context); partial["bars"] = bars[:index + 1]
             result = self._build(partial, persistable=False)
-            signal = next((item for item in result.get("signals", []) if item.get("skill_id") == skill_id), None) if skill_id else None
-            if skill_id and signal and signal.get("status") not in {"POSSIBLE", "FORMING", "CONFIRMED"}:
+            # V2 skills are emitted in the additive V2 payload. Looking only
+            # at the legacy list used to silently include every date when a
+            # V2 skill id was requested, which made the resulting statistics
+            # look more precise than the actual signal sample.
+            signal = next((item for item in (result.get("v2") or {}).get("signals", []) if item.get("skill_id") == skill_id), None) if skill_id else None
+            if skill_id and (signal is None or signal.get("status") not in {"POSSIBLE", "FORMING", "CONFIRMED"}):
                 continue
             close = bars[index].get("close")
-            outcomes = {}
+            outcomes: dict[str, float | None] = {}
+            outcome_details: dict[str, dict[str, float | None]] = {}
             for horizon in horizons:
-                future_index = index + horizon
-                future_close = bars[future_index].get("close") if future_index < len(bars) else None
-                outcomes[f"t_plus_{horizon}"] = _round(_pct_change(future_close, close)) if future_close is not None else None
-            observations.append({"trade_date": current_date.isoformat(), "status": signal.get("status") if signal else result.get("decision", {}).get("state_name"), "outcomes": outcomes})
+                future_rows = bars[index + 1:index + horizon + 1]
+                future_close = bars[index + horizon].get("close") if index + horizon < len(bars) else None
+                forward_highs = [_finite(row.get("high")) for row in future_rows]
+                forward_lows = [_finite(row.get("low")) for row in future_rows]
+                forward_closes = [_finite(row.get("close")) for row in future_rows]
+                return_pct = _round(_pct_change(future_close, close)) if future_close is not None else None
+                mfe = _round(max(((value / close - 1.0) * 100.0 for value in forward_highs if value is not None), default=None)) if close not in (None, 0) else None
+                mae = _round(min(((value / close - 1.0) * 100.0 for value in forward_lows if value is not None), default=None)) if close not in (None, 0) else None
+                drawdown = _round(_max_drawdown_pct(forward_closes, close))
+                outcomes[f"t_plus_{horizon}"] = return_pct
+                outcome_details[f"t_plus_{horizon}"] = {"return": return_pct, "mfe": mfe, "mae": mae, "max_drawdown": drawdown}
+            observations.append({"trade_date": current_date.isoformat(), "status": signal.get("status") if signal else result.get("decision", {}).get("state_name"), "skill_id": skill_id, "outcomes": outcomes, "outcome_details": outcome_details})
         metrics: dict[str, Any] = {}
         for horizon in horizons:
             values = [item["outcomes"].get(f"t_plus_{horizon}") for item in observations if item["outcomes"].get(f"t_plus_{horizon}") is not None]
             wins = [value for value in values if value > 0]
-            metrics[f"t_plus_{horizon}"] = {"sample_size": len(values), "win_rate": _round(len(wins) / len(values) * 100 if values else None), "average_return": _round(_avg(values)), "median_return": _round(sorted(values)[len(values) // 2] if values else None), "mfe": None, "mae": None, "max_drawdown": None}
-        return {"status": "COMPLETED", "mode": "SHADOW", "symbol": code, "skill_id": skill_id, "skill_name": definition["original_name"] if definition else "全链路", "book_rule_version": definition["book_rule_version"] if definition else None, "engine_version": ENGINE_VERSION, "start": start.isoformat() if isinstance(start, date) else None, "end": end.isoformat() if isinstance(end, date) else None, "metrics": metrics, "observations": observations[-300:], "method": "只使用每个截面之前的日线；未来窗口仅用于结果统计，不进入信号计算。", "promotion": "V1保持SHADOW，未通过样本外验证不得进入ACTIVE。"}
+            details = [item["outcome_details"].get(f"t_plus_{horizon}") or {} for item in observations]
+            positive = [value for value in values if value is not None and value > 0]
+            negative = [value for value in values if value is not None and value < 0]
+            avg_gain = _avg(positive)
+            avg_loss = _avg(negative)
+            detail_mfe = [item.get("mfe") for item in details if item.get("mfe") is not None]
+            detail_mae = [item.get("mae") for item in details if item.get("mae") is not None]
+            detail_drawdown = [item.get("max_drawdown") for item in details if item.get("max_drawdown") is not None]
+            metrics[f"t_plus_{horizon}"] = {
+                "sample_size": len(values),
+                "win_rate": _round(len(wins) / len(values) * 100 if values else None),
+                "average_return": _round(_avg(values)),
+                "median_return": _round(sorted(values)[len(values) // 2] if values else None),
+                "mfe": _round(_avg(detail_mfe)),
+                "mae": _round(_avg(detail_mae)),
+                "max_drawdown": _round(min(detail_drawdown) if detail_drawdown else None),
+                "profit_loss_ratio": _round(avg_gain / abs(avg_loss)) if avg_gain is not None and avg_loss not in (None, 0) else None,
+            }
+
+        false_breakout = None
+        if skill_id and any(token in skill_id for token in ("BREAK", "BXZX_009", "ATTACK")):
+            breakout_rows = [item for item in observations if item["outcomes"].get("t_plus_3") is not None]
+            false_rows = [item for item in breakout_rows if (item["outcomes"].get("t_plus_3") or 0) <= 0]
+            false_breakout = {
+                "sample_size": len(breakout_rows),
+                "count": len(false_rows),
+                "rate": _round(len(false_rows) / len(breakout_rows) * 100 if breakout_rows else None),
+                "definition": "信号后第3个交易日收盘收益不为正，仅作回顾性假突破近似统计。",
+            }
+        status_counts: dict[str, int] = {}
+        for item in observations:
+            status = str(item.get("status") or "UNKNOWN")
+            status_counts[status] = status_counts.get(status, 0) + 1
+        status_total = len(observations)
+        return {
+            "status": "COMPLETED",
+            "mode": "SHADOW",
+            "symbol": code,
+            "skill_id": skill_id,
+            "skill_name": definition["original_name"] if definition else "全链路",
+            "book_rule_version": definition["book_rule_version"] if definition else None,
+            "engine_version": ENGINE_VERSION,
+            "start": start.isoformat() if isinstance(start, date) else None,
+            "end": end.isoformat() if isinstance(end, date) else None,
+            "metrics": metrics,
+            "status_distribution": status_counts,
+            "confirmation_rate": _round(status_counts.get("CONFIRMED", 0) / status_total * 100 if status_total else None),
+            "failure_rate": _round((status_counts.get("INVALID", 0) + status_counts.get("WEAKENING", 0)) / status_total * 100 if status_total else None),
+            "false_breakout": false_breakout,
+            "observations": observations[-300:],
+            "method": "只使用每个截面之前的日线；未来窗口仅用于结果统计，不进入信号计算。MFE/MAE按未来窗口最高/最低价回顾计算。",
+            "promotion": "V2保持SHADOW，未通过样本外验证不得进入ACTIVE；统计值不是未来收益概率。",
+            "validation_gate": {"status": "SHADOW_ONLY", "action_impact": "DISABLED_UNTIL_VALIDATED", "minimum_sample_size": 100, "requires_out_of_sample": True},
+        }
 
 
 def _normalise_flow(row: Any) -> dict[str, Any]:

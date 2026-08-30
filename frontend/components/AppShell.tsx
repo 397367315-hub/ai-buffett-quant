@@ -5,6 +5,7 @@ import { useEffect, ReactNode } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import Navbar from './Navbar';
 import Footer from './Footer';
+import WorkbenchNav from './WorkbenchNav';
 
 export default function AppShell({ children }: { children: ReactNode }) {
   const { isLoggedIn, isAuthReady } = useAuth();
@@ -12,7 +13,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
 
   const isLoginPage = pathname === '/login';
-  const isFullscreenWorkbench = pathname === '/market' || pathname === '/strong-stock-decision';
+  const isFullscreenWorkbench = pathname === '/market' || pathname.startsWith('/market/v4') || pathname === '/strong-stock-decision';
 
   useEffect(() => {
     if (isAuthReady && !isLoggedIn && !isLoginPage) {
@@ -37,7 +38,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   // V5 owns its full terminal chrome. V4 and the remaining modules continue
   // to use the shared application navigation so both workbenches stay isolated.
   if (isFullscreenWorkbench) {
-    return <>{children}</>;
+    return <><WorkbenchNav /><main className="flex-1">{children}</main></>;
   }
 
   return (

@@ -2675,3 +2675,248 @@ class StrongCaseLibrary(Base):
     outcome_json = Column(JSON, nullable=False, default=dict)
     notes = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SkillRuleDefinition(Base):
+    """Versioned, auditable rule metadata for the V2 skill registry."""
+
+    __tablename__ = "skill_rule_definition"
+    __table_args__ = (
+        UniqueConstraint("skill_id", "version"),
+        Index("idx_skill_rule_definition_skill", "skill_id", "enabled"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    skill_id = Column(String(80), nullable=False)
+    prerequisite_json = Column(JSON, nullable=False, default=list)
+    positive_rule_json = Column(JSON, nullable=False, default=list)
+    negative_rule_json = Column(JSON, nullable=False, default=list)
+    confirmation_json = Column(JSON, nullable=False, default=list)
+    invalidation_json = Column(JSON, nullable=False, default=list)
+    required_timeframes_json = Column(JSON, nullable=False, default=list)
+    engine_feature_json = Column(JSON, nullable=False, default=list)
+    version = Column(String(32), nullable=False, default="three-books-v2.0")
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MainForceState(Base):
+    """Point-in-time observable main-force state, without unverifiable claims."""
+
+    __tablename__ = "main_force_state"
+    __table_args__ = (Index("idx_main_force_state_symbol_time", "symbol", "trade_time", "timeframe"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    timeframe = Column(String(16), nullable=False, default="1d")
+    main_force_presence = Column(String(32), nullable=False, default="不明显")
+    main_force_direction = Column(String(32), nullable=False, default="暂不明确")
+    main_force_stage = Column(String(64), nullable=False, default="样本不足")
+    main_force_intent = Column(String(64), nullable=False, default="暂不判断")
+    main_force_continuity = Column(String(32), nullable=False, default="未知")
+    evidence_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TradingZoneGeometry(Base):
+    """A/B/C geometry and state-machine values used to draw the chart layer."""
+
+    __tablename__ = "trading_zone_geometry"
+    __table_args__ = (Index("idx_trading_zone_geometry_symbol_time", "symbol", "trade_time"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    zone = Column(String(32), nullable=False)
+    zone_stage = Column(String(40), nullable=False, default="UNKNOWN")
+    zone_start = Column(DateTime)
+    zone_upper = Column(Float)
+    zone_lower = Column(Float)
+    short_attack_line = Column(Float)
+    mid_long_cost_line = Column(Float)
+    small_a_point = Column(Float)
+    invalidation_price = Column(Float)
+    geometry_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BigPatternInstance(Base):
+    """Lifecycle instance for a documented big-pattern skill."""
+
+    __tablename__ = "big_pattern_instance"
+    __table_args__ = (
+        Index("idx_big_pattern_instance_symbol_time", "symbol", "start_time", "end_time"),
+        Index("idx_big_pattern_instance_skill", "pattern_skill_id", "stage"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    pattern_skill_id = Column(String(80), nullable=False)
+    subtype = Column(String(160))
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    stage = Column(String(32), nullable=False, default="NOT_FOUND")
+    upper_boundary = Column(Float)
+    lower_boundary = Column(Float)
+    key_price = Column(Float)
+    breakout_price = Column(Float)
+    retest_price = Column(Float)
+    evidence_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StarInstance(Base):
+    """Context-gated rising-star observation."""
+
+    __tablename__ = "star_instance"
+    __table_args__ = (Index("idx_star_instance_symbol_time", "symbol", "trade_time", "star_skill_id"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    star_skill_id = Column(String(80), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    status = Column(String(24), nullable=False, default="NOT_FOUND")
+    pre_context_json = Column(JSON, nullable=False, default=dict)
+    star_body_json = Column(JSON, nullable=False, default=dict)
+    volume_json = Column(JSON, nullable=False, default=dict)
+    ma_json = Column(JSON, nullable=False, default=dict)
+    main_force_json = Column(JSON, nullable=False, default=dict)
+    confirmation_json = Column(JSON, nullable=False, default=list)
+    invalidation_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ThreeDegreeState(Base):
+    """Independent thickness, strength and speed observations."""
+
+    __tablename__ = "three_degree_state"
+    __table_args__ = (Index("idx_three_degree_state_symbol_time", "symbol", "trade_time"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    thickness_state = Column(String(32), nullable=False, default="未知")
+    strength_state = Column(String(32), nullable=False, default="未知")
+    speed_state = Column(String(32), nullable=False, default="未知")
+    thickness_evidence_json = Column(JSON, nullable=False, default=list)
+    strength_evidence_json = Column(JSON, nullable=False, default=list)
+    speed_evidence_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StockCharacterState(Base):
+    """Engineering-only historical behaviour profile for one stock."""
+
+    __tablename__ = "stock_character_state"
+    __table_args__ = (Index("idx_stock_character_state_symbol_time", "symbol", "trade_time"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    character_summary = Column(Text, nullable=False, default="有效历史样本不足")
+    feature_json = Column(JSON, nullable=False, default=dict)
+    historical_samples = Column(Integer, nullable=False, default=0)
+    confidence = Column(Float)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ThemeState(Base):
+    """Theme type, hotspot level and evidence snapshot."""
+
+    __tablename__ = "theme_state"
+    __table_args__ = (Index("idx_theme_state_symbol_time", "symbol", "trade_time"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    theme_name = Column(String(160))
+    theme_type = Column(String(64), nullable=False, default="未知")
+    hotspot_level = Column(String(64), nullable=False, default="未知")
+    theme_stage = Column(String(64), nullable=False, default="未接入")
+    evidence_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BuyPointState(Base):
+    """Research classification of a buy-point level, never an order."""
+
+    __tablename__ = "buy_point_state"
+    __table_args__ = (Index("idx_buy_point_state_symbol_time", "symbol", "trade_time"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    buy_level = Column(String(32), nullable=False, default="臆想买点")
+    matched_skills_json = Column(JSON, nullable=False, default=list)
+    missing_evidence_json = Column(JSON, nullable=False, default=list)
+    counter_evidence_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SellRiskState(Base):
+    """Exit-risk radar snapshot with the three documented sell strategies."""
+
+    __tablename__ = "sell_risk_state"
+    __table_args__ = (Index("idx_sell_risk_state_symbol_time", "symbol", "trade_time"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    obvious_top_state = Column(String(32), nullable=False, default="NOT_FOUND")
+    meet_top_state = Column(String(32), nullable=False, default="NOT_FOUND")
+    c_zone_state = Column(String(32), nullable=False, default="NOT_FOUND")
+    classic_top_state = Column(String(32), nullable=False, default="NOT_FOUND")
+    risk_evidence_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ThreeBooksConsensus(Base):
+    """Explicit consensus/conflict matrix across the three books."""
+
+    __tablename__ = "three_books_consensus"
+    __table_args__ = (Index("idx_three_books_consensus_symbol_time", "symbol", "trade_time"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    hunter_state_json = Column(JSON, nullable=False, default=dict)
+    big_pattern_state_json = Column(JSON, nullable=False, default=dict)
+    star_state_json = Column(JSON, nullable=False, default=dict)
+    consensus_level = Column(String(32), nullable=False, default="冲突")
+    conflicts_json = Column(JSON, nullable=False, default=list)
+    dominant_signal = Column(String(32), nullable=False, default="NEUTRAL")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CaseSimilarity(Base):
+    """Similarity links are kept separate from the manually labelled case library."""
+
+    __tablename__ = "case_similarity"
+    __table_args__ = (Index("idx_case_similarity_symbol_time", "symbol", "trade_time"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_time = Column(DateTime, nullable=False)
+    current_skill = Column(String(80))
+    case_id = Column(Integer)
+    similarity = Column(Float)
+    similar_dimensions_json = Column(JSON, nullable=False, default=list)
+    different_dimensions_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StrongStockRuleConfig(Base):
+    """User-adjustable feature parameters, isolated from the locked book rules."""
+
+    __tablename__ = "strong_stock_rule_config"
+    __table_args__ = (UniqueConstraint("config_key", "version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    config_key = Column(String(80), nullable=False)
+    version = Column(String(32), nullable=False, default="v2.0")
+    parameters_json = Column(JSON, nullable=False, default=dict)
+    enabled = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

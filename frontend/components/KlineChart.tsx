@@ -18,6 +18,9 @@ interface Props {
   rows: KlineRow[];
   height?: number | string;
   showMovingAverages?: boolean;
+  /** V2 research overlays; they are descriptive chart annotations only. */
+  annotations?: Array<Record<string, any>>;
+  showAnnotations?: boolean;
 }
 
 function finite(value: number | null | undefined): number {
@@ -40,7 +43,7 @@ function movingAverage(rows: KlineRow[], window: number): Array<number | null> {
   });
 }
 
-export default function KlineChart({ rows, height = 360, showMovingAverages = false }: Props) {
+export default function KlineChart({ rows, height = 360, showMovingAverages = false, annotations = [], showAnnotations = false }: Props) {
   const chartRows = useMemo(() => rows.filter(hasCompletePrice), [rows]);
   const option = useMemo(() => {
     const dates = chartRows.map((row) => row.date);
@@ -60,6 +63,7 @@ export default function KlineChart({ rows, height = 360, showMovingAverages = fa
           { name: 'MA5', data: movingAverage(chartRows, 5), color: '#f0c44b' },
           { name: 'MA10', data: movingAverage(chartRows, 10), color: '#37d9b0' },
           { name: 'MA20', data: movingAverage(chartRows, 20), color: '#d36fff' },
+          { name: 'MA30', data: movingAverage(chartRows, 30), color: '#7eaefb' },
           { name: 'MA60', data: movingAverage(chartRows, 60), color: '#39c66e' },
         ].map((line) => ({
           name: line.name,
@@ -75,6 +79,24 @@ export default function KlineChart({ rows, height = 360, showMovingAverages = fa
         }))
       : [];
     const start = chartRows.length > 80 ? Math.max(0, 100 - (80 / chartRows.length) * 100) : 0;
+    const overlayLines = showAnnotations
+      ? annotations
+          .map((item) => ({
+            name: typeof item.type === 'string' ? item.type : '研究标注',
+            yAxis: typeof item.key_price === 'number' ? item.key_price : typeof item.upper_boundary === 'number' ? item.upper_boundary : null,
+          }))
+          .filter((item) => typeof item.yAxis === 'number')
+          .slice(0, 20)
+      : [];
+    const overlayAreas = showAnnotations
+      ? annotations
+          .filter((item) => typeof item.upper_boundary === 'number' && typeof item.lower_boundary === 'number')
+          .map((item) => [
+            { name: typeof item.type === 'string' ? item.type : '结构区', xAxis: dates[0], yAxis: item.upper_boundary },
+            { xAxis: dates[dates.length - 1], yAxis: item.lower_boundary },
+          ])
+          .slice(0, 5)
+      : [];
 
     return {
       animation: false,
@@ -160,6 +182,20 @@ export default function KlineChart({ rows, height = 360, showMovingAverages = fa
             borderColor: '#EF5350',
             borderColor0: '#26A69A',
           },
+          markLine: overlayLines.length ? {
+            symbol: ['none', 'none'],
+            silent: true,
+            precision: 2,
+            lineStyle: { width: 0.8, type: 'dashed', color: '#667085', opacity: 0.6 },
+            label: { show: true, color: '#9AA4B2', fontSize: 8, formatter: (params: any) => params?.name || '' },
+            data: overlayLines,
+          } : undefined,
+          markArea: overlayAreas.length ? {
+            silent: true,
+            itemStyle: { color: 'rgba(76,141,255,0.035)' },
+            label: { show: false },
+            data: overlayAreas,
+          } : undefined,
         },
         ...movingAverageSeries,
         {
@@ -172,7 +208,7 @@ export default function KlineChart({ rows, height = 360, showMovingAverages = fa
         },
       ],
     };
-  }, [chartRows, showMovingAverages]);
+  }, [annotations, chartRows, showAnnotations, showMovingAverages]);
 
   if (chartRows.length === 0) {
     return <div className="grid h-[260px] place-items-center text-xs text-text-secondary">暂无可核验K线</div>;

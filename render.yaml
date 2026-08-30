@@ -50,6 +50,10 @@ services:
         sync: false
       - key: OPENCLAW_TOOL_TIMEOUT
         value: "45"
+      - key: FEATURE_STRONG_STOCK_DECISION
+        value: "true"
+      - key: FEATURE_STRONG_STOCK_DECISION_V2
+        value: "true"
       - key: DEEPSEEK_API_KEY
         sync: false
       - key: ADMIN_USERNAME

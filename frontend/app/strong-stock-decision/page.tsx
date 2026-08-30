@@ -24,6 +24,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import type { KlineRow } from '@/components/KlineChart';
+import StrongStockV2Dashboard from '@/components/StrongStockV2Dashboard';
 import { apiFetch, friendlyApiError } from '@/lib/api';
 
 const KlineChart = dynamic(() => import('@/components/KlineChart'), {
@@ -355,6 +356,7 @@ export default function StrongStockDecisionPage() {
     ? backendScore.coverage_pct
     : scoreComponents.reduce((total, item) => total + (item.available !== false && finite(item.value) ? Number(item.weight || 0) * 100 : 0), 0);
   const sourceName = String(sourceStatus.daily_bars_source || '').includes('tencent') ? '腾讯行情' : sourceStatus.daily_bars_source ? '系统日线缓存' : undefined;
+  const v2 = data?.v2 || null;
 
   const renderDetail = () => {
     if (!data) return null;
@@ -376,7 +378,7 @@ export default function StrongStockDecisionPage() {
     <div className="strong-terminal min-h-screen">
       <header className="strong-terminal-header">
         <div className="strong-title-block">
-          <div className="strong-title-row"><h1>强势股交易决策系统 V1.0</h1><span className="strong-shadow-badge">Shadow模式</span></div>
+          <div className="strong-title-row"><h1>强势股交易决策系统 V2.0</h1><span className="strong-shadow-badge">V2 Shadow · V1兼容</span></div>
           <p>基于《猎取强势股》《暴涨大形态》《暴涨之星》三书体系</p>
         </div>
       </header>
@@ -397,10 +399,11 @@ export default function StrongStockDecisionPage() {
           {loading && <div className="strong-loading"><Loader2 size={17} className="animate-spin" /><span>正在核验日线、量价、主力与三书技能…</span><div><i style={{ width: `${progress}%` }} /></div><b>{progress}%</b></div>}
 
           {!data && !loading ? <div className="strong-empty-page"><Search size={28} /><p>输入六位股票代码开始分析</p></div> : data && <>
+            {v2 && <StrongStockV2Dashboard v2={v2} symbol={symbol} onRefresh={() => void loadOverview(symbol, true)} />}
             <div className="strong-primary-grid">
               <Panel title="实时K线图（日线）" icon={LineChart} meta={<span>{data?.trade_date || '--'} · {bars.length}根日线</span>} className="strong-kline-panel">
-                <div className="strong-ma-legend"><span>MA5:{numberText(data?.engine_features?.ma5)}</span><span>MA10:{numberText(data?.engine_features?.ma10)}</span><span>MA20:{numberText(data?.engine_features?.ma20)}</span><span>MA60:{numberText(data?.engine_features?.ma60)}</span></div>
-                <KlineChart rows={klineRows.slice(-150)} height={280} showMovingAverages />
+                <div className="strong-ma-legend"><span>MA5:{numberText(data?.engine_features?.ma5)}</span><span>MA10:{numberText(data?.engine_features?.ma10)}</span><span>MA20:{numberText(data?.engine_features?.ma20)}</span><span>MA30:{numberText(data?.v2?.moving_average?.values?.ma30)}</span><span>MA60:{numberText(data?.engine_features?.ma60)}</span></div>
+                <KlineChart rows={klineRows.slice(-150)} height={280} showMovingAverages annotations={data?.v2?.annotations || []} showAnnotations />
                 <div className="strong-chart-annotations">{[zone.zone, strongestBig?.name, strongestStar?.name].filter(Boolean).map((item) => <span key={item}>{item}</span>)}</div>
               </Panel>
               <Panel title="决策总览（综合评分）" icon={Gauge} className="strong-score-panel">

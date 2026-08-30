@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     # Independent, read-only Shadow module based on the three strong-stock
     # trading books. It never changes existing strategy scores or actions.
     feature_strong_stock_decision: bool = True
+    # Independent switch for the additive V2 research layer. V1 clients keep
+    # working when operators need to disable the extra Shadow workload.
+    feature_strong_stock_decision_v2: bool = True
 
     # 可视化量化策略模块。生产环境可将目录指向 Render 持久化磁盘；
     # 未配置时使用仓库内的 JSON 数据目录，适合本地开发和单进程部署。
