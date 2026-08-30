@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import KlineChart, { KlineRow } from '@/components/KlineChart';
+import Level2Radar from '@/components/Level2Radar';
 import { apiFetch, formatYi, friendlyApiError } from '@/lib/api';
 
 type KlineCategory = 4 | 5 | 6 | 11;
@@ -912,6 +913,8 @@ export default function StockPage() {
               <div className="grid gap-2 sm:grid-cols-2">{(strategy.tail_1455?.conditions || []).map((item: AnyMap) => <div key={item.key} className="flex min-h-9 items-center justify-between gap-3 border-b border-border px-1 py-2 text-xs"><span className="text-text-secondary">{item.label}</span><span className={item.passed ? 'text-up' : 'text-warn'}>{item.passed ? '通过' : '未通过'}</span></div>)}</div>
             </div>
           </section>
+
+          <Level2Radar symbol={stockCode} tradeDate={asOf || undefined} />
 
           {kline && (
             <section className="border-b border-border py-5">

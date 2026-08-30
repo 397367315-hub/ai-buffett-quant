@@ -27,6 +27,30 @@ class Settings(BaseSettings):
     ftshare_mcp_url: str = "https://market.ft.tech/gateway/mcp"
     ftshare_mcp_timeout: float = 10.0
 
+    # Optional Level-2 provider. The key stays server-side; the frontend only
+    # receives capability and data-quality metadata.
+    level2_enabled: bool = True
+    numcat_api_key: str = ""
+    numcat_api_base: str = "https://numcat.net/api"
+    numcat_timeout: float = 20.0
+    numcat_retry_count: int = 3
+    numcat_min_request_interval: float = 0.25
+    level2_page_size: int = 5000
+    level2_max_pages: int = 200
+    level2_max_rows: int = 500000
+    level2_cache_seconds: int = 300
+
+    # Experimental Level-2 weights. They are configuration, rather than
+    # constants buried in the decision engine, so later validation can tune
+    # them without changing the API contract.
+    level2_hfi_active_flow_weight: float = 0.25
+    level2_hfi_absorption_weight: float = 0.20
+    level2_hfi_split_weight: float = 0.15
+    level2_hfi_imbalance_weight: float = 0.15
+    level2_hfi_replenishment_weight: float = 0.10
+    level2_hfi_vwap_weight: float = 0.10
+    level2_hfi_impact_weight: float = 0.05
+
     # OpenClaw/MCP read and controlled-action gateway.
     openclaw_enabled: bool = False
     openclaw_api_key: str = ""

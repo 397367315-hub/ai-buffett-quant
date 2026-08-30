@@ -779,6 +779,197 @@ class StockIntradayEvidence(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class Level2TradeHistory(Base):
+    """Normalized NumCat Level-2 trade records with the original payload kept."""
+
+    __tablename__ = "level2_trade_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", "source_trade_id", name="uq_l2_trade_source_id"),
+        Index("idx_l2_trade_symbol_time", "symbol", "trade_date", "timestamp"),
+        Index("idx_l2_trade_buy_order", "symbol", "trade_date", "buy_order_id"),
+        Index("idx_l2_trade_sell_order", "symbol", "trade_date", "sell_order_id"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    source_trade_id = Column(String(160), nullable=False)
+    trade_id = Column(String(100))
+    price = Column(Float)
+    volume = Column(Float)
+    amount = Column(Float)
+    side = Column(String(16))
+    direction_method = Column(String(32))
+    direction_confidence = Column(Float)
+    trade_code = Column(String(40))
+    buy_order_id = Column(String(100))
+    sell_order_id = Column(String(100))
+    source = Column(String(40), nullable=False, default="numcat")
+    raw_payload = Column(JSON, nullable=False, default=dict)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Level2OrderHistory(Base):
+    """Normalized Level-2 order records used for cancellation and cadence analysis."""
+
+    __tablename__ = "level2_order_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", "source_order_id", name="uq_l2_order_source_id"),
+        Index("idx_l2_order_symbol_time", "symbol", "trade_date", "timestamp"),
+        Index("idx_l2_order_order_id", "symbol", "trade_date", "order_id"),
+        Index("idx_l2_order_order_no", "symbol", "trade_date", "order_no"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    source_order_id = Column(String(160), nullable=False)
+    order_id = Column(String(100))
+    price = Column(Float)
+    volume = Column(Float)
+    amount = Column(Float)
+    side = Column(String(16))
+    order_type = Column(String(40))
+    order_no = Column(String(100))
+    source = Column(String(40), nullable=False, default="numcat")
+    raw_payload = Column(JSON, nullable=False, default=dict)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Level2QuoteHistory(Base):
+    """Historical ten-level order-book snapshots."""
+
+    __tablename__ = "level2_quote_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", "source_snapshot_id", name="uq_l2_quote_source_id"),
+        Index("idx_l2_quote_symbol_time", "symbol", "trade_date", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    source_snapshot_id = Column(String(160), nullable=False)
+    last_price = Column(Float)
+    open_price = Column(Float)
+    high_price = Column(Float)
+    low_price = Column(Float)
+    pre_close = Column(Float)
+    volume = Column(Float)
+    amount = Column(Float)
+    bid_json = Column(JSON, nullable=False, default=list)
+    ask_json = Column(JSON, nullable=False, default=list)
+    source = Column(String(40), nullable=False, default="numcat")
+    raw_payload = Column(JSON, nullable=False, default=dict)
+    fetched_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Level2Feature1m(Base):
+    """One-minute microstructure features; raw ticks are never rescanned by the UI."""
+
+    __tablename__ = "level2_feature_1m"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", "minute", name="uq_l2_feature_symbol_date_minute"),
+        Index("idx_l2_feature_symbol_time", "symbol", "trade_date", "minute"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    minute = Column(DateTime, nullable=False)
+    trade_count = Column(Integer, nullable=False, default=0)
+    order_count = Column(Integer, nullable=False, default=0)
+    quote_count = Column(Integer, nullable=False, default=0)
+    buy_amount = Column(Float)
+    sell_amount = Column(Float)
+    neutral_amount = Column(Float)
+    net_active_amount = Column(Float)
+    large_buy_amount = Column(Float)
+    large_sell_amount = Column(Float)
+    split_buy_score = Column(Float)
+    split_sell_score = Column(Float)
+    absorption_buy_score = Column(Float)
+    absorption_sell_score = Column(Float)
+    replenishment_bid = Column(Float)
+    replenishment_ask = Column(Float)
+    cancel_buy_ratio = Column(Float)
+    cancel_sell_ratio = Column(Float)
+    order_imbalance = Column(Float)
+    order_imbalance_1 = Column(Float)
+    order_imbalance_3 = Column(Float)
+    order_imbalance_5 = Column(Float)
+    order_imbalance_10 = Column(Float)
+    vwap = Column(Float)
+    last_price = Column(Float)
+    price_vs_vwap = Column(Float)
+    qas = Column(Float)
+    qas_type = Column(String(40))
+    hfi = Column(Float)
+    hfi_components = Column(JSON, nullable=False, default=dict)
+    micro_score = Column(Float)
+    distribution_score = Column(Float)
+    spoof_risk = Column(Float)
+    confidence = Column(Float)
+    data_quality = Column(String(24), nullable=False, default="degraded")
+    components = Column(JSON, nullable=False, default=dict)
+    explanation = Column(JSON, nullable=False, default=list)
+    source = Column(String(80), nullable=False, default="numcat")
+    created_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Level2FetchJob(Base):
+    """Persistent cursor checkpoint for one symbol/date/data-type fetch."""
+
+    __tablename__ = "level2_fetch_jobs"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", "data_type", name="uq_l2_fetch_job_key"),
+        Index("idx_l2_fetch_job_status", "status", "updated_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    data_type = Column(String(16), nullable=False)
+    provider = Column(String(40), nullable=False, default="numcat")
+    cursor = Column(Text)
+    status = Column(String(24), nullable=False, default="queued")
+    pages = Column(Integer, nullable=False, default=0)
+    rows = Column(Integer, nullable=False, default=0)
+    error = Column(Text)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Level2QualitySnapshot(Base):
+    """Data completeness audit for a Level-2 symbol/session."""
+
+    __tablename__ = "level2_quality_snapshots"
+    __table_args__ = (
+        UniqueConstraint("symbol", "trade_date", name="uq_l2_quality_symbol_date"),
+        Index("idx_l2_quality_date_status", "trade_date", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(20), nullable=False)
+    trade_date = Column(Date, nullable=False)
+    status = Column(String(24), nullable=False, default="not_available")
+    first_timestamp = Column(DateTime)
+    last_timestamp = Column(DateTime)
+    trade_count = Column(Integer, nullable=False, default=0)
+    order_count = Column(Integer, nullable=False, default=0)
+    quote_count = Column(Integer, nullable=False, default=0)
+    pagination_complete = Column(Boolean, nullable=False, default=False)
+    quote_depth_coverage = Column(Float)
+    confidence = Column(Float)
+    warnings = Column(JSON, nullable=False, default=list)
+    checks = Column(JSON, nullable=False, default=dict)
+    source = Column(String(80), nullable=False, default="numcat")
+    generated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class StockUniverseSnapshot(Base):
     """Daily point-in-time universe, industry and market-cap observation."""
 

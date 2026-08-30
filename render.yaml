@@ -24,6 +24,26 @@ services:
         value: "true"
       - key: FTSHARE_MCP_TIMEOUT
         value: "10"
+      - key: LEVEL2_ENABLED
+        value: "true"
+      - key: NUMCAT_API_KEY
+        sync: false
+      - key: NUMCAT_API_BASE
+        value: https://numcat.net/api
+      - key: NUMCAT_TIMEOUT
+        value: "20"
+      - key: NUMCAT_RETRY_COUNT
+        value: "3"
+      - key: NUMCAT_MIN_REQUEST_INTERVAL
+        value: "0.25"
+      - key: LEVEL2_PAGE_SIZE
+        value: "5000"
+      - key: LEVEL2_MAX_PAGES
+        value: "200"
+      - key: LEVEL2_MAX_ROWS
+        value: "500000"
+      - key: LEVEL2_CACHE_SECONDS
+        value: "300"
       - key: OPENCLAW_ENABLED
         value: "true"
       - key: OPENCLAW_API_KEY
