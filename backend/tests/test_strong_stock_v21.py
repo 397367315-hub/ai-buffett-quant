@@ -1,5 +1,12 @@
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from unittest.mock import patch
+
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from database import Base
+from models import MarketBoard, StockDailyBar, StockUniverseSnapshot, ThemeState, TradingZoneGeometry
+from services.strong_stock_v21 import StrongStockV21Service
 
 from strong_stock_decision.v21_engine import (
     EvolutionEngine,
@@ -51,6 +58,34 @@ class StrongStockV21EngineTests(unittest.TestCase):
         self.assertEqual(result[0]["priority"], "EXCLUDE")
         self.assertEqual(result[0]["opportunity_pool"], "RISK_EXCLUDE")
 
+    def test_starting_a_forming_is_primary_in_attack_market(self):
+        result = ZoneOpportunityFusionEngine().fuse(
+            [{"symbol": "000001", "zone": "强势A区", "zone_stage": "A_FORMING", "sector_id": "s1"}],
+            "TREND_ATTACK",
+            {"s1": {"state": "STARTING"}},
+        )
+        self.assertEqual(result[0]["opportunity_pool"], "A_DISCOVERY")
+        self.assertEqual(result[0]["priority"], "P1")
+        self.assertTrue(result[0]["next_confirmation"])
+
+    def test_defensive_market_and_weak_main_force_downgrade_confirmation(self):
+        result = ZoneOpportunityFusionEngine().fuse(
+            [{"symbol": "000001", "zone": "强势A区", "zone_stage": "A_ACTIVE", "sector_id": "s1", "main_force_state": "持续流出"}],
+            "DEFENSIVE_FADE",
+            {"s1": {"state": "ACCELERATING"}},
+        )
+        self.assertEqual(result[0]["opportunity_pool"], "A_CONFIRM")
+        self.assertEqual(result[0]["priority"], "P2")
+        self.assertIn("主力状态转弱", "".join(result[0]["counter_evidence"]))
+
+    def test_invalid_zone_is_always_excluded(self):
+        result = ZoneOpportunityFusionEngine().fuse(
+            [{"symbol": "000001", "zone": "强势A区", "zone_stage": "A_INVALID", "sector_id": "s1"}],
+            "TREND_ATTACK",
+            {"s1": {"state": "STARTING"}},
+        )
+        self.assertEqual(result[0]["priority"], "EXCLUDE")
+
     def test_migration_is_explicitly_inferred(self):
         result = SectorMigrationEngine().infer([{ "sector_id": "a", "sector_name": "旧主线", "rank": 20, "relative_return_vs_market": -1, "main_force_inflow_ratio": -.01 }, {"sector_id": "b", "sector_name": "新方向", "rank": 2, "relative_return_vs_market": 1, "main_force_inflow_ratio": .01, "breadth": .6}])
         self.assertTrue(result["paths"])
@@ -59,6 +94,50 @@ class StrongStockV21EngineTests(unittest.TestCase):
     def test_evolution_requires_minimum_samples(self):
         result = EvolutionEngine().propose([{"result_state": "SUCCESS"}] * 10)
         self.assertEqual(result["status"], "INSUFFICIENT_SAMPLE")
+
+
+class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
+        async with self.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        self.session_patch = patch("services.strong_stock_v21.async_session", self.session_factory)
+        self.session_patch.start()
+
+    async def asyncTearDown(self):
+        self.session_patch.stop()
+        await self.engine.dispose()
+
+    async def test_candidate_uses_point_in_time_industry_as_primary_sector(self):
+        target = date(2026, 8, 28)
+        async with self.session_factory() as session:
+            session.add_all([
+                MarketBoard(board_type="industry", code="BK0475", name="煤炭行业"),
+                StockUniverseSnapshot(
+                    stock_code="600188", stock_name="兖矿能源", exchange="SH",
+                    trade_date=target, industry="煤炭行业",
+                ),
+                StockDailyBar(
+                    stock_code="600188", stock_name="兖矿能源", trade_date=target,
+                    close_price=12.3, change_pct=2.1,
+                ),
+                TradingZoneGeometry(
+                    symbol="600188", trade_time=datetime.combine(target, datetime.min.time()),
+                    zone="强势A区", zone_stage="A_FORMING",
+                ),
+                ThemeState(
+                    symbol="600188", trade_time=datetime.combine(target, datetime.min.time()),
+                    theme_name="高股息", theme_type="事件题材",
+                ),
+            ])
+            await session.commit()
+
+        rows = await StrongStockV21Service()._candidate_rows(target)
+
+        self.assertEqual(rows[0]["sector_id"], "BK0475")
+        self.assertEqual(rows[0]["sector_name"], "煤炭行业")
+        self.assertEqual(rows[0]["theme_name"], "高股息")
 
 
 if __name__ == "__main__":

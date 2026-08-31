@@ -30,6 +30,7 @@ from models import (
     SectorLifecycleState,
     SectorMigrationInference,
     StockDailyBar,
+    StockUniverseSnapshot,
     StockSkillSignal,
     ThemeState,
     ThreeBooksConsensus,
@@ -245,20 +246,44 @@ class StrongStockV21Service:
             consensus_rows = list((await session.execute(select(ThreeBooksConsensus).where(ThreeBooksConsensus.symbol.in_(symbols), ThreeBooksConsensus.trade_time <= datetime.combine(target, datetime.max.time())).order_by(desc(ThreeBooksConsensus.trade_time)).limit(1600))).scalars().all())
             themes = list((await session.execute(select(ThemeState).where(ThemeState.symbol.in_(symbols), ThemeState.trade_time <= datetime.combine(target, datetime.max.time())).order_by(desc(ThemeState.trade_time)).limit(1600))).scalars().all())
             bars = list((await session.execute(select(StockDailyBar).where(StockDailyBar.stock_code.in_(symbols), StockDailyBar.trade_date <= target).order_by(desc(StockDailyBar.trade_date)).limit(2000))).scalars().all())
+            universes = list((await session.execute(
+                select(StockUniverseSnapshot).where(
+                    StockUniverseSnapshot.stock_code.in_(symbols),
+                    StockUniverseSnapshot.trade_date <= target,
+                ).order_by(desc(StockUniverseSnapshot.trade_date)).limit(1600)
+            )).scalars().all())
+            industry_names = {
+                str(row.name): str(row.code)
+                for row in (await session.execute(
+                    select(MarketBoard).where(MarketBoard.board_type == "industry")
+                )).scalars().all()
+                if row.name and row.code
+            }
             latest_main: dict[str, Any] = {}
             latest_consensus: dict[str, Any] = {}
             latest_theme: dict[str, Any] = {}
             latest_bar: dict[str, Any] = {}
+            latest_universe: dict[str, Any] = {}
             for row in main_rows: latest_main.setdefault(row.symbol, row)
             for row in consensus_rows: latest_consensus.setdefault(row.symbol, row)
             for row in themes: latest_theme.setdefault(row.symbol, row)
             for row in bars: latest_bar.setdefault(row.stock_code, row)
+            for row in universes: latest_universe.setdefault(row.stock_code, row)
         result = []
         for symbol, zone in latest_zone.items():
             main, consensus, theme, bar = latest_main.get(symbol), latest_consensus.get(symbol), latest_theme.get(symbol), latest_bar.get(symbol)
+            universe = latest_universe.get(symbol)
+            industry_name = str(getattr(universe, "industry", None) or "").strip() or None
+            theme_name = getattr(theme, "theme_name", None) if theme else None
             result.append({
                 "symbol": symbol, "stock_name": getattr(bar, "stock_name", None) or symbol,
-                "sector_id": "UNKNOWN", "sector_name": getattr(theme, "theme_name", None) if theme else None,
+                # Use the point-in-time industry directory as the primary
+                # sector link. ThemeState is a useful supporting signal, but
+                # its free-form theme name is not a stable sector identifier.
+                "sector_id": industry_names.get(industry_name, "UNKNOWN"),
+                "sector_name": industry_name or theme_name,
+                "sector_type": "industry" if industry_name else None,
+                "theme_name": theme_name,
                 "zone": zone.zone, "zone_stage": zone.zone_stage,
                 "main_force_state": getattr(main, "main_force_direction", None) if main else None,
                 "volume_price_state": None, "ma_state": None,
