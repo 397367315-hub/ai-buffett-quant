@@ -86,4 +86,4 @@ async def refresh_margin_data(
 
 @router.get("/refresh/status")
 async def margin_refresh_status():
-    return {"code": 0, "data": margin_leverage_service.refresh_status()}
+    return {"code": 0, "data": await margin_leverage_service.persistent_refresh_status()}

@@ -13,6 +13,7 @@ import math
 from datetime import date, datetime, timedelta
 from statistics import median, pstdev
 from typing import Any, Iterable
+from uuid import uuid4
 
 from sqlalchemy import and_, asc, desc, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -23,6 +24,7 @@ from models import (
     MarginMarketDaily,
     MarginSectorDaily,
     MarginStockDaily,
+    MarginRefreshJob,
     MarketSentimentDaily,
     StockDailyBar,
     StockLeverageMetric,
@@ -246,6 +248,8 @@ class MarginLeverageService:
     def __init__(self) -> None:
         self._sync_lock = asyncio.Lock()
         self._refresh_task: asyncio.Task | None = None
+        self._status_persist_tasks: set[asyncio.Task] = set()
+        self._job_id: str | None = None
         self._stock_locks: dict[str, asyncio.Lock] = {}
         self._sector_directory: dict[str, str] = {}
         self._status: dict[str, Any] = {
@@ -285,9 +289,87 @@ class MarginLeverageService:
         if stage is not None:
             self._status["stage"] = stage
         self._status.update(values)
+        self._queue_status_persist()
+
+    def _queue_status_persist(self) -> None:
+        """Persist status opportunistically without blocking the data sync."""
+        if not self._job_id:
+            return
+        try:
+            task = asyncio.create_task(self._persist_status())
+        except RuntimeError:
+            return
+        self._status_persist_tasks.add(task)
+        task.add_done_callback(self._status_persist_tasks.discard)
+
+    @staticmethod
+    def _status_datetime(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(str(value)) if value else None
+        except (TypeError, ValueError):
+            return None
+
+    async def _persist_status(self) -> None:
+        if not self._job_id:
+            return
+        try:
+            async with async_session() as session:
+                row = await session.get(MarginRefreshJob, self._job_id)
+                if row is None:
+                    row = MarginRefreshJob(
+                        job_id=self._job_id,
+                        full=bool(self._status.get("full", True)),
+                        prewarm=bool(self._status.get("prewarm", True)),
+                        created_at=datetime.utcnow(),
+                    )
+                    session.add(row)
+                row.status = str(self._status.get("status") or "idle")
+                row.progress = int(self._status.get("progress") or 0)
+                row.stage = str(self._status.get("stage") or "")[:240]
+                row.data_date = _date(self._status.get("data_date"))
+                row.started_at = self._status_datetime(self._status.get("started_at"))
+                row.finished_at = self._status_datetime(self._status.get("finished_at"))
+                row.error = str(self._status.get("error") or "")[:500] or None
+                row.result = self._status.get("result")
+                row.updated_at = datetime.utcnow()
+                await session.commit()
+        except Exception:
+            return
 
     def refresh_status(self) -> dict[str, Any]:
-        return {**self._status, "running": bool(self._refresh_task and not self._refresh_task.done())}
+        return {**self._status, "job_id": self._job_id, "running": bool(self._refresh_task and not self._refresh_task.done())}
+
+    async def persistent_refresh_status(self) -> dict[str, Any]:
+        """Return DB status when a browser request lands on another worker."""
+        local = self.refresh_status()
+        try:
+            async with async_session() as session:
+                row = (await session.execute(
+                    select(MarginRefreshJob).order_by(desc(MarginRefreshJob.created_at)).limit(1)
+                )).scalar_one_or_none()
+            if row is None:
+                return local
+            remote = {
+                "job_id": row.job_id, "status": row.status, "progress": row.progress,
+                "stage": row.stage, "full": row.full, "prewarm": row.prewarm,
+                "data_date": row.data_date.isoformat() if row.data_date else None,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+                "error": row.error, "result": row.result,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+                "running": bool(self._job_id == row.job_id and self._refresh_task and not self._refresh_task.done()),
+            }
+            if remote["status"] in {"queued", "running"} and not remote["running"]:
+                updated = self._status_datetime(row.updated_at)
+                if updated and (datetime.utcnow() - updated).total_seconds() > 180:
+                    remote["status"] = "stale"
+                    remote["stage"] = "刷新进程已退出，页面继续使用最近完整缓存"
+                    remote["error"] = remote["error"] or "后台任务未在当前服务进程中继续运行"
+            return remote
+        except Exception:
+            return local
 
     @staticmethod
     def _normalise_stock_row(
@@ -1313,7 +1395,8 @@ class MarginLeverageService:
         except Exception as exc:
             self._set_status(
                 status="failed", stage="刷新失败，继续使用最近缓存",
-                finished_at=shanghai_now().isoformat(), error=type(exc).__name__,
+                finished_at=shanghai_now().isoformat(),
+                error=f"{type(exc).__name__}: {str(exc)[:300]}",
             )
         finally:
             self._refresh_task = None
@@ -1321,10 +1404,12 @@ class MarginLeverageService:
     def start_refresh(self, *, full: bool = True, prewarm: bool = True) -> dict[str, Any]:
         if self._refresh_task and not self._refresh_task.done():
             return {**self.refresh_status(), "already_running": True}
+        self._job_id = uuid4().hex
         self._refresh_task = asyncio.create_task(self._run_background_sync(full, prewarm))
         self._set_status(
             status="queued", progress=1, stage="刷新任务已提交",
             started_at=shanghai_now().isoformat(), finished_at=None, error=None,
+            full=full, prewarm=prewarm, result=None,
         )
         return {**self.refresh_status(), "already_running": False}
 
@@ -1434,7 +1519,7 @@ class MarginLeverageService:
                 "cache_state": "stale" if stale else "fresh" if latest else "empty",
                 "disclosure_note": MARGIN_DISCLOSURE_NOTE,
             },
-            "refresh": self.refresh_status(),
+            "refresh": await self.persistent_refresh_status(),
         }
 
     async def sectors(

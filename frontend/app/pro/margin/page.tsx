@@ -351,7 +351,7 @@ export default function MarginLeveragePage() {
   const startRefresh = async () => {
     setError('');
     try {
-      const response = await apiFetch<{ data: AnyMap }>('/margin/refresh?full=true&prewarm=true', {
+      const response = await apiFetch<{ data: AnyMap }>('/margin/refresh?full=false&prewarm=false', {
         method: 'POST', timeoutMs: 15000,
       });
       setRefreshStatus(response.data);
@@ -440,14 +440,14 @@ export default function MarginLeveragePage() {
         </div>
       )}
 
-      {refreshStatus && ['queued', 'running', 'failed'].includes(refreshStatus.status) && (
+      {refreshStatus && ['queued', 'running', 'failed', 'stale'].includes(refreshStatus.status) && (
         <section className="mb-4 border-y border-border py-3">
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className={refreshStatus.status === 'failed' ? 'text-up' : 'text-text'}>{refreshStatus.stage || '后台同步'}</span>
             <span className="font-mono text-accent">{refreshStatus.progress || 0}%</span>
           </div>
           <div className="mt-2"><ProgressBar value={refreshStatus.progress || 0} tone={refreshStatus.status === 'failed' ? 'bg-up' : 'bg-accent'} /></div>
-          {refreshStatus.status === 'failed' && <div className="mt-2 text-[11px] text-text-secondary">本次更新失败，页面继续使用最近一次完整缓存。</div>}
+          {(refreshStatus.status === 'failed' || refreshStatus.status === 'stale') && <div className="mt-2 text-[11px] text-text-secondary">本次更新未完成，页面继续使用最近一次完整缓存。{refreshStatus.error ? `原因：${refreshStatus.error}` : ''}</div>}
         </section>
       )}
 

@@ -2920,3 +2920,192 @@ class StrongStockRuleConfig(Base):
     enabled = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# V2.1 is an additive Shadow bridge.  These tables keep the point-in-time
+# inputs and derived decisions separate from the V2.0 three-book tables.
+class MarketRegimeState(Base):
+    __tablename__ = "market_regime_state"
+    __table_args__ = (UniqueConstraint("trade_date", "engine_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    regime = Column(String(32), nullable=False, default="TRANSITION")
+    confidence = Column(Float)
+    evidence_json = Column(JSON, nullable=False, default=list)
+    counter_evidence_json = Column(JSON, nullable=False, default=list)
+    strategy_bias_json = Column(JSON, nullable=False, default=dict)
+    data_quality_json = Column(JSON, nullable=False, default=dict)
+    engine_version = Column(String(64), nullable=False, default="MARKET_SECTOR_BRIDGE_V1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SectorDailySnapshot(Base):
+    __tablename__ = "sector_daily_snapshot"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "sector_id", "sector_type"),
+        Index("idx_v21_sector_snapshot_date", "trade_date", "sector_type"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    sector_id = Column(String(40), nullable=False)
+    sector_name = Column(String(160), nullable=False)
+    sector_type = Column(String(30), nullable=False, default="industry")
+    rank = Column(Integer)
+    pct_change = Column(Float)
+    relative_return_vs_market = Column(Float)
+    turnover = Column(BigInteger)
+    turnover_share = Column(Float)
+    main_force_net_inflow = Column(BigInteger)
+    main_force_inflow_ratio = Column(Float)
+    fund_continuity = Column(Float)
+    breadth = Column(Float)
+    limit_up_count = Column(Integer)
+    limit_up_linkage = Column(Float)
+    core_strength = Column(Float)
+    raw_source_json = Column(JSON, nullable=False, default=dict)
+    data_quality_json = Column(JSON, nullable=False, default=dict)
+    engine_version = Column(String(64), nullable=False, default="MARKET_SECTOR_BRIDGE_V1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SectorLifecycleState(Base):
+    __tablename__ = "sector_lifecycle_state"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "sector_id", "sector_type"),
+        Index("idx_v21_lifecycle_date_state", "trade_date", "state"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    sector_id = Column(String(40), nullable=False)
+    sector_type = Column(String(30), nullable=False, default="industry")
+    state = Column(String(32), nullable=False, default="INVALID")
+    previous_state = Column(String(32))
+    confidence = Column(Float)
+    evidence_json = Column(JSON, nullable=False, default=list)
+    counter_evidence_json = Column(JSON, nullable=False, default=list)
+    transition_reason_json = Column(JSON, nullable=False, default=dict)
+    data_quality_json = Column(JSON, nullable=False, default=dict)
+    engine_version = Column(String(64), nullable=False, default="MARKET_SECTOR_BRIDGE_V1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class SectorMigrationInference(Base):
+    __tablename__ = "sector_migration_inference"
+    __table_args__ = (Index("idx_v21_migration_date", "trade_date", "confidence"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    source_sector_id = Column(String(40), nullable=False)
+    target_sector_id = Column(String(40), nullable=False)
+    confidence = Column(Float)
+    evidence_json = Column(JSON, nullable=False, default=list)
+    counter_evidence_json = Column(JSON, nullable=False, default=list)
+    inference_type = Column(String(40), nullable=False, default="NET_FLOW_INFERENCE")
+    engine_version = Column(String(64), nullable=False, default="MARKET_SECTOR_BRIDGE_V1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ABOppSnapshot(Base):
+    __tablename__ = "ab_opportunity_snapshot"
+    __table_args__ = (
+        UniqueConstraint("trade_date", "symbol", "opportunity_pool", "engine_version"),
+        Index("idx_v21_opportunity_date_pool", "trade_date", "opportunity_pool", "priority"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    symbol = Column(String(20), nullable=False)
+    stock_name = Column(String(120))
+    sector_id = Column(String(40), nullable=False, default="UNKNOWN")
+    sector_name = Column(String(160))
+    market_regime = Column(String(32), nullable=False, default="TRANSITION")
+    sector_lifecycle = Column(String(32), nullable=False, default="INVALID")
+    zone = Column(String(40), nullable=False, default="UNKNOWN")
+    zone_stage = Column(String(40), nullable=False, default="UNKNOWN")
+    opportunity_pool = Column(String(30), nullable=False, default="EXCLUDE")
+    priority = Column(String(20), nullable=False, default="WATCH")
+    main_force_state = Column(String(80))
+    volume_price_state = Column(String(80))
+    ma_state = Column(String(80))
+    big_pattern_state = Column(String(80))
+    rising_star_state = Column(String(80))
+    three_books_consensus = Column(String(80))
+    risk_state = Column(String(80))
+    evidence_json = Column(JSON, nullable=False, default=list)
+    missing_confirmation_json = Column(JSON, nullable=False, default=list)
+    counter_evidence_json = Column(JSON, nullable=False, default=list)
+    invalidation_json = Column(JSON, nullable=False, default=list)
+    snapshot_json = Column(JSON, nullable=False, default=dict)
+    engine_version = Column(String(64), nullable=False, default="STRONG_STOCK_DECISION_V2_1")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PredictionOutcome(Base):
+    __tablename__ = "prediction_outcome"
+    __table_args__ = (UniqueConstraint("prediction_id", "horizon"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    prediction_id = Column(Integer, nullable=False)
+    horizon = Column(String(12), nullable=False)
+    return_value = Column(Float)
+    excess_vs_index = Column(Float)
+    excess_vs_sector = Column(Float)
+    mfe = Column(Float)
+    mae = Column(Float)
+    next_state = Column(String(32))
+    invalidated = Column(Boolean)
+    confirmation_time = Column(DateTime)
+    invalidation_time = Column(DateTime)
+    result_state = Column(String(24), nullable=False, default="DATA_INCOMPLETE")
+    error_tags_json = Column(JSON, nullable=False, default=list)
+    evidence_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class EvolutionProposal(Base):
+    __tablename__ = "evolution_proposal"
+    __table_args__ = (Index("idx_v21_evolution_status", "status", "created_at"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    proposal_code = Column(String(80), nullable=False, unique=True)
+    target_engine = Column(String(80), nullable=False)
+    current_rule_json = Column(JSON, nullable=False, default=dict)
+    proposed_rule_json = Column(JSON, nullable=False, default=dict)
+    sample_size = Column(Integer, nullable=False, default=0)
+    train_period = Column(String(80))
+    validation_period = Column(String(80))
+    old_metrics_json = Column(JSON, nullable=False, default=dict)
+    new_shadow_metrics_json = Column(JSON, nullable=False, default=dict)
+    risk_notes_json = Column(JSON, nullable=False, default=list)
+    status = Column(String(32), nullable=False, default="WAITING_APPROVAL")
+    approved_at = Column(DateTime)
+    version = Column(String(40), nullable=False, default="EVOLUTION_ENGINE_V0_SHADOW")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MarginRefreshJob(Base):
+    """Cross-worker status record for the long-running margin refresh."""
+
+    __tablename__ = "margin_refresh_jobs"
+    __table_args__ = (Index("idx_margin_refresh_jobs_created", "created_at"),)
+
+    job_id = Column(String(64), primary_key=True)
+    status = Column(String(24), nullable=False, default="queued")
+    progress = Column(Integer, nullable=False, default=0)
+    stage = Column(String(240))
+    full = Column(Boolean, nullable=False, default=True)
+    prewarm = Column(Boolean, nullable=False, default=True)
+    data_date = Column(Date)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    error = Column(Text)
+    result = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# Descriptive alias for integrations that use the full document name.
+ABOpportunitySnapshot = ABOppSnapshot

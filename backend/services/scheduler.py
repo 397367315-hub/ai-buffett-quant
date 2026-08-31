@@ -238,6 +238,17 @@ async def refresh_margin_leverage_cache():
         return None
 
 
+async def refresh_strong_stock_v21_bridge():
+    """Persist the V2.1 Shadow bridge after the daily market cache lands."""
+    from services.strong_stock_v21 import strong_stock_v21_service
+
+    try:
+        return await strong_stock_v21_service.daily_review()
+    except Exception as exc:
+        print(f"[Scheduler] 强势股V2.1桥接层更新失败，保留最近快照: {type(exc).__name__}")
+        return None
+
+
 async def run_overnight_preliminary_scan():
     from services.overnight_strategy import overnight_strategy_service
 
@@ -650,6 +661,12 @@ async def start_scheduler(data_collector=None, db_session=None):
         CronTrigger(hour=20, minute=30, day_of_week="mon-fri"),
         id="margin_leverage_final_disclosure", name="两融杠杆晚间补充同步", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        refresh_strong_stock_v21_bridge,
+        CronTrigger(hour=15, minute=45, day_of_week="mon-fri"),
+        id="strong_stock_v21_bridge_close", name="强势股V2.1盘后桥接与机会快照", replace_existing=True,
+        coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         refresh_personal_report_calendar,

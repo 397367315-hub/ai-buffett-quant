@@ -179,7 +179,7 @@ export default function Level2Radar({ symbol, tradeDate }: Level2RadarProps) {
           ) : !payload ? null : (
             <>
               {!payload.configured && !payload.available && (
-                <div className="border border-border bg-card px-4 py-4 text-xs leading-5 text-text-secondary"><div className="font-medium text-text">Level-2数据源未配置</div><div className="mt-1">当前普通行情、K线和个股决策仍正常；配置服务端猫爪API密钥后，点击刷新即可同步，不会在前端暴露密钥。</div></div>
+                <div className="border border-border bg-card px-4 py-4 text-xs leading-5 text-text-secondary"><div className="font-medium text-text">服务端未配置Level-2数据源</div><div className="mt-1">当前普通行情、K线和个股决策仍正常。配置供应商API密钥后，可同步历史逐笔成交、逐笔委托和十档盘口；密钥只保存在服务端，不会下发浏览器。</div><div className="mt-1 text-warn">当前适配器未声明实时流式Level-2，不能把普通行情当作Level-2。</div></div>
               )}
               {payload.pending && <div className="mb-3 flex items-center gap-2 border-l-2 border-accent bg-accent/5 px-3 py-2 text-[10px] leading-4 text-accent"><RefreshCw size={12} className="animate-spin" />历史Level-2样本正在后台同步，当前先展示已有缓存。</div>}
               {payload.available && (

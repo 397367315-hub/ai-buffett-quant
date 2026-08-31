@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Level-2微观结构"], dependencies=[Depends(require_admin)])
 
 
+@router.get("/api/v1/level2/capabilities")
+async def level2_capabilities():
+    """Expose vendor capability/configuration without triggering a sync."""
+    return {"code": 0, "data": level2_service.capabilities()}
+
+
 def _trade_date(value: str | None) -> date | None:
     if not value:
         return None

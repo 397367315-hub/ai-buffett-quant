@@ -61,13 +61,17 @@ class Level2Service:
         return latest_daily or latest_l2 or datetime.utcnow().date()
 
     def capabilities(self) -> dict[str, Any]:
+        configured = self.provider.configured
         return {
             "provider": self.provider.name,
-            "configured": self.provider.configured,
+            "configured": configured,
             "capabilities": self.provider.capabilities.as_dict(),
             "realtime_mode": "not_advertised_until_provider_confirms",
             "scope": "single_symbol_single_trade_date",
             "api_key_exposed_to_frontend": False,
+            "status": "READY_FOR_HISTORY_SYNC" if configured else "PROVIDER_NOT_CONFIGURED",
+            "message": "服务端已配置Level-2历史数据源，可按股票和交易日同步。" if configured else "服务端尚未配置Level-2供应商API密钥；普通行情、K线和个股决策不受影响。",
+            "realtime_message": "当前供应商适配器只声明历史逐笔/委托/十档能力，未声明实时流式能力。",
         }
 
     def _task_running(self, key: tuple[str, date]) -> bool:
