@@ -294,20 +294,33 @@ class ZoneOpportunityFusionEngine:
             sector_id = str(row.get("sector_id") or "UNKNOWN")
             lifecycle = str(row.get("sector_lifecycle") or lifecycle_by_sector.get(sector_id, {}).get("state") or "INVALID")
             risk = str(row.get("risk_state") or "")
+            main_force = str(row.get("main_force_state") or "")
+            consensus = str(row.get("three_books_consensus") or "")
             is_c = "C_" in stage or "风险C区" in zone or any(term in risk for term in ("C_FORMED", "C_DEEPENING", "C_EXIT"))
-            is_a_discover = lifecycle in {"PREHEAT", "STARTING"} and stage in {"A_PREPARE", "A_FORMING"}
+            is_invalid = stage in {"A_INVALID", "B_INVALID", "C_EXIT"}
+            severe_conflict = any(term in consensus for term in ("严重冲突", "强冲突"))
+            main_force_weak = any(term in main_force for term in ("流出", "转弱", "减弱", "偏空"))
+            is_a_discover = (lifecycle == "PREHEAT" and stage == "A_PREPARE") or (lifecycle == "STARTING" and stage == "A_FORMING")
             is_a_confirm = lifecycle in {"STARTING", "ACCELERATING"} and stage == "A_ACTIVE"
-            is_b = lifecycle in {"RETURNING", "SECOND_STRENGTH"} and stage in {"B_FORMING", "B_ACTIVE", "B_SMALL_A_FORMING", "B_REATTACK"}
-            if is_c:
+            is_b = (lifecycle == "RETURNING" and stage == "B_SMALL_A_FORMING") or (lifecycle == "SECOND_STRENGTH" and stage == "B_REATTACK")
+            lifecycle_risk = lifecycle == "FADING" or (lifecycle == "CLIMAX" and stage == "A_LATE")
+            if is_c or is_invalid or severe_conflict or (lifecycle == "FADING" and stage.startswith("A_")):
                 pool, priority = "RISK_EXCLUDE", "EXCLUDE"
             elif is_a_confirm:
-                pool, priority = "A_CONFIRM", "P1"
+                pool = "A_CONFIRM"
+                priority = "P1" if market_regime == "TREND_ATTACK" and not main_force_weak else "P2"
             elif is_a_discover:
-                pool, priority = "A_DISCOVERY", "P1" if market_regime == "ROTATION_RANGE" else "WATCH"
+                pool = "A_DISCOVERY"
+                priority = "P1" if market_regime in {"TREND_ATTACK", "ROTATION_RANGE"} and not main_force_weak else "P2"
             elif is_b:
-                pool, priority = "B_REATTACK", "P1"
+                pool = "B_REATTACK"
+                priority = "P1" if market_regime != "DEFENSIVE_FADE" and not main_force_weak else "P2"
             else:
                 pool, priority = "WATCH", "WATCH"
+            if lifecycle_risk and priority in {"P1", "P2"}:
+                priority = "WATCH"
+            if market_regime == "DEFENSIVE_FADE" and priority == "P1":
+                priority = "P2"
             evidence = list(row.get("evidence") or [])
             if lifecycle != "INVALID": evidence.append(f"板块生命周期：{lifecycle}")
             if zone != "UNKNOWN": evidence.append(f"V2.0交易区：{zone}/{stage}")
@@ -316,8 +329,11 @@ class ZoneOpportunityFusionEngine:
                 missing.extend(["后续价格与成交确认", "板块宽度和核心股跟随"])
             counter = list(row.get("counter_evidence") or [])
             if is_c: counter.append("风险C区优先级高于攻击信号")
-            result.append({**row, "sector_lifecycle": lifecycle, "opportunity_pool": pool, "priority": priority, "opportunity_rank_score": _clamp(50 + (20 if priority == "P1" else 0) - (80 if is_c else 0)), "evidence": evidence, "missing_confirmation": list(dict.fromkeys(missing)), "counter_evidence": counter, "invalidation": list(dict.fromkeys(list(row.get("invalidation") or []) + ["交易区进入C区", "板块生命周期转为FADING", "主力/量价证据连续转弱"]))})
-        priority_order = {"P1": 0, "WATCH": 1, "EXCLUDE": 2}
+            if main_force_weak: counter.append("主力状态转弱，候选优先级已下调")
+            if severe_conflict: counter.append("三书出现严重冲突，强制进入风险淘汰")
+            next_confirmation = list(dict.fromkeys(list(row.get("next_confirmation") or []) + missing))
+            result.append({**row, "sector_lifecycle": lifecycle, "opportunity_pool": pool, "priority": priority, "opportunity_rank_score": _clamp(50 + (20 if priority == "P1" else 8 if priority == "P2" else 0) - (80 if pool == "RISK_EXCLUDE" else 0)), "evidence": evidence, "missing_confirmation": list(dict.fromkeys(missing)), "counter_evidence": counter, "next_confirmation": next_confirmation, "next_step": "等待确认条件出现" if next_confirmation else "继续观察结构变化", "invalidation": list(dict.fromkeys(list(row.get("invalidation") or []) + ["交易区进入C区", "板块生命周期转为FADING", "主力/量价证据连续转弱"]))})
+        priority_order = {"P1": 0, "P2": 1, "WATCH": 2, "EXCLUDE": 3}
         return sorted(result, key=lambda row: (priority_order.get(row["priority"], 3), -float(row.get("opportunity_rank_score") or 0)))
 
 
