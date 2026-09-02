@@ -24,6 +24,7 @@ from market_data.level2.providers.base import Level2DataType
 from market_data.level2.providers.numcat import NumCatProvider
 from market_data.level2.repository import Level2Repository
 from market_data.level2.fetcher import FetchResult, Level2Fetcher
+from market_data.numcat.gateway import numcat_gateway
 
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,8 @@ class Level2Service:
             "status": "READY_FOR_HISTORY_SYNC" if configured else "PROVIDER_NOT_CONFIGURED",
             "message": "服务端已配置Level-2历史数据源，可按股票和交易日同步。" if configured else "服务端尚未配置Level-2供应商API密钥；普通行情、K线和个股决策不受影响。",
             "realtime_message": "当前供应商适配器只声明历史逐笔/委托/十档能力，未声明实时流式能力。",
+            "gateway": numcat_gateway.status(),
+            "storage_policy": "V2.0 API优先：原始行情和Level-2不作为全市场历史镜像；现有按股票同步任务仅用于兼容已启用的历史研究流程。",
         }
 
     def _task_running(self, key: tuple[str, date]) -> bool:

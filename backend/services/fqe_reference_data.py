@@ -22,6 +22,7 @@ from models import (
 from quant.storage import quant_store
 from services.data_collector import collector, normalize_stock_code, shanghai_now
 from services.ftshare_mcp import ftshare_mcp_client
+from market_data.numcat.market_provider import numcat_market_provider
 
 
 def _chunks(items: list[Any], size: int) -> Iterable[list[Any]]:
@@ -468,7 +469,7 @@ class FQEReferenceDataService:
                 quality = "missing"
             source_parts = []
             if item:
-                source_parts.append("eastmoney_directory")
+                source_parts.append(str(item.get("source") or "eastmoney_directory"))
             if catalog_item:
                 source_parts.append("ftshare")
             if previous:
@@ -520,6 +521,24 @@ class FQEReferenceDataService:
         return rows
 
     async def _fetch_valuation(self, code: str, start: date, end: date) -> tuple[list[dict[str, Any]], str]:
+        if numcat_market_provider.configured:
+            try:
+                numcat_rows = await numcat_market_provider.valuation(
+                    [code], startdate=start, enddate=end,
+                )
+                mapped = [
+                    {
+                        "TRADE_DATE": row.get("trade_date"),
+                        "PE_TTM": row.get("pe_ttm"),
+                        "SECURITY_NAME_ABBR": row.get("name"),
+                    }
+                    for row in numcat_rows
+                    if row.get("trade_date") and row.get("pe_ttm") is not None
+                ]
+                if mapped:
+                    return mapped, "numcat_valuation"
+            except Exception as exc:
+                print(f"NumCat valuation failed for {code}: {type(exc).__name__}")
         last_error: Exception | None = None
         for attempt in range(3):
             try:
@@ -664,6 +683,23 @@ class FQEReferenceDataService:
             return (await session.execute(select(func.max(StockDailyBar.trade_date)))).scalar_one_or_none()
 
     async def _fetch_market_valuation_date(self, trade_date: date) -> list[dict[str, Any]]:
+        if numcat_market_provider.configured:
+            try:
+                numcat_rows = await numcat_market_provider.valuation(tradedate=trade_date)
+                mapped = [
+                    {
+                        "SECURITY_CODE": row.get("code"),
+                        "SECURITY_NAME_ABBR": row.get("name"),
+                        "TRADE_DATE": row.get("trade_date"),
+                        "PE_TTM": row.get("pe_ttm"),
+                    }
+                    for row in numcat_rows
+                    if row.get("code") and row.get("trade_date")
+                ]
+                if mapped:
+                    return mapped
+            except Exception as exc:
+                print(f"NumCat market valuation failed: {type(exc).__name__}")
         base = {
             "sortColumns": "SECURITY_CODE",
             "sortTypes": "1",

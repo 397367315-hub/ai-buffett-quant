@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from config import settings
+from market_data.numcat.gateway import NumCatGatewayError, numcat_gateway
 
 from ..normalizer import normalize_symbol, row_from_fields
 from .base import Level2DataType, Level2Page, Level2Provider, ProviderCapabilities
@@ -46,14 +47,18 @@ class NumCatProvider(Level2Provider):
         client_factory: Callable[..., Any] | None = None,
         sleep: Callable[[float], Any] = asyncio.sleep,
     ) -> None:
-        self._client_factory = client_factory or httpx.AsyncClient
+        # A custom client is retained only for deterministic adapter tests.
+        # Production requests always use the shared API-first gateway.
+        self._client_factory = client_factory
         self._sleep = sleep
         self._rate_lock = asyncio.Lock()
         self._last_request_at = 0.0
 
     @property
     def configured(self) -> bool:
-        return bool(settings.level2_enabled and str(settings.numcat_api_key or "").strip())
+        # Keep the credential source identical to the API-first gateway. The
+        # legacy variable remains supported for existing Render deployments.
+        return bool(settings.level2_enabled and str(settings.meoz_api_key or settings.numcat_api_key or "").strip())
 
     @property
     def capabilities(self) -> ProviderCapabilities:
@@ -122,6 +127,23 @@ class NumCatProvider(Level2Provider):
     async def _request(self, body: dict[str, Any]) -> dict[str, Any]:
         if not self.configured:
             raise NumCatProviderError("Level-2数据源未配置API密钥")
+        if self._client_factory is None:
+            try:
+                return await numcat_gateway.query(
+                    str(body["apiname"]),
+                    fields=body.get("fields"),
+                    params=dict(body.get("params") or {}),
+                    market=None,
+                    cache_ttl=0,
+                    bypass_cache=True,
+                    affinity_key=(
+                        f"level2:{body['apiname']}:"
+                        f"{(body.get('params') or {}).get('symbol', '')}:"
+                        f"{(body.get('params') or {}).get('tradedate', '')}"
+                    ),
+                )
+            except NumCatGatewayError as exc:
+                raise NumCatProviderError(str(exc)) from exc
         url = self._url()
         attempts = self._retry_count()
         last_error: Exception | None = None
@@ -190,7 +212,7 @@ class NumCatProvider(Level2Provider):
             params["end_time"] = str(end_time)
         payload = {
             "apiname": self._APINAMES[data_type],
-            "apikey": str(settings.numcat_api_key).strip(),
+            "apikey": str(settings.meoz_api_key or settings.numcat_api_key).strip(),
             "fields": self._FIELDS[data_type],
             "params": params,
         }

@@ -30,8 +30,25 @@ class Settings(BaseSettings):
     # Optional Level-2 provider. The key stays server-side; the frontend only
     # receives capability and data-quality metadata.
     level2_enabled: bool = True
+    # NumCat/MeoZ V2.0 API-first gateway. MEOZ_API_KEY is the preferred
+    # production variable; NUMCAT_API_KEY remains a backwards-compatible
+    # alias for the existing Level-2 integration.
+    meoz_enabled: bool = True
+    meoz_api_key: str = ""
+    meoz_api_route: str = ""
     numcat_api_key: str = ""
     numcat_api_base: str = "https://numcat.net/api"
+    numcat_route: str = "dedicated"
+    numcat_sz_base_url: str = "http://sz.numcat.net:8866/api"
+    numcat_sh_base_url: str = "http://sh.numcat.net:8866/api"
+    numcat_public_base_url: str = "https://numcat.net/api"
+    numcat_allow_public_fallback: bool = False
+    numcat_global_qps: int = 50
+    numcat_global_rpm: int = 500
+    numcat_heavy_qps: int = 5
+    numcat_cache_max_entries: int = 512
+    numcat_schema_url: str = ""
+    numcat_schema_cache_file: str = ""
     numcat_timeout: float = 20.0
     numcat_retry_count: int = 3
     numcat_min_request_interval: float = 0.25

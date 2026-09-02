@@ -83,6 +83,38 @@ class MacroPolicyNewsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["status"]["600519"]["available"])
         self.assertEqual(result["covered"], 0)
 
+    async def test_numcat_announcement_is_used_before_ftshare_when_configured(self):
+        collector = MacroPolicyNewsCollector()
+        with patch(
+            "services.macro_policy_news.collector.fetch_json",
+            new=AsyncMock(side_effect=RuntimeError("proxy unavailable")),
+        ), patch(
+            "services.macro_policy_news.settings.level2_enabled",
+            True,
+        ), patch(
+            "services.macro_policy_news.settings.meoz_api_key",
+            "test-key",
+        ), patch(
+            "services.macro_policy_news.numcat_market_provider.announcements",
+            new=AsyncMock(return_value=[{
+                "symbol": "600519",
+                "event_date": "2026-08-29",
+                "title": "贵州茅台年度报告",
+                "summary": "年度报告摘要",
+                "announcement_type": "financial_report",
+                "content_url": "https://example.test/notice",
+            }]),
+        ), patch(
+            "services.macro_policy_news.ftshare_mcp_client.get_stock_announcements",
+            new=AsyncMock(),
+        ) as ftshare:
+            announcements = await collector._get_stock_announcements("600519")
+
+        self.assertEqual(announcements[0]["source"], "猫爪公司公告")
+        self.assertEqual(announcements[0]["published_at"], "2026-08-29")
+        self.assertEqual(collector._announcement_status_cache["600519"][1]["source"], "numcat")
+        ftshare.assert_not_awaited()
+
     def test_recent_check_uses_shanghai_calendar_date(self):
         collector = MacroPolicyNewsCollector()
         with patch("services.macro_policy_news.shanghai_now", return_value=datetime(2026, 7, 31)):

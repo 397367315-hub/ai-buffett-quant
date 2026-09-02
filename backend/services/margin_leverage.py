@@ -67,6 +67,11 @@ def _finite(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def _optional_int(value: Any) -> int | None:
+    number = _finite(value)
+    return int(number) if number is not None else None
+
+
 def _round(value: Any, digits: int = 2) -> float | None:
     number = _finite(value)
     return round(number, digits) if number is not None else None
@@ -382,8 +387,8 @@ class MarginLeverageService:
         trade_date = _date(raw.get("DATE"))
         if code is None or trade_date is None:
             return None
-        financing_balance = as_int(raw.get("RZYE"))
-        float_market_cap = as_int(raw.get("SZ")) or None
+        financing_balance = _optional_int(raw.get("RZYE"))
+        float_market_cap = _optional_int(raw.get("SZ"))
         calculated_ratio = (financing_balance / float_market_cap * 100.0) if float_market_cap else None
         source_ratio = _finite(raw.get("RZYEZB"))
         financing_ratio = source_ratio if source_ratio is not None else calculated_ratio
@@ -391,7 +396,7 @@ class MarginLeverageService:
         bar_turnover = bar.get("turnover") if isinstance(bar, dict) else getattr(bar, "turnover", None)
         turnover_amount = int(bar_amount) if bar_amount is not None else None
         turnover_rate = _finite(bar_turnover)
-        financing_buy = as_int(raw.get("RZMRE"))
+        financing_buy = _optional_int(raw.get("RZMRE"))
         financing_buy_ratio = (financing_buy / turnover_amount * 100.0) if turnover_amount else None
         secucode = str(raw.get("SECUCODE") or "")
         exchange = secucode.rsplit(".", 1)[-1] if "." in secucode else ("SH" if code.startswith("6") else "SZ")
@@ -404,17 +409,17 @@ class MarginLeverageService:
             "sector_name": sector_name or None,
             "financing_balance": financing_balance,
             "financing_buy": financing_buy,
-            "financing_repay": as_int(raw.get("RZCHE")),
-            "financing_net_buy": as_int(raw.get("RZJME")),
-            "financing_net_buy_3d": as_int(raw.get("RZJME3D")),
-            "financing_net_buy_5d": as_int(raw.get("RZJME5D")),
-            "financing_net_buy_10d": as_int(raw.get("RZJME10D")),
-            "securities_balance": as_int(raw.get("RQYE")),
+            "financing_repay": _optional_int(raw.get("RZCHE")),
+            "financing_net_buy": _optional_int(raw.get("RZJME")),
+            "financing_net_buy_3d": _optional_int(raw.get("RZJME3D")),
+            "financing_net_buy_5d": _optional_int(raw.get("RZJME5D")),
+            "financing_net_buy_10d": _optional_int(raw.get("RZJME10D")),
+            "securities_balance": _optional_int(raw.get("RQYE")),
             # The source exposes share volume for these two fields. Their unit
             # remains shares in storage and is labelled as such in the API.
-            "securities_sell": as_int(raw.get("RQMCL")),
-            "securities_repay": as_int(raw.get("RQCHL")),
-            "margin_balance": as_int(raw.get("RZRQYE")),
+            "securities_sell": _optional_int(raw.get("RQMCL")),
+            "securities_repay": _optional_int(raw.get("RQCHL")),
+            "margin_balance": _optional_int(raw.get("RZRQYE")),
             "close_price": _finite(raw.get("SPJ")),
             "pct_change": _finite(raw.get("ZDF")),
             "price_change_3d": _finite(raw.get("RCHANGE3DCP")),
@@ -425,7 +430,7 @@ class MarginLeverageService:
             "float_market_cap": float_market_cap,
             "financing_ratio": financing_ratio,
             "financing_buy_ratio": financing_buy_ratio,
-            "source": "eastmoney_RPTA_WEB_RZRQ_GGMX",
+            "source": str(raw.get("_SOURCE") or "eastmoney_RPTA_WEB_RZRQ_GGMX"),
             "updated_at": datetime.utcnow(),
         }
 
@@ -646,7 +651,10 @@ class MarginLeverageService:
         for item in source_rows:
             trade_date = _date(item.get("trade_date"))
             if trade_date is not None:
-                by_date[trade_date] = {**item, "source": "eastmoney_RPTA_RZRQ_LSHJ"}
+                by_date[trade_date] = {
+                    **item,
+                    "source": str(item.get("source") or "eastmoney_RPTA_RZRQ_LSHJ"),
+                }
         turnover_map = await self._market_turnover_map(list(by_date))
         async with async_session() as session:
             existing_rows = list((await session.execute(
@@ -1353,7 +1361,22 @@ class MarginLeverageService:
                     recent_dates_fetched += 1
 
             self._set_status(progress=64, stage="同步行业、概念与地域板块")
-            sector_written = await self._sync_sectors()
+            sector_written = 0
+            sector_status = "updated"
+            sector_error = None
+            try:
+                sector_written = await self._sync_sectors()
+            except Exception as exc:
+                # Board-level margin aggregation currently has no equivalent
+                # NumCat endpoint. Keep the last complete persisted snapshot
+                # when EastMoney is unreachable without discarding the valid
+                # market and stock disclosures refreshed above.
+                sector_status = "cached"
+                sector_error = f"{type(exc).__name__}: {str(exc)[:180]}"
+                self._set_status(
+                    progress=68,
+                    stage="板块两融源暂时不可用，保留最近完整缓存",
+                )
 
             self._set_status(progress=75, stage="计算全市场短中期风险指标")
             metric_written = await self._calculate_recent_metrics(target_date)
@@ -1365,6 +1388,15 @@ class MarginLeverageService:
 
             self._set_status(progress=96, stage="计算LMI与数据审计")
             lmi = await self._calculate_lmi(target_date)
+            source_components = sorted({
+                str(item.get("source") or "eastmoney_RPTA_RZRQ_LSHJ")
+                for item in market_history
+            })
+            snapshot_source = str(snapshot.get("source") or "eastmoney_RPTA_WEB_RZRQ_GGMX")
+            if snapshot_source not in source_components:
+                source_components.append(snapshot_source)
+            if sector_status == "updated" and sector_written:
+                source_components.append("eastmoney_margin_sector")
             result = {
                 "status": "success",
                 "data_date": target_date.isoformat(),
@@ -1374,11 +1406,14 @@ class MarginLeverageService:
                 "recent_dates_fetched": recent_dates_fetched,
                 "recent_dates_cached": recent_dates_cached,
                 "sector_rows": sector_written,
+                "sector_status": sector_status,
+                "sector_error": sector_error,
                 "metric_rows": metric_written,
                 "prewarm_rows": prewarm_written,
                 "lmi": lmi,
                 "snapshot_audit": snapshot_audit,
-                "source": "eastmoney_margin_disclosure",
+                "source": "+".join(source_components),
+                "source_components": source_components,
                 "is_realtime": False,
                 "disclosure_note": MARGIN_DISCLOSURE_NOTE,
                 "elapsed_seconds": round((shanghai_now() - started).total_seconds(), 2),
@@ -1578,11 +1613,16 @@ class MarginLeverageService:
             "window_end_date_5d": row.window_end_date_5d.isoformat() if row.window_end_date_5d else None,
             "window_end_date_20d": row.window_end_date_20d.isoformat() if row.window_end_date_20d else None,
         } for index, row in enumerate(rows)]
+        sources = sorted({str(row.source or "") for row in rows if row.source})
+        updated_at = max((row.updated_at for row in rows if row.updated_at), default=None)
         return {
             "available": bool(rows), "rankings": output, "count": len(output),
             "meta": {
                 "data_date": latest.isoformat() if latest else None,
-                "is_realtime": False, "source": "eastmoney_margin_sector_cache",
+                "is_realtime": False, "source": "+".join(sources) or "unavailable",
+                "sources": sources or ["unavailable"],
+                "updated_at": updated_at.isoformat() if updated_at else None,
+                "cache_state": "fresh" if rows else "empty",
                 "disclosure_note": MARGIN_DISCLOSURE_NOTE,
             },
         }

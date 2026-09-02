@@ -20,6 +20,7 @@ import httpx
 from config import settings
 from services.data_collector import collector, shanghai_now
 from services.ftshare_mcp import ftshare_mcp_client
+from market_data.numcat.market_provider import numcat_market_provider
 
 
 GOVERNMENT_POLICY_URL = "https://www.gov.cn/zhengce/"
@@ -122,6 +123,7 @@ class MacroPolicyNewsCollector:
             "summary": "宏观、政策与公告源当前不可用，本轮不计入新闻政策评分。",
             "international_items": [],
             "policy_items": [],
+            "market_news_items": [],
             "source_status": {},
             "macro_adjustment": 0.0,
         }
@@ -307,12 +309,36 @@ class MacroPolicyNewsCollector:
         source_status["IMF WEO DataMapper"] = "available" if imf_items else "unavailable"
         source_status["世界银行指标库"] = "available" if world_bank_items else "unavailable"
 
-        available = bool(policy_items or international_items)
+        market_news_items: list[dict] = []
+        if numcat_market_provider.configured:
+            try:
+                for row in await numcat_market_provider.news(limit=80):
+                    title = str(row.get("title") or "").strip()
+                    if not title:
+                        continue
+                    market_news_items.append({
+                        "source": str(row.get("source_name") or "猫爪新闻聚合"),
+                        "scope": "market_news",
+                        "title": title,
+                        "summary": str(row.get("summary") or "").strip() or None,
+                        "published_at": row.get("published_at") or row.get("display_at"),
+                        "url": row.get("url"),
+                        "impact": "neutral",
+                        "provider": "numcat_news",
+                    })
+                source_status["猫爪新闻聚合"] = "available"
+            except Exception as exc:
+                print(f"NumCat news fallback failed: {type(exc).__name__}")
+                source_status["猫爪新闻聚合"] = "unavailable"
+
+        available = bool(policy_items or international_items or market_news_items)
         summary_parts = []
         if international_items:
             summary_parts.append(f"国际宏观数据源 {len(international_items)} 个")
         if policy_items:
             summary_parts.append(f"国内政策与发展信息 {len(policy_items)} 条")
+        if market_news_items:
+            summary_parts.append(f"市场动态 {len(market_news_items)} 条")
         summary = "已核验 " + "，".join(summary_parts) + "。" if summary_parts else self.empty_context()["summary"]
         return {
             "available": available,
@@ -320,6 +346,7 @@ class MacroPolicyNewsCollector:
             "summary": summary,
             "international_items": international_items,
             "policy_items": policy_items[:18],
+            "market_news_items": market_news_items[:80],
             "source_status": source_status,
             "macro_adjustment": max(-4.0, min(4.0, macro_adjustment)),
         }
@@ -396,6 +423,32 @@ class MacroPolicyNewsCollector:
             announcements = []
             eastmoney_failed = True
             source_status = {"available": False, "source": "eastmoney", "error": type(exc).__name__}
+
+        if eastmoney_failed and numcat_market_provider.configured:
+            try:
+                numcat_rows = await numcat_market_provider.announcements(
+                    [stock_code], limit=6,
+                )
+                for row in numcat_rows:
+                    title = str(row.get("title") or "").strip()
+                    if not title:
+                        continue
+                    announcements.append({
+                        "source": "猫爪公司公告",
+                        "scope": "company_announcement",
+                        "title": title,
+                        "summary": str(row.get("summary") or "").strip() or None,
+                        "published_at": str(row.get("event_date") or "")[:10] or None,
+                        "url": row.get("content_url"),
+                        "category": str(row.get("announcement_type") or ""),
+                        "impact": "neutral",
+                    })
+                if announcements:
+                    announcements.sort(key=lambda item: item.get("published_at") or "", reverse=True)
+                    source_status = {"available": True, "source": "numcat", "error": None}
+                    eastmoney_failed = False
+            except Exception as exc:
+                print(f"NumCat announcement fallback failed for {stock_code}: {type(exc).__name__}")
 
         if eastmoney_failed:
             try:

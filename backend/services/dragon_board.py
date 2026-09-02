@@ -130,7 +130,7 @@ class DragonBoardService:
                 row.institution_sell_amount = int(_number(item.get("institution_sell_amount")))
                 row.institution_net_amount = int(_number(item.get("institution_net_amount")))
                 row.reason = str(item.get("reason") or "")
-                row.source = "eastmoney"
+                row.source = str(item.get("source") or "eastmoney")[:80]
             await session.commit()
         return {"written": len(normalized), "dates": [item.isoformat() for item in dates]}
 

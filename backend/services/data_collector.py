@@ -18,6 +18,7 @@ import httpx
 
 from config import settings
 from services.ftshare_mcp import ftshare_mcp_client
+from market_data.numcat.market_provider import numcat_market_provider
 
 
 EASTMONEY_UT = "b2884a393a59ad6402e4dd90d24e112f"
@@ -385,13 +386,51 @@ class EastMoneyDataCollector:
                 print(f"Error fetching market summary for {name}: {type(exc).__name__}")
         return result
 
+    async def fetch_market_emotion_history(self, days: int = 30) -> list[dict]:
+        """Return documented full-market breadth and limit-board statistics.
+
+        NumCat is the only configured source that exposes the complete emotion
+        contract in one response. Callers keep their existing daily-bar
+        derivation as a fallback when this source is unavailable.
+        """
+        if not numcat_market_provider.configured:
+            return []
+        try:
+            return await numcat_market_provider.market_emotion(recentdays=days)
+        except Exception as exc:
+            print(f"NumCat market emotion failed: {type(exc).__name__}")
+            return []
+
     async def fetch_north_fund_flow(self) -> dict:
         history = await self.fetch_north_bound_daily(days=1)
         return history[-1] if history else {}
 
     async def fetch_stock_fund_flow(self, stock_code: str) -> list[dict]:
+        code = normalize_stock_code(stock_code)
+        if numcat_market_provider.configured:
+            try:
+                rows = await numcat_market_provider.stock_fund_flow([code], days=260)
+                if rows:
+                    return [{
+                        "date": str(row.get("tradedate") or "")[:10],
+                        "main_net_inflow": row.get("main_net_amount"),
+                        "small_net_inflow": None,
+                        "medium_net_inflow": None,
+                        "large_net_inflow": None,
+                        "super_large_net_inflow": None,
+                        "main_buy_amount": row.get("main_buy_amount"),
+                        "main_sell_amount": row.get("main_sell_amount"),
+                        "auction_main_net_amount": row.get("auction_main_net_amount"),
+                        "auction_main_buy_amount": row.get("auction_main_buy_amount"),
+                        "auction_main_sell_amount": row.get("auction_main_sell_amount"),
+                        "close_price": None,
+                        "change_pct": None,
+                        "source": "numcat",
+                    } for row in rows if row.get("tradedate")]
+            except Exception as exc:
+                print(f"NumCat stock flow failed for {code}: {type(exc).__name__}")
         try:
-            secid = stock_secid(stock_code)
+            secid = stock_secid(code)
         except ValueError:
             raise
         url = f"{self.HISTORY_BASE_URL}/api/qt/stock/fflow/daykline/get"
@@ -404,7 +443,7 @@ class EastMoneyDataCollector:
         try:
             data = await self.fetch_json(url, params)
         except Exception as exc:
-            print(f"Error fetching stock flow for {stock_code}: {type(exc).__name__}")
+            print(f"Error fetching stock flow for {code}: {type(exc).__name__}")
             return []
         results = []
         for line in ((data.get("data") or {}).get("klines") or []):
@@ -468,6 +507,25 @@ class EastMoneyDataCollector:
             if isinstance(target_date, date)
             else str(target_date or shanghai_now().strftime("%Y%m%d")).replace("-", "")[:8]
         )
+        if numcat_market_provider.configured:
+            pool_type = {"up": "u", "down": "d", "failed": "ub"}.get(direction)
+            if pool_type:
+                try:
+                    target = date.fromisoformat(
+                        f"{requested_date[:4]}-{requested_date[4:6]}-{requested_date[6:8]}"
+                    )
+                    pool = await numcat_market_provider.limit_pool(pool_type, tradedate=target)
+                    if pool.get("trade_date"):
+                        stocks = list(pool.get("stocks") or [])
+                        start = max(page - 1, 0) * page_size
+                        return {
+                            "stocks": stocks[start:start + page_size],
+                            "total": int(pool.get("total") or len(stocks)),
+                            "trade_date": pool.get("trade_date"),
+                            "source": "numcat_limit_pool",
+                        }
+                except Exception as exc:
+                    print(f"NumCat {direction} limit pool failed: {type(exc).__name__}")
         params = {
             "ut": "7eea3edcaed734bea9cbfc24409ed989",
             "dpt": "wz.ztzt",
@@ -689,6 +747,33 @@ class EastMoneyDataCollector:
         source remain null.
         """
         code = normalize_stock_code(stock_code)
+        if numcat_market_provider.configured:
+            try:
+                numcat_history = await numcat_market_provider.daily(code, days=days)
+                if numcat_history:
+                    return {
+                        "code": code,
+                        "name": str(numcat_history[0].get("name") or ""),
+                        "source": "numcat",
+                        "history": numcat_history[-days:],
+                        "field_coverage": {
+                            "rows": len(numcat_history),
+                            "amount": sum(item.get("amount") is not None for item in numcat_history),
+                            "turnover": sum(item.get("turnover") is not None for item in numcat_history),
+                            "complete": all(
+                                item.get("amount") is not None and item.get("turnover") is not None
+                                for item in numcat_history
+                            ),
+                        },
+                        "liquidity_complete": all(
+                            item.get("amount") is not None and item.get("turnover") is not None
+                            for item in numcat_history
+                        ),
+                    }
+            except Exception as exc:
+                # NumCat is primary when configured, but an upstream failure
+                # must not take down the existing Tencent/FTShare path.
+                print(f"NumCat daily history failed for {code}: {type(exc).__name__}")
         symbol = self._tencent_symbol(code)
         count = min(max(days + 20, 30), 800)
         source_error: Exception | None = None
@@ -902,6 +987,39 @@ class EastMoneyDataCollector:
 
     async def fetch_security_directory_snapshot(self, *, allow_partial: bool = False) -> dict:
         """Return a retried directory snapshot with explicit completeness metadata."""
+        if numcat_market_provider.configured:
+            try:
+                basic_rows = await numcat_market_provider.security_directory()
+                if basic_rows:
+                    records = []
+                    seen_codes: set[str] = set()
+                    for item in basic_rows:
+                        code = str(item.get("code") or "")
+                        if code in seen_codes:
+                            continue
+                        seen_codes.add(code)
+                        records.append({
+                            "code": code,
+                            "name": item.get("name") or "",
+                            "market": item.get("market") or item.get("exchange"),
+                            "sector": str(item.get("industry") or "").strip(),
+                            "is_currently_listed": str(item.get("list_status") or "L").upper() == "L",
+                            "last_price": None,
+                            "list_date": item.get("list_date"),
+                            "delist_date": item.get("delist_date"),
+                            "source": item.get("source") or "numcat_stockbasic",
+                        })
+                    return {
+                        "records": records,
+                        "total": len(records),
+                        "complete": True,
+                        "failed_pages": [],
+                        "errors": {},
+                        "source": "numcat_stockbasic",
+                    }
+            except Exception as exc:
+                print(f"NumCat stock basic failed: {type(exc).__name__}")
+
         page_size = self.MAX_LIST_PAGE_SIZE
 
         async def fetch_page_once(page: int) -> tuple[list[dict], int]:
@@ -1048,6 +1166,45 @@ class EastMoneyDataCollector:
 
     async def fetch_margin_market_history(self, days: int = 250) -> list[dict]:
         """Return the EastMoney all-market T-close margin series."""
+        if numcat_market_provider.configured:
+            try:
+                rows = await numcat_market_provider.margin_summary(recentdays=days)
+                by_date: dict[str, list[dict]] = {}
+                for row in rows:
+                    by_date.setdefault(str(row.get("tradedate") or "")[:10], []).append(row)
+                output = []
+                for trade_date, items in by_date.items():
+                    if not trade_date:
+                        continue
+
+                    def total(field: str) -> int | None:
+                        values = [as_optional_float(item.get(field)) for item in items]
+                        valid = [value for value in values if value is not None]
+                        return int(sum(valid)) if valid else None
+
+                    financing_buy = total("financing_buy_amount")
+                    financing_repay = total("financing_repayment_amount")
+                    output.append({
+                        "trade_date": trade_date,
+                        "margin_balance": total("margin_balance"),
+                        "financing_balance": total("financing_balance"),
+                        "securities_balance": total("securities_lending_balance"),
+                        "financing_buy": financing_buy,
+                        "financing_repay": financing_repay,
+                        "financing_net_buy": (
+                            financing_buy - financing_repay
+                            if financing_buy is not None and financing_repay is not None else None
+                        ),
+                        "float_market_cap": None,
+                        "financing_ratio": None,
+                        "market_index_close": None,
+                        "market_index_change_pct": None,
+                        "source": "numcat_margin_summary",
+                    })
+                if output:
+                    return sorted(output, key=lambda item: item["trade_date"], reverse=True)
+            except Exception as exc:
+                print(f"NumCat margin summary failed: {type(exc).__name__}")
         data = await self.fetch_json(self.DATACENTER_URL, {
             "reportName": "RPTA_RZRQ_LSHJ", "columns": "ALL",
             "sortColumns": "DIM_DATE", "sortTypes": "-1",
@@ -1082,6 +1239,17 @@ class EastMoneyDataCollector:
         snapshot.  The official aggregate series advances only after the
         market-wide total is available, so it is the alignment authority.
         """
+        if numcat_market_provider.configured:
+            try:
+                rows = await numcat_market_provider.margin_summary(recentdays=1)
+                values = [
+                    date.fromisoformat(str(row.get("tradedate") or "")[:10])
+                    for row in rows if row.get("tradedate")
+                ]
+                if values:
+                    return max(values)
+            except Exception as exc:
+                print(f"NumCat margin latest date failed: {type(exc).__name__}")
         data = await self.fetch_json(self.DATACENTER_URL, {
             "reportName": "RPTA_RZRQ_LSHJ", "columns": "DIM_DATE",
             "sortColumns": "DIM_DATE", "sortTypes": "-1",
@@ -1097,6 +1265,28 @@ class EastMoneyDataCollector:
 
     async def fetch_margin_stock_snapshot(self, target_date: date, page_size: int = 500) -> dict:
         """Fetch a complete disclosed stock/ETF margin snapshot."""
+        if numcat_market_provider.configured:
+            try:
+                rows = await numcat_market_provider.margin_detail(tradedate=target_date)
+                records = [self._numcat_margin_detail_row(item) for item in rows]
+                records = [item for item in records if item is not None]
+                if records:
+                    # The source contract returns the complete disclosed
+                    # dataset for a date. Do not label a partial response as a
+                    # complete snapshot merely because it contains rows.
+                    source_dates = {str(item.get("DATE") or "")[:10] for item in records}
+                    if source_dates != {target_date.isoformat()}:
+                        records = []
+                if records:
+                    return {
+                        "records": records,
+                        "total": len(records),
+                        "complete": True,
+                        "trade_date": target_date.isoformat(),
+                        "source": "numcat_margin_detail",
+                    }
+            except Exception as exc:
+                print(f"NumCat margin snapshot failed: {type(exc).__name__}")
         bounded_page_size = min(max(int(page_size), 100), 500)
 
         async def fetch_page(page: int) -> tuple[list[dict], int]:
@@ -1141,6 +1331,15 @@ class EastMoneyDataCollector:
 
     async def fetch_margin_stock_history(self, stock_code: str, days: int = 260) -> list[dict]:
         code = normalize_stock_code(stock_code)
+        if numcat_market_provider.configured:
+            try:
+                rows = await numcat_market_provider.margin_detail([code], recentdays=days)
+                mapped = [self._numcat_margin_detail_row(item) for item in rows]
+                result = [item for item in mapped if item is not None]
+                if result:
+                    return sorted(result, key=lambda item: str(item.get("DATE") or ""), reverse=True)
+            except Exception as exc:
+                print(f"NumCat margin stock history failed for {code}: {type(exc).__name__}")
         data = await self.fetch_json(self.DATACENTER_URL, {
             "reportName": "RPTA_WEB_RZRQ_GGMX", "columns": "ALL",
             "sortColumns": "DATE", "sortTypes": "-1",
@@ -1168,6 +1367,25 @@ class EastMoneyDataCollector:
         if len(codes) > 40:
             raise ValueError("单次两融历史批量查询最多40只股票")
         bounded_days = min(max(int(days), 20), 500)
+        if numcat_market_provider.configured:
+            try:
+                rows = await numcat_market_provider.margin_detail(codes, recentdays=bounded_days)
+                grouped: dict[str, list[dict]] = {code: [] for code in codes}
+                for raw in rows:
+                    item = self._numcat_margin_detail_row(raw)
+                    code = str((item or {}).get("SCODE") or "")
+                    item_date = str((item or {}).get("DATE") or "")[:10]
+                    if item is not None and code in grouped and (
+                        end_date is None or item_date <= end_date.isoformat()
+                    ):
+                        grouped[code].append(item)
+                if any(grouped.values()):
+                    for code in grouped:
+                        grouped[code].sort(key=lambda item: str(item.get("DATE") or ""), reverse=True)
+                        grouped[code] = grouped[code][:bounded_days]
+                    return grouped
+            except Exception as exc:
+                print(f"NumCat margin batch history failed: {type(exc).__name__}")
         bounded_page_size = min(max(int(page_size), 100), 500)
         # 1.9 calendar days per requested trading session leaves room for
         # holidays and long festival closures without pulling all history.
@@ -1220,6 +1438,43 @@ class EastMoneyDataCollector:
                 if code in grouped and len(grouped[code]) < bounded_days:
                     grouped[code].append(item)
         return grouped
+
+    @staticmethod
+    def _numcat_margin_detail_row(item: dict) -> dict | None:
+        try:
+            code = normalize_stock_code(item.get("symbol"))
+        except ValueError:
+            return None
+        trade_date = str(item.get("tradedate") or "")[:10]
+        if not trade_date:
+            return None
+        exchange_code = str(item.get("exchange") or "").upper()
+        suffix = {"SSE": "SH", "SZSE": "SZ", "BSE": "BJ"}.get(exchange_code)
+        if suffix is None:
+            suffix = "SH" if code.startswith(SHANGHAI_PREFIXES) else "BJ" if code.startswith(BEIJING_PREFIXES) else "SZ"
+        market_name = {"SH": "融资融券_沪证", "SZ": "融资融券_深证", "BJ": "融资融券_北证"}[suffix]
+        financing_buy = as_optional_float(item.get("financing_buy_amount"))
+        financing_repay = as_optional_float(item.get("financing_repayment_amount"))
+        return {
+            "DATE": trade_date,
+            "SCODE": code,
+            "SECNAME": str(item.get("name") or code),
+            "SECUCODE": f"{code}.{suffix}",
+            "MARKET": market_name,
+            "TRADE_MARKET": market_name,
+            "RZYE": item.get("financing_balance"),
+            "RZMRE": item.get("financing_buy_amount"),
+            "RZCHE": item.get("financing_repayment_amount"),
+            "RZJME": (
+                financing_buy - financing_repay
+                if financing_buy is not None and financing_repay is not None else None
+            ),
+            "RQYE": item.get("securities_lending_balance"),
+            "RQMCL": item.get("securities_lending_sell_quantity"),
+            "RQCHL": item.get("securities_lending_repayment_quantity"),
+            "RZRQYE": item.get("margin_balance"),
+            "_SOURCE": "numcat_margin_detail",
+        }
 
     async def fetch_margin_sector_rankings(self, sector_type_code: str = "005") -> dict[str, list[dict]]:
         """Fetch current and 5/20-session board margin aggregations."""
@@ -1543,6 +1798,19 @@ class EastMoneyDataCollector:
         page_size: int = 50,
         target_date: date | str | None = None,
     ) -> list[dict]:
+        if numcat_market_provider.configured:
+            try:
+                normalized_target = None
+                if target_date:
+                    normalized_target = (
+                        target_date if isinstance(target_date, date)
+                        else date.fromisoformat(str(target_date)[:10])
+                    )
+                rows = await numcat_market_provider.dragon_board(tradedate=normalized_target)
+                if rows:
+                    return rows[:max(1, int(page_size))]
+            except Exception as exc:
+                print(f"NumCat dragon board failed: {type(exc).__name__}")
         params = {
             "reportName": "RPT_DAILYBILLBOARD_DETAILSNEW", "columns": "ALL", "pageNumber": "1", "pageSize": str(page_size),
             "sortTypes": "-1,-1", "sortColumns": "TRADE_DATE,BILLBOARD_NET_AMT", "source": "WEB", "client": "WEB",
@@ -1626,6 +1894,63 @@ class EastMoneyDataCollector:
             return [dict(item) for item in result]
 
     async def fetch_sector_rotation(self, lookback_days: int = 5) -> dict:
+        if numcat_market_provider.configured:
+            try:
+                daily_result, flow_result = await asyncio.gather(
+                    numcat_market_provider.theme_daily(level="parent", recentdays=lookback_days),
+                    numcat_market_provider.theme_fund_flow(),
+                    return_exceptions=True,
+                )
+                daily_rows = [] if isinstance(daily_result, Exception) else daily_result
+                flow_rows = [] if isinstance(flow_result, Exception) else flow_result
+                if daily_rows:
+                    latest_date = max(str(item.get("tradedate") or "") for item in daily_rows)
+                    current_rows = [item for item in daily_rows if str(item.get("tradedate") or "") == latest_date]
+                    latest_minute = max((str(item.get("trademin") or "") for item in flow_rows), default="")
+                    flow_by_code = {
+                        str(item.get("theme_symbol") or ""): item
+                        for item in flow_rows
+                        if not latest_minute or str(item.get("trademin") or "") == latest_minute
+                    }
+                    sectors = []
+                    for item in current_rows:
+                        code = str(item.get("theme_symbol") or "")
+                        flow = flow_by_code.get(code) or {}
+                        sectors.append({
+                            "code": code,
+                            "name": str(item.get("theme_name") or ""),
+                            "change_pct": as_float(item.get("pct_chg")),
+                            "strength": as_optional_float(item.get("strength")),
+                            "main_net_inflow": as_int(flow.get("main_net_amount")),
+                            "main_buy_amount": as_optional_float(flow.get("main_buy_amount")),
+                            "main_sell_amount": as_optional_float(flow.get("main_sell_amount")),
+                            "super_large_inflow": None,
+                            "large_inflow": None,
+                            "up_count": None,
+                            "down_count": None,
+                            "data_date": (
+                                f"{latest_date[:4]}-{latest_date[4:6]}-{latest_date[6:8]}"
+                                if len(latest_date) == 8 else latest_date or None
+                            ),
+                            "data_minute": latest_minute or None,
+                            "source": "numcat_themedaily_jx+themefundflow_jx",
+                        })
+                    if sectors:
+                        negative = [item for item in sectors if item["main_net_inflow"] < 0]
+                        return {
+                            "sectors": sectors,
+                            "hot_inflow": sorted(sectors, key=lambda item: item["main_net_inflow"], reverse=True)[:5],
+                            "hot_outflow": sorted(negative, key=lambda item: item["main_net_inflow"])[:5],
+                            "hot_gainers": sorted(sectors, key=lambda item: item["change_pct"], reverse=True)[:5],
+                            "outflow_data_available": bool(negative),
+                            "lookback_days": lookback_days,
+                            "source": "numcat",
+                            "data_date": sectors[0].get("data_date"),
+                            "data_minute": latest_minute or None,
+                        }
+            except Exception as exc:
+                print(f"NumCat sector rotation failed: {type(exc).__name__}")
+
         sectors = []
         try:
             rows = await self.fetch_all_concept_flow()
@@ -1839,6 +2164,97 @@ class EastMoneyDataCollector:
                 "stocks": [], "total": 0, "requested": 0, "complete": True,
                 "is_realtime": False, "data_date": None, "source": "unavailable",
             }
+
+        if numcat_market_provider.configured:
+            try:
+                detail_result, metric_result = await asyncio.gather(
+                    numcat_market_provider.auction_detail_snapshot(codes),
+                    numcat_market_provider.auction(codes),
+                    return_exceptions=True,
+                )
+                detail_rows = [] if isinstance(detail_result, Exception) else detail_result
+                metric_rows = [] if isinstance(metric_result, Exception) else metric_result
+                rows = detail_rows or metric_rows
+                if rows:
+                    details_by_code = {
+                        str(item.get("symbol") or "").split(".", 1)[0].zfill(6): item
+                        for item in detail_rows
+                    }
+                    metrics_by_code = {
+                        str(item.get("symbol") or "").split(".", 1)[0].zfill(6): item
+                        for item in metric_rows
+                    }
+                    now = shanghai_now()
+                    ordered = []
+                    for code in codes:
+                        detail = details_by_code.get(code) or {}
+                        metric = metrics_by_code.get(code) or {}
+                        if not detail and not metric:
+                            continue
+                        trade_date = str(detail.get("tradedate") or metric.get("tradedate") or "")[:10]
+                        raw_time = str(detail.get("time") or "")[:8]
+                        quote_at = None
+                        if trade_date and raw_time:
+                            try:
+                                quote_at = datetime.fromisoformat(
+                                    f"{trade_date}T{raw_time}"
+                                ).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+                            except ValueError:
+                                quote_at = None
+                        quote_minute = quote_at.hour * 60 + quote_at.minute if quote_at else None
+                        is_realtime = bool(
+                            quote_at
+                            and quote_at.date() == now.date()
+                            and quote_minute is not None
+                            and 9 * 60 + 24 <= quote_minute <= 9 * 60 + 27
+                            and 0 <= (now - quote_at).total_seconds() <= 5 * 60
+                        )
+                        ordered.append({
+                            "code": code,
+                            "name": str(metric.get("name") or detail.get("name") or ""),
+                            "auction_price": detail.get("m_price") if detail else metric.get("m_price"),
+                            "auction_volume": detail.get("auc_vol") if detail else metric.get("auc_vol"),
+                            "auction_volume_ratio": metric.get("auc_vol_ratio"),
+                            "high_open_pct": detail.get("auc_pct_chg") if detail else metric.get("auc_pct_chg"),
+                            "previous_close": None,
+                            "quote_at": quote_at.isoformat() if quote_at else None,
+                            "source": "numcat_daily_auc_detail" if detail else "numcat_daily_auc",
+                            "is_realtime": is_realtime,
+                            "auction_amount": detail.get("auc_amt") if detail else metric.get("auc_amt"),
+                            "auction_to_previous_volume_ratio": (
+                                metric.get("auc_to_pre_auc_vol_ratio")
+                                if metric else None
+                            ),
+                            "auction_to_previous_volume_pct": detail.get("auc_to_pre_vol_pct") if detail else None,
+                            "unmatched_volume": detail.get("um_vol") if detail else metric.get("um_vol"),
+                            "unmatched_side": detail.get("um_side") if detail else metric.get("um_side"),
+                        })
+                    if ordered:
+                        realtime_complete = len(ordered) == len(codes) and all(
+                            item["is_realtime"] for item in ordered
+                        )
+                        return {
+                            "stocks": ordered,
+                            "total": len(ordered),
+                            "requested": len(codes),
+                            "complete": len(ordered) == len(codes),
+                            "is_realtime": realtime_complete,
+                            "data_date": str(rows[0].get("tradedate") or "")[:10] or None,
+                            "source": "numcat_daily_auc_detail" if detail_rows else "numcat_daily_auc",
+                            "source_updated_at": max(
+                                (item["quote_at"] for item in ordered if item.get("quote_at")),
+                                default=None,
+                            ),
+                            "field_coverage": {
+                                "auction_price": sum(item.get("auction_price") is not None for item in ordered),
+                                "auction_volume": sum(item.get("auction_volume") is not None for item in ordered),
+                                "auction_volume_ratio": sum(item.get("auction_volume_ratio") is not None for item in ordered),
+                                "high_open_pct": sum(item.get("high_open_pct") is not None for item in ordered),
+                            },
+                            "fetched_at": shanghai_now().isoformat(),
+                        }
+            except Exception as exc:
+                print(f"NumCat auction failed: {type(exc).__name__}")
 
         payload = await self.fetch_stock_quotes(codes)
         now = shanghai_now()
@@ -2210,6 +2626,54 @@ class EastMoneyDataCollector:
         if interval not in {1, 5, 15, 30, 60}:
             raise ValueError("分钟周期仅支持 1、5、15、30、60")
         requested_limit = min(max(int(limit), 1), 1536)
+        if numcat_market_provider.configured:
+            try:
+                period = "1h" if interval == 60 else f"{interval}m"
+                rows = await numcat_market_provider.minute(code, period=period)
+                bars = []
+                for row in rows[-requested_limit:]:
+                    raw_date = str(row.get("tradedate") or "")[:10]
+                    raw_time = str(row.get("time") or row.get("trademin") or "")
+                    if len(raw_time) == 4 and raw_time.isdigit():
+                        raw_time = f"{raw_time[:2]}:{raw_time[2:]}:00"
+                    bar_time = f"{raw_date}T{raw_time[:8]}" if raw_date and raw_time else None
+                    if not bar_time:
+                        continue
+                    bars.append({
+                        "stock_code": code,
+                        "stock_name": str(row.get("name") or ""),
+                        "bar_time": bar_time,
+                        "interval_minutes": interval,
+                        "open": as_optional_float(row.get("open")),
+                        "close": as_optional_float(row.get("close")),
+                        "high": as_optional_float(row.get("high")),
+                        "low": as_optional_float(row.get("low")),
+                        # NumCat minute volume is documented in hands. The app
+                        # stores all bar volume in individual shares.
+                        "volume": (
+                            int(as_optional_float(row.get("vol")) * 100)
+                            if as_optional_float(row.get("vol")) is not None else None
+                        ),
+                        "amount": as_optional_float(row.get("amount")),
+                        "average": as_optional_float(row.get("vwap")),
+                    })
+                bars.sort(key=lambda item: item["bar_time"])
+                if bars:
+                    return {
+                        "stock_code": code,
+                        "stock_name": bars[-1].get("stock_name") or "",
+                        "bars": bars,
+                        "bar_count": len(bars),
+                        "upstream_total": None,
+                        "coverage_start": bars[0]["bar_time"],
+                        "coverage_end": bars[-1]["bar_time"],
+                        "source": "numcat",
+                        "complete_history": False,
+                        "warning": "NumCat分钟接口按需返回可用窗口，不将其宣称为全历史分钟数据",
+                        "fetched_at": shanghai_now().isoformat(),
+                    }
+            except Exception as exc:
+                print(f"NumCat minute history failed for {code}: {type(exc).__name__}")
         try:
             data = await self.fetch_json(
                 f"{self.HISTORY_BASE_URL}/api/qt/stock/kline/get",
@@ -2430,6 +2894,66 @@ class EastMoneyDataCollector:
         The union avoids a single sorting dimension dominating the stock picker.
         It intentionally uses only verified, non-zero-price A-share quotes.
         """
+        if numcat_market_provider.configured:
+            try:
+                rows = await numcat_market_provider.screening(
+                    enrichment_limit=max(500, min(int(page_size) * 2, 1000)),
+                )
+                rows.sort(key=lambda item: (
+                    as_float(item.get("volume_ratio")),
+                    as_float(item.get("change_pct")),
+                    as_float(item.get("turnover")),
+                ), reverse=True)
+                stocks = rows[:max(1, min(int(page_size), 500))]
+                if stocks:
+                    codes = [str(item["code"]) for item in stocks]
+                    finance_result, flow_result = await asyncio.gather(
+                        numcat_market_provider.finance_indicator(codes, as_of=shanghai_now().isoformat(), limit=2000),
+                        numcat_market_provider.stock_fund_flow(codes, days=1),
+                        return_exceptions=True,
+                    )
+                    finance_by_code = {
+                        str(item.get("code") or ""): item
+                        for item in ([] if isinstance(finance_result, Exception) else finance_result)
+                    }
+                    flow_by_code = {
+                        str(item.get("symbol") or "").split(".", 1)[0].zfill(6): item
+                        for item in ([] if isinstance(flow_result, Exception) else flow_result)
+                    }
+                    for stock in stocks:
+                        code = str(stock["code"])
+                        finance = finance_by_code.get(code) or {}
+                        flow = flow_by_code.get(code) or {}
+                        stock["roe"] = finance.get("roe")
+                        stock["financial_report_date"] = finance.get("report_date")
+                        stock["financial_disclosed_at"] = finance.get("announce_date")
+                        stock["main_net_inflow"] = flow.get("main_net_amount")
+                        stock["main_buy_amount"] = flow.get("main_buy_amount")
+                        stock["main_sell_amount"] = flow.get("main_sell_amount")
+                        stock.setdefault("data_sources", {}).update({
+                            "financial": finance.get("source"),
+                            "fund_flow": "numcat_fundflow_kp" if flow else None,
+                        })
+                    data_date = next(
+                        (item.get("trade_date") for item in stocks if item.get("trade_date")),
+                        None,
+                    )
+                    now = shanghai_now()
+                    return {
+                        "total": len(stocks),
+                        "stocks": stocks,
+                        "source": "numcat",
+                        "is_realtime": bool(
+                            data_date == now.date().isoformat()
+                            and is_a_share_market_session(now)
+                        ),
+                        "data_date": data_date,
+                        "fetched_at": now.isoformat(),
+                        "complete": True,
+                    }
+            except Exception as exc:
+                print(f"NumCat screening failed: {type(exc).__name__}")
+
         base_filters = {
             "min_change": -100,
             "max_pe": 0,

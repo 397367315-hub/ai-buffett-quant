@@ -30,6 +30,7 @@ from models import (
     SectorLifecycleState,
     SectorMigrationInference,
     StockDailyBar,
+    StockSelectionRun,
     StockUniverseSnapshot,
     StockSkillSignal,
     ThemeState,
@@ -277,6 +278,8 @@ class StrongStockV21Service:
             theme_name = getattr(theme, "theme_name", None) if theme else None
             result.append({
                 "symbol": symbol, "stock_name": getattr(bar, "stock_name", None) or symbol,
+                "selection_source": "v2_query",
+                "selection_source_label": "个股查询",
                 # Use the point-in-time industry directory as the primary
                 # sector link. ThemeState is a useful supporting signal, but
                 # its free-form theme name is not a stable sector identifier.
@@ -294,7 +297,141 @@ class StrongStockV21Service:
                 "change_pct": getattr(bar, "change_pct", None) if bar else None,
                 "invalidation": ["交易区进入C区", "板块生命周期转为FADING"],
             })
-        return result
+        # V2.1 also surfaces the system's own intelligent-selection runs. A
+        # run is a persisted decision snapshot, so choose the newest run whose
+        # point-in-time data date is not after the requested date. This keeps
+        # historical replay free of future selection results.
+        system_rows = await self._load_system_selection_candidates(target)
+        by_symbol: dict[str, dict[str, Any]] = {str(row.get("symbol")): row for row in result if row.get("symbol")}
+        for row in system_rows:
+            symbol = str(row.get("symbol") or "")
+            if not symbol:
+                continue
+            existing = by_symbol.get(symbol)
+            if existing:
+                existing["selection_source"] = "system_scan+v2_query"
+                existing["selection_source_label"] = "系统筛选 + 个股查询"
+                existing["selection_evidence"] = list(dict.fromkeys(list(existing.get("selection_evidence") or []) + list(row.get("selection_evidence") or [])))
+                existing["system_selection"] = row.get("system_selection") or {}
+                continue
+            by_symbol[symbol] = row
+        return list(by_symbol.values())
+
+    async def _load_system_selection_candidates(self, target: date) -> list[dict[str, Any]]:
+        """Load saved intelligent-selection results without starting a scan.
+
+        The V2.1 page must stay fast and deterministic. Scanning is owned by
+        the existing selection service/scheduler; this bridge only reads its
+        auditable output and applies a point-in-time cutoff.
+        """
+        async with async_session() as session:
+            runs = list((await session.execute(
+                select(StockSelectionRun)
+                .where(StockSelectionRun.data_date <= target)
+                .order_by(desc(StockSelectionRun.data_date), desc(StockSelectionRun.created_at))
+                .limit(30)
+            )).scalars().all())
+        if not runs:
+            return []
+        # One coherent run is preferable to mixing recommendations from
+        # different market snapshots. Prefer the latest run with results.
+        selected_run = next((run for run in runs if isinstance(run.result, dict) and self._selection_items(run.result)), None)
+        if selected_run is None:
+            return []
+        run_result = selected_run.result if isinstance(selected_run.result, dict) else {}
+        run_date = selected_run.data_date.isoformat() if selected_run.data_date else None
+        output: list[dict[str, Any]] = []
+        for item in self._selection_items(run_result)[:30]:
+            symbol = str(item.get("code") or item.get("symbol") or item.get("stock_code") or "").strip().upper()
+            if len(symbol) > 10:
+                symbol = symbol.split(".", 1)[0]
+            if not symbol.isdigit() or len(symbol) != 6:
+                continue
+            sector_name = str(item.get("sector") or item.get("industry") or "").strip() or None
+            selection_score = self._number(item.get("score") or item.get("confidence") or item.get("total_score"))
+            evidence = self._selection_evidence(item)
+            output.append({
+                "symbol": symbol,
+                "stock_name": str(item.get("name") or item.get("stock_name") or symbol),
+                "selection_source": "system_scan",
+                "selection_source_label": "系统筛选",
+                "selection_evidence": evidence,
+                "sector_id": "UNKNOWN",
+                "sector_name": sector_name,
+                "sector_type": "industry" if sector_name else None,
+                # A regular agent recommendation is not an A/B/C decision.
+                # Fusion will therefore leave it at WATCH until V2.0 evidence
+                # and a sector lifecycle state confirm a transaction zone.
+                "zone": "UNKNOWN",
+                "zone_stage": "UNKNOWN",
+                "main_force_state": self._selection_text(item, "main_force_state", "main_force"),
+                "volume_price_state": self._selection_text(item, "volume_price_state", "volume_price"),
+                "ma_state": None,
+                "big_pattern_state": None,
+                "rising_star_state": None,
+                "three_books_consensus": None,
+                "risk_state": None,
+                "close_price": self._number(item.get("price") or item.get("close_price")),
+                "change_pct": self._number(item.get("change_pct") or item.get("change")),
+                "invalidation": ["等待V2.0交易区与板块生命周期确认", "系统选股运行数据超过目标日期"],
+                "system_selection": {
+                    "run_id": selected_run.id,
+                    "run_date": run_date,
+                    "score": selection_score,
+                    "strategy": str(run_result.get("research_horizon", {}).get("label") or run_result.get("strategy") or "智能选股Agent"),
+                    "source": str(run_result.get("source") or selected_run.source or "system"),
+                    "is_realtime": bool(run_result.get("is_realtime") or selected_run.is_realtime),
+                },
+            })
+        return output
+
+    @staticmethod
+    def _number(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed == parsed and abs(parsed) != float("inf") else None
+
+    @staticmethod
+    def _selection_items(result: dict[str, Any]) -> list[dict[str, Any]]:
+        for key in ("recommendations", "selected", "stocks", "candidates"):
+            value = result.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return []
+
+    @classmethod
+    def _selection_text(cls, item: dict[str, Any], *keys: str) -> str | None:
+        for key in keys:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, dict):
+                for nested in ("state", "label", "direction", "summary"):
+                    text = value.get(nested)
+                    if isinstance(text, str) and text.strip():
+                        return text.strip()
+        return None
+
+    @classmethod
+    def _selection_evidence(cls, item: dict[str, Any]) -> list[str]:
+        values: list[str] = []
+        for key in ("why_selected", "reasons", "basis", "evidence"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                values.append(value.strip())
+            elif isinstance(value, list):
+                values.extend(str(row.get("text") if isinstance(row, dict) else row).strip() for row in value if str(row.get("text") if isinstance(row, dict) else row).strip())
+        agents = item.get("agents")
+        if isinstance(agents, dict):
+            for agent in agents.values():
+                if not isinstance(agent, dict):
+                    continue
+                summary = agent.get("summary")
+                if summary:
+                    values.append(str(summary).strip())
+        return list(dict.fromkeys(values))[:6]
 
     async def build(self, requested: date | None = None, *, persist: bool = False) -> dict[str, Any]:
         target = await self._target_date(requested)

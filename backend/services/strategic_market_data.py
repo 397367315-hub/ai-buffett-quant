@@ -202,14 +202,25 @@ class StrategicMarketDataService:
 
     async def sync_recent(self, days: int = 30) -> dict[str, Any]:
         bounded = min(max(int(days), 1), 260)
+        numcat_rows = await collector.fetch_market_emotion_history(bounded)
+        numcat_by_date: dict[date, dict[str, Any]] = {}
+        for item in numcat_rows:
+            try:
+                trade_day = date.fromisoformat(str(item.get("trade_date") or "")[:10])
+            except ValueError:
+                continue
+            numcat_by_date[trade_day] = item
         async with async_session() as session:
-            trade_dates = list((await session.execute(
+            bar_trade_dates = list((await session.execute(
                 select(StockDailyBar.trade_date)
                 .group_by(StockDailyBar.trade_date)
                 .having(func.count(StockDailyBar.id) >= self._MIN_MARKET_STOCK_COUNT)
                 .order_by(desc(StockDailyBar.trade_date))
                 .limit(bounded)
             )).scalars().all())
+            trade_dates = sorted(
+                set(bar_trade_dates).union(numcat_by_date), reverse=True,
+            )[:bounded]
             # Remove incomplete aggregate rows left by older interrupted jobs.
             # They would otherwise remain visible in longer history queries and
             # contaminate limit/breadth statistics with a one-stock session.
@@ -224,15 +235,43 @@ class StrategicMarketDataService:
             } if trade_dates else {}
             await session.commit()
         if not trade_dates:
-            return {"status": "unavailable", "written": 0, "reason": "stock_daily_bars_empty"}
+            return {"status": "unavailable", "written": 0, "reason": "market_evidence_empty"}
 
-        aggregates = await self._aggregate_many(trade_dates)
+        aggregates = await self._aggregate_many(bar_trade_dates)
 
         semaphore = asyncio.Semaphore(self._CONCURRENCY)
         recent_pool_cutoff = shanghai_now().date() - timedelta(days=35)
 
         async def fetch_one(trade_date: date) -> dict[str, Any]:
             aggregate = aggregates.get(trade_date) or await self._aggregate(trade_date)
+            numcat = numcat_by_date.get(trade_date)
+            if numcat:
+                stock_count = int(numcat.get("stock_count") or 0)
+                # The emotion endpoint is authoritative for breadth and board
+                # counts, while turnover coverage still comes from bars when
+                # available. Preserve null rather than manufacturing a ratio.
+                turnover_available = aggregate.get("turnover_count") is not None
+                return {
+                    "trade_date": trade_date,
+                    "stock_count": stock_count or None,
+                    "up_count": numcat.get("up_count"),
+                    "down_count": numcat.get("down_count"),
+                    "flat_count": numcat.get("flat_count"),
+                    "market_amount": numcat.get("market_amount"),
+                    # A provider-level full-market aggregate has complete
+                    # amount coverage even though individual bars are not
+                    # returned in this response.
+                    "amount_count": stock_count or None,
+                    "average_turnover": aggregate.get("average_turnover") if turnover_available else None,
+                    "turnover_count": aggregate.get("turnover_count") if turnover_available else None,
+                    "limit_up_count": numcat.get("limit_up_count"),
+                    "limit_down_count": numcat.get("limit_down_count"),
+                    "failed_limit_count": numcat.get("failed_limit_count"),
+                    "failed_limit_rate": numcat.get("failed_limit_rate"),
+                    "max_streak_height": numcat.get("max_streak_height"),
+                    "source": "numcat_emoindic_daily+daily_bars" if aggregate.get("stock_count") else "numcat_emoindic_daily",
+                    "updated_at": datetime.utcnow(),
+                }
             prior = existing.get(trade_date)
             limit_up_count = prior.limit_up_count if prior else None
             limit_down_count = prior.limit_down_count if prior else None

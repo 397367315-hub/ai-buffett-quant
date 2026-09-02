@@ -322,8 +322,15 @@ class ZoneOpportunityFusionEngine:
             if market_regime == "DEFENSIVE_FADE" and priority == "P1":
                 priority = "P2"
             evidence = list(row.get("evidence") or [])
+            selection_source = str(row.get("selection_source") or "").strip()
+            if row.get("selection_evidence"):
+                evidence.extend([f"系统选股证据：{value}" for value in row.get("selection_evidence") or []])
+            if selection_source:
+                evidence.append(f"候选来源：{row.get('selection_source_label') or selection_source}")
             if lifecycle != "INVALID": evidence.append(f"板块生命周期：{lifecycle}")
             if zone != "UNKNOWN": evidence.append(f"V2.0交易区：{zone}/{stage}")
+            if zone == "UNKNOWN" and selection_source == "system_scan":
+                row["data_quality"] = {**(row.get("data_quality") or {}), "status": "DATA_INCOMPLETE", "message": "系统筛选结果尚未获得V2.0交易区与板块生命周期互证"}
             missing = list(row.get("missing_confirmation") or [])
             if pool in {"A_DISCOVERY", "A_CONFIRM", "B_REATTACK"}:
                 missing.extend(["后续价格与成交确认", "板块宽度和核心股跟随"])

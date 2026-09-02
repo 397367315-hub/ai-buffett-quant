@@ -40,6 +40,7 @@ from database import async_session
 from services.history_cache import history_cache
 from services.sector_flow_network import build_inferred_transfers
 from services.topic_strength import topic_strength_service
+from services.topic_strength_workspace import topic_strength_workspace_service
 from services.market_decision_workbench import market_decision_workbench_service
 from services.decision_workbench_2026 import decision_workbench_2026_service
 from services.market_way_v4 import market_way_v4_service
@@ -1492,6 +1493,53 @@ async def analyze_topic_strength(request: dict | None = None):
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.get("/topic-workspace")
+async def get_topic_workspace(
+    period: str = Query("week"),
+    board_type: str = Query("all"),
+    refresh: bool = Query(False),
+    limit: int = Query(30, ge=5, le=100),
+):
+    """Single-page topic research payload with per-section data provenance."""
+    try:
+        data = await topic_strength_workspace_service.get(
+            period=period,
+            board_type=board_type,
+            refresh=refresh,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.get("/topic-workspace/boards/{board_code}/stocks")
+async def get_topic_workspace_stocks(
+    board_code: str,
+    period: str = Query("week"),
+    sort: str = Query("strength"),
+    refresh: bool = Query(False),
+    limit: int = Query(50, ge=5, le=100),
+):
+    try:
+        data = await topic_strength_workspace_service.stocks(
+            board_code,
+            period=period,
+            sort=sort,
+            refresh=refresh,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.get("/topic-workspace/themes/{theme_id}")
+async def get_topic_workspace_theme_detail(theme_id: str):
+    data = await topic_strength_workspace_service.theme_detail(theme_id)
     return {"code": 0, "data": data}
 
 

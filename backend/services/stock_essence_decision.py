@@ -444,7 +444,7 @@ class StockEssenceDecisionService:
         for row in live_rows:
             trade_date = str(row.get("date") or "")[:10]
             if trade_date and (_date(trade_date) or date.max) <= end:
-                by_date[trade_date] = {**row, "source": "eastmoney"}
+                by_date[trade_date] = {**row, "source": row.get("source") or "eastmoney"}
 
         cached_dates: set[str] = set()
         try:

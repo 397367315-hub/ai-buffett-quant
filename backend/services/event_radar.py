@@ -262,12 +262,20 @@ class EventRadarService:
     async def _policy_items(self) -> list[dict[str, Any]]:
         context = await macro_policy_news_collector.get_context()
         result = []
-        for item in [*(context.get("policy_items") or []), *(context.get("international_items") or [])]:
+        for item in [
+            *(context.get("policy_items") or []),
+            *(context.get("international_items") or []),
+            *(context.get("market_news_items") or []),
+        ]:
             result.append({
                 **item,
-                "provider": "macro_policy_news",
-                "source_kind": "government_official" if item.get("scope") == "domestic_policy" else "mainstream_finance",
-                "summary": item.get("title"),
+                "provider": item.get("provider") or "macro_policy_news",
+                "source_kind": (
+                    "government_official"
+                    if item.get("scope") == "domestic_policy"
+                    else "mainstream_finance"
+                ),
+                "summary": item.get("summary") or item.get("title"),
             })
         return result
 
