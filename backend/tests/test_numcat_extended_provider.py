@@ -84,6 +84,29 @@ async def test_finance_wrapper_forces_latest_contract():
 
 
 @pytest.mark.asyncio
+async def test_auction_enrichment_scopes_by_date_then_filters_symbols_locally():
+    provider = NumCatExtendedProvider()
+    calls = []
+
+    async def rows(apiname, **kwargs):
+        calls.append((apiname, kwargs.get("params")))
+        if apiname == "auc_kp":
+            return [{"symbol": "600519", "ztwme": 100}, {"symbol": "000001", "ztwme": 50}]
+        return [{"symbol": "600519", "fd_amount": 10}, {"symbol": "000001", "fd_amount": 5}]
+
+    with patch.object(provider, "rows", new=AsyncMock(side_effect=rows)):
+        limit_buy = await provider.auction_limit_buy(["600519"], tradedate=date(2026, 9, 2))
+        one_price = await provider.auction_one_price(["000001"], tradedate=date(2026, 9, 2))
+
+    assert calls == [
+        ("auc_kp", {"tradedate": "20260902"}),
+        ("daily_auc_fd", {"tradedate": "20260902"}),
+    ]
+    assert [row["symbol"] for row in limit_buy] == ["600519"]
+    assert [row["symbol"] for row in one_price] == ["000001"]
+
+
+@pytest.mark.asyncio
 async def test_research_bundle_returns_successful_sections_and_explicit_failures():
     provider = NumCatExtendedProvider()
 

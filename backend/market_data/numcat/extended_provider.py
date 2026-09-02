@@ -340,10 +340,15 @@ class NumCatExtendedProvider:
         return await self.rows("tick_fd", params=params)
 
     async def auction_limit_buy(self, symbols: list[str], *, tradedate: date | None = None) -> list[dict[str, Any]]:
-        return await self.rows("auc_kp", params=_dated_symbols(symbols, tradedate))
+        # The dedicated endpoint accepts a date scope reliably but rejects
+        # symbol filters despite advertising array support. Fetch its small
+        # daily result and filter locally without persisting the raw payload.
+        rows = await self.rows("auc_kp", params=_date_only(tradedate))
+        return _filter_symbol_rows(rows, symbols)
 
     async def auction_one_price(self, symbols: list[str], *, tradedate: date | None = None) -> list[dict[str, Any]]:
-        return await self.rows("daily_auc_fd", params=_dated_symbols(symbols, tradedate))
+        rows = await self.rows("daily_auc_fd", params=_date_only(tradedate))
+        return _filter_symbol_rows(rows, symbols)
 
     async def weekly(self, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         return await self.rows("weekly", params=params)
@@ -420,7 +425,7 @@ class NumCatExtendedProvider:
         dated = _dated_symbols(codes, tradedate)
         jobs: dict[str, Any] = {
             "trade_calendar": self.calendar(mode="recent_list", params={"recentdays": 5}),
-            "security_basic": self.rows("stockbasic", params={"symbols": codes, "list_status": "L"}),
+            "security_basic": self.rows("stockbasic", params={"symbols": ",".join(codes), "list_status": "L"}),
             "tick": self.tick_snapshot(codes),
             "auction": self.rows("daily_auc", params=dated),
             "last_auction_tick": self.last_tick(codes, tradedate=tradedate),
@@ -514,6 +519,17 @@ def _dated_symbols(symbols: list[str], tradedate: date | None) -> dict[str, Any]
     if tradedate:
         params["tradedate"] = tradedate.strftime("%Y%m%d")
     return params
+
+
+def _date_only(tradedate: date | None) -> dict[str, Any]:
+    return {"tradedate": tradedate.strftime("%Y%m%d")} if tradedate else {}
+
+
+def _filter_symbol_rows(rows: list[dict[str, Any]], symbols: list[str]) -> list[dict[str, Any]]:
+    targets = {_symbol(item) for item in symbols if _symbol(item)}
+    if not targets:
+        return rows
+    return [row for row in rows if _symbol(row.get("symbol")) in targets]
 
 
 def _date_range(tradedate: date | None) -> dict[str, Any]:
