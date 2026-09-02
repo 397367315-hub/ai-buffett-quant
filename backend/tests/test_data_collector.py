@@ -81,6 +81,105 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["hot_outflow"], [])
         self.assertFalse(result["outflow_data_available"])
 
+    async def test_numcat_rotation_combines_theme_strength_and_same_minute_flow(self):
+        collector = EastMoneyDataCollector()
+        with patch(
+            "services.data_collector.settings.level2_enabled",
+            True,
+        ), patch(
+            "services.data_collector.settings.meoz_api_key",
+            "test-key",
+        ), patch(
+            "services.data_collector.numcat_market_provider.theme_daily",
+            new=AsyncMock(return_value=[
+                {"tradedate": "20260828", "theme_symbol": "old", "theme_name": "旧板块", "pct_chg": 5, "strength": 90},
+                {"tradedate": "20260829", "theme_symbol": "801165k", "theme_name": "机器人", "pct_chg": 2.5, "strength": 72},
+            ]),
+        ), patch(
+            "services.data_collector.numcat_market_provider.theme_fund_flow",
+            new=AsyncMock(return_value=[
+                {"trademin": "1001", "theme_symbol": "801165k", "main_net_amount": 10},
+                {"trademin": "1002", "theme_symbol": "801165k", "main_net_amount": -20, "main_buy_amount": 100, "main_sell_amount": -120},
+            ]),
+        ):
+            result = await collector.fetch_sector_rotation()
+
+        self.assertEqual(result["source"], "numcat")
+        self.assertEqual(result["data_date"], "2026-08-29")
+        self.assertEqual(result["data_minute"], "1002")
+        self.assertEqual(result["sectors"][0]["strength"], 72)
+        self.assertEqual(result["sectors"][0]["main_net_inflow"], -20)
+
+    async def test_numcat_limit_pool_is_preferred_and_preserves_pool_semantics(self):
+        collector = EastMoneyDataCollector()
+        with (
+            patch("services.data_collector.settings.meoz_enabled", True),
+            patch("services.data_collector.settings.meoz_api_key", "test-key"),
+            patch("services.data_collector.numcat_market_provider.limit_pool", new_callable=AsyncMock, return_value={
+                "stocks": [{"code": "000001", "name": "平安银行", "continuous_days": 2}],
+                "total": 1,
+                "trade_date": "2026-08-29",
+            }) as fetch_pool,
+            patch.object(collector, "fetch_json", new_callable=AsyncMock) as fetch_json,
+        ):
+            result = await collector.fetch_limit_up_pool(target_date=date(2026, 8, 29))
+
+        self.assertEqual(result["source"], "numcat_limit_pool")
+        self.assertEqual(result["stocks"][0]["continuous_days"], 2)
+        fetch_pool.assert_awaited_once()
+        fetch_json.assert_not_awaited()
+
+    async def test_numcat_margin_rows_map_to_legacy_audit_contract_and_keep_nulls(self):
+        collector = EastMoneyDataCollector()
+        with patch.object(
+            collector, "_numcat_margin_detail_row",
+            wraps=collector._numcat_margin_detail_row,
+        ):
+            row = collector._numcat_margin_detail_row({
+                "tradedate": "20260828", "symbol": "600519", "name": "贵州茅台",
+                "exchange": "SSE", "financing_balance": None,
+                "financing_buy_amount": 100, "financing_repayment_amount": 40,
+            })
+
+        self.assertEqual(row["MARKET"], "融资融券_沪证")
+        self.assertEqual(row["SCODE"], "600519")
+        self.assertEqual(row["RZJME"], 60)
+        self.assertIsNone(row["RZYE"])
+
+    async def test_numcat_dragon_board_is_used_before_eastmoney(self):
+        collector = EastMoneyDataCollector()
+        upstream = [{"code": "000001", "name": "平安银行", "date": "2026-08-29", "source": "numcat_longhubang"}]
+        with (
+            patch("services.data_collector.settings.meoz_enabled", True),
+            patch("services.data_collector.settings.meoz_api_key", "test-key"),
+            patch("services.data_collector.numcat_market_provider.dragon_board", new_callable=AsyncMock, return_value=upstream),
+            patch.object(collector, "fetch_json", new_callable=AsyncMock) as fetch_json,
+        ):
+            result = await collector.fetch_dragon_board(target_date=date(2026, 8, 29))
+
+        self.assertEqual(result, upstream)
+        fetch_json.assert_not_awaited()
+
+    async def test_numcat_auction_detail_fills_auction_quote_with_observation_time(self):
+        collector = EastMoneyDataCollector()
+        with (
+            patch("services.data_collector.settings.meoz_enabled", True),
+            patch("services.data_collector.settings.meoz_api_key", "test-key"),
+            patch("services.data_collector.numcat_market_provider.auction_detail_snapshot", new_callable=AsyncMock, return_value=[{
+                "tradedate": "2026-08-29", "symbol": "600519", "name": "贵州茅台",
+                "time": "09:25:00", "m_price": 1500, "auc_vol": 1200,
+                "auc_amt": 1800000, "auc_pct_chg": 1.2, "auc_to_pre_vol_pct": 125,
+                "um_vol": 50, "um_side": "b",
+            }]),
+            patch("services.data_collector.numcat_market_provider.auction", new_callable=AsyncMock, return_value=[]),
+        ):
+            result = await collector.fetch_stock_auction_quotes(["600519"])
+
+        self.assertEqual(result["source"], "numcat_daily_auc_detail")
+        self.assertEqual(result["stocks"][0]["auction_volume"], 1200)
+        self.assertEqual(result["stocks"][0]["quote_at"], "2026-08-29T09:25:00+08:00")
+        self.assertFalse(result["stocks"][0]["is_realtime"])
+
     async def test_block_trade_snapshot_is_reused_for_concurrent_page_requests(self):
         collector = EastMoneyDataCollector()
         calls = 0
@@ -232,6 +331,25 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(directory), 2)
         self.assertTrue(next(item for item in directory if item["code"] == "600519")["is_currently_listed"])
         self.assertFalse(next(item for item in directory if item["code"] == "000003")["is_currently_listed"])
+
+    async def test_numcat_security_directory_preserves_inactive_listing_states(self):
+        collector = EastMoneyDataCollector()
+        with patch(
+            "services.data_collector.settings.meoz_api_key",
+            "test-key",
+        ), patch(
+            "services.data_collector.numcat_market_provider.security_directory",
+            new=AsyncMock(return_value=[
+                {"code": "600519", "name": "贵州茅台", "list_status": "L", "industry": "白酒"},
+                {"code": "000003", "name": "PT金田A", "list_status": "D", "delist_date": "2002-06-14"},
+            ]),
+        ):
+            result = await collector.fetch_security_directory_snapshot()
+
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["source"], "numcat_stockbasic")
+        self.assertTrue(result["records"][0]["is_currently_listed"])
+        self.assertFalse(result["records"][1]["is_currently_listed"])
 
     def test_limit_pool_uses_actual_consecutive_board_height(self):
         collector = EastMoneyDataCollector()

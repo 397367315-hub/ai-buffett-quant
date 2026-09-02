@@ -110,6 +110,36 @@ class StrategicMarketDataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[dates[-1]]["max_streak_height"], 3)
         self.assertEqual(result[dates[-1]]["failed_limit_count"], 0)
 
+    async def test_numcat_emotion_can_fill_breadth_without_manufacturing_turnover(self):
+        target = date(2026, 8, 29)
+        with patch(
+            "services.strategic_market_data.collector.fetch_market_emotion_history",
+            new_callable=AsyncMock,
+            return_value=[{
+                "trade_date": target.isoformat(),
+                "up_count": 2800,
+                "down_count": 2100,
+                "flat_count": 120,
+                "stock_count": 5020,
+                "market_amount": 1_500_000_000_000,
+                "limit_up_count": 72,
+                "limit_down_count": 5,
+                "failed_limit_count": 18,
+                "failed_limit_rate": 20.0,
+                "max_streak_height": 7,
+            }],
+        ):
+            result = await self.service.sync_recent(days=5)
+
+        self.assertEqual(result["status"], "success")
+        async with self.session_factory() as session:
+            row = await session.get(MarketSentimentDaily, target)
+        self.assertEqual(row.up_count, 2800)
+        self.assertEqual(row.limit_up_count, 72)
+        self.assertEqual(row.source, "numcat_emoindic_daily")
+        self.assertIsNone(row.average_turnover)
+        self.assertEqual(row.turnover_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

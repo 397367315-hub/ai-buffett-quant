@@ -26,10 +26,32 @@ services:
         value: "10"
       - key: LEVEL2_ENABLED
         value: "true"
+      - key: MEOZ_ENABLED
+        value: "true"
+      - key: MEOZ_API_KEY
+        sync: false
+      - key: MEOZ_API_ROUTE
+        value: dedicated
       - key: NUMCAT_API_KEY
         sync: false
       - key: NUMCAT_API_BASE
         value: https://numcat.net/api
+      - key: NUMCAT_ROUTE
+        value: dedicated
+      - key: NUMCAT_SZ_BASE_URL
+        value: http://sz.numcat.net:8866/api
+      - key: NUMCAT_SH_BASE_URL
+        value: http://sh.numcat.net:8866/api
+      - key: NUMCAT_PUBLIC_BASE_URL
+        value: https://numcat.net/api
+      - key: NUMCAT_ALLOW_PUBLIC_FALLBACK
+        value: "false"
+      - key: NUMCAT_GLOBAL_QPS
+        value: "50"
+      - key: NUMCAT_GLOBAL_RPM
+        value: "500"
+      - key: NUMCAT_HEAVY_QPS
+        value: "5"
       - key: NUMCAT_TIMEOUT
         value: "20"
       - key: NUMCAT_RETRY_COUNT

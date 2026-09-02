@@ -289,6 +289,46 @@ class MarginLeverageTests(unittest.IsolatedAsyncioTestCase):
             row = await session.get(MarginMarketDaily, target)
         self.assertEqual(row.lmi_score, result["score"])
 
+    async def test_sync_keeps_numcat_disclosure_when_sector_fallback_is_unavailable(self):
+        target = date(2026, 8, 28)
+        market_history = [{
+            "trade_date": target.isoformat(),
+            "financing_balance": 2_600_000_000_000,
+            "source": "numcat_margin_summary",
+        }]
+        snapshot = {
+            "complete": True,
+            "records": [{"DATE": target.isoformat(), "SCODE": "600519"}],
+            "source": "numcat_margin_detail",
+        }
+        with (
+            patch(
+                "services.margin_leverage.collector.fetch_margin_market_history",
+                new_callable=AsyncMock, return_value=market_history,
+            ),
+            patch(
+                "services.margin_leverage.collector.fetch_margin_stock_snapshot",
+                new_callable=AsyncMock, return_value=snapshot,
+            ),
+            patch.object(self.service, "_audit_stock_snapshot", return_value={"passed": True}),
+            patch.object(self.service, "_sync_market_history", new_callable=AsyncMock, return_value=1),
+            patch.object(self.service, "_sync_stock_snapshot", new_callable=AsyncMock, return_value=(1, ["600519"])),
+            patch.object(self.service, "_sync_sectors", new_callable=AsyncMock, side_effect=RuntimeError("upstream unavailable")),
+            patch.object(self.service, "_calculate_recent_metrics", new_callable=AsyncMock, return_value=1) as calculate_metrics,
+            patch.object(self.service, "_calculate_lmi", new_callable=AsyncMock, return_value={"score": 55}),
+        ):
+            result = await self.service.sync(full=False, prewarm=False)
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["sector_status"], "cached")
+        self.assertIn("RuntimeError", result["sector_error"])
+        self.assertEqual(
+            result["source_components"],
+            ["numcat_margin_summary", "numcat_margin_detail"],
+        )
+        self.assertEqual(result["source"], "numcat_margin_summary+numcat_margin_detail")
+        calculate_metrics.assert_awaited_once_with(target)
+
 
 if __name__ == "__main__":
     unittest.main()

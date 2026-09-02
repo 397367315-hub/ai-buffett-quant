@@ -174,9 +174,14 @@ const plainPercent = (value: unknown, digits = 2) => finite(value) ? `${value.to
 
 function sourceText(value: unknown): string {
   const source = String(value || '');
+  if (source.includes('+')) {
+    return source.split('+').filter(Boolean).map((item) => sourceText(item)).join(' + ');
+  }
   if (source.includes('RZRQ_LSHJ') || source.includes('margin_disclosure')) {
     return '东方财富两融官方汇总';
   }
+  if (source.includes('numcat')) return '猫爪数据缓存';
+  if (source.includes('eastmoney')) return '东方财富缓存';
   return source || '暂无缓存';
 }
 
@@ -295,14 +300,18 @@ export default function MarginLeveragePage() {
     setLoading(true);
     setLoadingProgress(5);
     setError('');
-    try {
-      const marketTask = loadMarket().then((result) => { setLoadingProgress(38); return result; });
-      const sectorTask = loadSectors(sectorType, sectorSort).then(() => setLoadingProgress((value) => Math.max(value, 68)));
-      const rankTask = loadRankings(rankMetric).then(() => setLoadingProgress((value) => Math.max(value, 88)));
-      await Promise.all([marketTask, sectorTask, rankTask]);
+  try {
+    const marketTask = loadMarket().then((result) => { setLoadingProgress(38); return result; });
+    const sectorTask = loadSectors(sectorType, sectorSort).then(() => setLoadingProgress((value) => Math.max(value, 68)));
+    const rankTask = loadRankings(rankMetric).then(() => setLoadingProgress((value) => Math.max(value, 88)));
+      const results = await Promise.allSettled([marketTask, sectorTask, rankTask]);
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       setLoadingProgress(100);
-    } catch (caught) {
-      setError(friendlyApiError(caught, '两融杠杆中心加载失败'));
+      if (failures.length === results.length) {
+        setError(friendlyApiError(failures[0].reason, '两融杠杆中心加载失败'));
+      } else if (failures.length > 0) {
+        setError(`${failures.length}个两融数据区块暂时不可用，页面已保留其他区块和最近缓存。`);
+      }
     } finally {
       setLoading(false);
     }
