@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     numcat_global_rpm: int = 500
     numcat_heavy_qps: int = 5
     numcat_cache_max_entries: int = 512
+    # NumCat responses stay in bounded process memory and are never written
+    # to PostgreSQL by the gateway. Oversized payloads are not cached.
+    numcat_cache_max_bytes: int = 16 * 1024 * 1024
+    numcat_cache_max_payload_bytes: int = 2 * 1024 * 1024
     numcat_schema_url: str = ""
     numcat_schema_cache_file: str = ""
     numcat_timeout: float = 20.0

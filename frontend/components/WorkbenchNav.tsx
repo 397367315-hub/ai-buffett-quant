@@ -16,8 +16,14 @@ const LINKS = [
   ['/quant', '量化策略'],
   ['/pro/flow-observer', '资金流观察'],
   ['/pro/topic-strength', '题材强弱'],
+  ['/pro/event-radar', '事件雷达'],
+  ['/pro/auction', '竞价监控'],
+  ['/pro/heatmap', '资金热力图'],
+  ['/pro/margin', '两融杠杆'],
+  ['/pro/dragon-board', '龙虎榜'],
   ['/pro/personal', '个人股票池'],
   ['/pro/robot', 'AI机器人池'],
+  ['/numcat', '猫爪数据中枢'],
   ['/ai', 'AI助手'],
 ] as const;
 

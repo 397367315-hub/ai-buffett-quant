@@ -2,5 +2,16 @@
 
 from .gateway import NumCatGateway, NumCatGatewayError, numcat_gateway
 from .market_provider import NumCatMarketProvider, numcat_market_provider
+from .extended_provider import (
+    DOCUMENTED_APINAMES,
+    MISSING_TYPED_APINAMES,
+    NumCatExtendedProvider,
+    numcat_extended_provider,
+)
 
-__all__ = ["NumCatGateway", "NumCatGatewayError", "numcat_gateway", "NumCatMarketProvider", "numcat_market_provider"]
+__all__ = [
+    "NumCatGateway", "NumCatGatewayError", "numcat_gateway",
+    "NumCatMarketProvider", "numcat_market_provider",
+    "DOCUMENTED_APINAMES", "MISSING_TYPED_APINAMES",
+    "NumCatExtendedProvider", "numcat_extended_provider",
+]

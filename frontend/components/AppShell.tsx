@@ -13,7 +13,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
 
   const isLoginPage = pathname === '/login';
-  const isFullscreenWorkbench = pathname === '/market' || pathname.startsWith('/market/v4') || pathname === '/strong-stock-decision';
+  const isV5Workbench = pathname === '/market';
+  const isFullscreenWorkbench = pathname.startsWith('/market/v4') || pathname === '/strong-stock-decision';
 
   useEffect(() => {
     if (isAuthReady && !isLoggedIn && !isLoginPage) {
@@ -35,8 +36,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
     );
   }
 
-  // V5 owns its full terminal chrome. V4 and the remaining modules continue
-  // to use the shared application navigation so both workbenches stay isolated.
+  // V5 owns its full terminal chrome. V4 and the strong-stock module use the
+  // compact cross-module navigation without adding a second bar to V5.
+  if (isV5Workbench) {
+    return <main className="flex-1">{children}</main>;
+  }
+
   if (isFullscreenWorkbench) {
     return <><WorkbenchNav /><main className="flex-1">{children}</main></>;
   }

@@ -24,6 +24,10 @@ from services.decision_workbench_2026 import decision_workbench_2026_service
 from services.market_decision_workbench import market_decision_workbench_service
 from services.market_way_v4 import market_way_v4_service
 from services.openclaw_database import query_system_database
+from market_data.numcat.extended_provider import (
+    DOCUMENTED_APINAMES,
+    numcat_extended_provider,
+)
 from services.overnight_strategy import overnight_strategy_service
 from services.personal_portfolio import personal_portfolio_service
 from services.stock_selection_agents import stock_selection_agents
@@ -258,6 +262,87 @@ async def _save_market_judgment(arguments: dict[str, Any]) -> dict[str, Any]:
     return await market_way_v4_service.save_judgment(arguments)
 
 
+async def _query_numcat_data(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Expose the documented NumCat catalog without exposing vendor credentials."""
+    apiname = str(arguments.get("apiname") or "").strip().lower()
+    if apiname not in DOCUMENTED_APINAMES:
+        raise ValueError(f"不支持的猫爪接口: {apiname or '空'}")
+    params = arguments.get("params")
+    if params is not None and not isinstance(params, dict):
+        raise ValueError("params 必须是对象")
+    if isinstance(params, dict):
+        for key in ("symbols", "symbol"):
+            values = params.get(key)
+            if isinstance(values, str):
+                values = [item.strip() for item in values.split(",") if item.strip()]
+            if isinstance(values, (list, tuple, set)) and len(values) > 200:
+                raise ValueError(f"{key} 一次最多查询200个值")
+    fields = arguments.get("fields")
+    if fields is not None and not isinstance(fields, (str, list)):
+        raise ValueError("fields 必须是字符串或数组")
+    if isinstance(fields, list) and len(fields) > 120:
+        raise ValueError("fields 一次最多120个字段")
+    refresh = arguments.get("refresh", False)
+    if not isinstance(refresh, bool):
+        raise ValueError("refresh 必须是布尔值")
+    cache_ttl = arguments.get("cache_ttl")
+    if cache_ttl is not None:
+        try:
+            cache_ttl = _int_arg(arguments, "cache_ttl", int(cache_ttl), 0, 24 * 60 * 60)
+        except (TypeError, ValueError) as exc:
+            if isinstance(exc, ValueError) and "必须是整数" not in str(exc):
+                raise
+            raise ValueError("cache_ttl 必须是0到86400之间的整数") from exc
+    result = await numcat_extended_provider.query(
+        apiname,
+        params=params,
+        fields=fields,
+        refresh=refresh,
+        cache_ttl=cache_ttl,
+    )
+    return {
+        **result,
+        "consumer": "openclaw",
+        "raw_response_persisted": False,
+    }
+
+
+async def _get_numcat_research_bundle(arguments: dict[str, Any]) -> dict[str, Any]:
+    raw_symbols = arguments.get("symbols") or arguments.get("stock_codes")
+    if isinstance(raw_symbols, str):
+        raw_symbols = [item.strip() for item in raw_symbols.split(",") if item.strip()]
+    if not isinstance(raw_symbols, list) or not raw_symbols:
+        raise ValueError("symbols 必须是非空数组或逗号分隔字符串")
+    if len(raw_symbols) > 20:
+        raise ValueError("research_bundle 一次最多查询20只股票")
+    symbols = list(dict.fromkeys(str(item).strip() for item in raw_symbols if str(item).strip()))
+    if not symbols:
+        raise ValueError("symbols 不能为空")
+    tradedate = arguments.get("tradedate")
+    parsed_date = None
+    if tradedate:
+        try:
+            parsed_date = date.fromisoformat(str(tradedate)[:10])
+        except ValueError as exc:
+            raise ValueError("tradedate 必须使用YYYY-MM-DD格式") from exc
+    options = {}
+    for key in ("include_finance", "include_regulatory", "include_microstructure"):
+        value = arguments.get(key, True)
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} 必须是布尔值")
+        options[key] = value
+    result = await numcat_extended_provider.research_bundle(
+        symbols,
+        tradedate=parsed_date,
+        **options,
+    )
+    return {
+        **result,
+        "consumer": "openclaw",
+        "raw_response_persisted": False,
+    }
+
+
 ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -439,6 +524,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "query_numcat_data",
+        "description": "按官方猫爪接口白名单读取行情、竞价、板块、Level-2、财务、公告、监管和互联互通数据；只读、短缓存，不返回API密钥或写入原始响应。",
+        "inputSchema": {
+            "type": "object",
+            "required": ["apiname"],
+            "properties": {
+                "apiname": {"type": "string", "description": "官方接口名，例如tick、theme_reason、finance_indicator"},
+                "params": {"type": "object", "description": "接口参数；服务端会限制字段、数量和大小"},
+                "fields": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                "refresh": {"type": "boolean", "default": False},
+                "cache_ttl": {"type": "integer", "minimum": 0, "maximum": 86400},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_numcat_research_bundle",
+        "description": "按最多20只股票汇总猫爪行情、竞价、交易约束、异动和财务PIT研究数据；失败分区会明确标注，不用零值冒充。",
+        "inputSchema": {
+            "type": "object",
+            "required": ["symbols"],
+            "properties": {
+                "symbols": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "tradedate": {"type": "string", "format": "date"},
+                "include_finance": {"type": "boolean", "default": True},
+                "include_regulatory": {"type": "boolean", "default": True},
+                "include_microstructure": {"type": "boolean", "default": True},
+            },
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -466,6 +583,8 @@ HANDLERS: dict[str, ToolHandler] = {
     "get_national_direction_radar": _national_direction_radar,
     "refresh_market_way_sources": _refresh_market_way_sources,
     "save_market_way_judgment": _save_market_judgment,
+    "query_numcat_data": _query_numcat_data,
+    "get_numcat_research_bundle": _get_numcat_research_bundle,
     "query_system_database": query_system_database,
 }
 

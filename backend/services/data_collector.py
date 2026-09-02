@@ -18,6 +18,7 @@ import httpx
 
 from config import settings
 from services.ftshare_mcp import ftshare_mcp_client
+from market_data.numcat.extended_provider import numcat_extended_provider
 from market_data.numcat.market_provider import numcat_market_provider
 
 
@@ -88,6 +89,15 @@ def as_optional_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_value(row: dict, *keys: str):
+    """Return the first present vendor field without coercing missing data."""
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, "", "-"):
+            return value
+    return None
 
 
 def normalize_stock_code(value: object) -> str:
@@ -2167,13 +2177,19 @@ class EastMoneyDataCollector:
 
         if numcat_market_provider.configured:
             try:
-                detail_result, metric_result = await asyncio.gather(
+                detail_result, metric_result, last_tick_result, limit_buy_result, one_price_result = await asyncio.gather(
                     numcat_market_provider.auction_detail_snapshot(codes),
                     numcat_market_provider.auction(codes),
+                    numcat_extended_provider.last_tick(codes),
+                    numcat_extended_provider.auction_limit_buy(codes),
+                    numcat_extended_provider.auction_one_price(codes),
                     return_exceptions=True,
                 )
                 detail_rows = [] if isinstance(detail_result, Exception) else detail_result
                 metric_rows = [] if isinstance(metric_result, Exception) else metric_result
+                last_tick_rows = [] if isinstance(last_tick_result, Exception) else last_tick_result
+                limit_buy_rows = [] if isinstance(limit_buy_result, Exception) else limit_buy_result
+                one_price_rows = [] if isinstance(one_price_result, Exception) else one_price_result
                 rows = detail_rows or metric_rows
                 if rows:
                     details_by_code = {
@@ -2184,11 +2200,26 @@ class EastMoneyDataCollector:
                         str(item.get("symbol") or "").split(".", 1)[0].zfill(6): item
                         for item in metric_rows
                     }
+                    last_ticks_by_code = {
+                        str(item.get("symbol") or "").split(".", 1)[0].zfill(6): item
+                        for item in last_tick_rows
+                    }
+                    limit_buy_by_code = {
+                        str(item.get("symbol") or "").split(".", 1)[0].zfill(6): item
+                        for item in limit_buy_rows
+                    }
+                    one_price_by_code = {
+                        str(item.get("symbol") or "").split(".", 1)[0].zfill(6): item
+                        for item in one_price_rows
+                    }
                     now = shanghai_now()
                     ordered = []
                     for code in codes:
                         detail = details_by_code.get(code) or {}
                         metric = metrics_by_code.get(code) or {}
+                        last_tick = last_ticks_by_code.get(code) or {}
+                        limit_buy = limit_buy_by_code.get(code) or {}
+                        one_price = one_price_by_code.get(code) or {}
                         if not detail and not metric:
                             continue
                         trade_date = str(detail.get("tradedate") or metric.get("tradedate") or "")[:10]
@@ -2228,6 +2259,13 @@ class EastMoneyDataCollector:
                             "auction_to_previous_volume_pct": detail.get("auc_to_pre_vol_pct") if detail else None,
                             "unmatched_volume": detail.get("um_vol") if detail else metric.get("um_vol"),
                             "unmatched_side": detail.get("um_side") if detail else metric.get("um_side"),
+                            # These fields are intentionally additive. Missing
+                            # vendor fields remain None instead of being inferred.
+                            "last_auction_price": _first_value(last_tick, "last_price", "price", "m_price"),
+                            "last_auction_volume": _first_value(last_tick, "volume", "vol", "auc_vol"),
+                            "last_auction_amount": _first_value(last_tick, "amount", "auc_amt"),
+                            "limit_buy_amount": _first_value(limit_buy, "limit_buy_amount", "ztwme", "bid_amount", "fd_amount"),
+                            "one_price_seal_amount": _first_value(one_price, "one_price_seal_amount", "fd_amount", "seal_amount", "ztwme"),
                         })
                     if ordered:
                         realtime_complete = len(ordered) == len(codes) and all(
@@ -2250,6 +2288,14 @@ class EastMoneyDataCollector:
                                 "auction_volume": sum(item.get("auction_volume") is not None for item in ordered),
                                 "auction_volume_ratio": sum(item.get("auction_volume_ratio") is not None for item in ordered),
                                 "high_open_pct": sum(item.get("high_open_pct") is not None for item in ordered),
+                                "last_auction_price": sum(item.get("last_auction_price") is not None for item in ordered),
+                                "limit_buy_amount": sum(item.get("limit_buy_amount") is not None for item in ordered),
+                                "one_price_seal_amount": sum(item.get("one_price_seal_amount") is not None for item in ordered),
+                            },
+                            "enhancement_sources": {
+                                "last_auction_tick": bool(last_tick_rows),
+                                "limit_buy": bool(limit_buy_rows),
+                                "one_price_seal": bool(one_price_rows),
                             },
                             "fetched_at": shanghai_now().isoformat(),
                         }

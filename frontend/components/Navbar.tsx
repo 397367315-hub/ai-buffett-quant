@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge } from 'lucide-react';
+import { Activity, BarChart3, Bell, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge, Database } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -14,6 +14,9 @@ const proSubItems = [
   { href: '/pro', label: '资金排名', icon: TrendingUp },
   { href: '/pro/sentiment', label: '市场情绪', icon: TrendingUp },
   { href: '/pro/topic-strength', label: '题材强弱', icon: Flame },
+  { href: '/pro/event-radar', label: 'AI事件雷达', icon: Bell },
+  { href: '/pro/auction', label: '竞价监控', icon: Activity },
+  { href: '/pro/heatmap', label: '资金热力图', icon: BarChart3 },
   { href: '/pro/north-flow', label: '北向资金', icon: TrendingUp },
   { href: '/pro/limit-board', label: '涨跌停板', icon: Zap },
   { href: '/pro/potential', label: '潜力股分析', icon: Sparkles },
@@ -26,6 +29,7 @@ const proSubItems = [
   { href: '/pro/macro', label: '宏观看板', icon: Globe2 },
   { href: '/pro/reports', label: '财报日历', icon: CalendarDays },
   { href: '/pro/research', label: '研究与错误', icon: NotebookPen },
+  { href: '/numcat', label: '猫爪数据中枢', icon: Database },
   { href: '/quant', label: '量化策略', icon: LineChart },
   { href: '/pro/rotation', label: '板块轮动', icon: TrendingUp },
   { href: '/pro/flow-observer', label: '资金流观察', icon: Activity },
@@ -128,6 +132,9 @@ export default function Navbar() {
           </Link>
           <Link href="/roci" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
             <ShieldAlert size={16} /> 风险机会认知
+          </Link>
+          <Link href="/numcat" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
+            <Database size={16} /> 猫爪数据中枢
           </Link>
           <div className="border-t border-border my-2 pt-2">
             <div className="text-xs text-text-secondary px-3 mb-1">专业看板</div>

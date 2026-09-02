@@ -172,6 +172,9 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
                 "um_vol": 50, "um_side": "b",
             }]),
             patch("services.data_collector.numcat_market_provider.auction", new_callable=AsyncMock, return_value=[]),
+            patch("services.data_collector.numcat_extended_provider.last_tick", new_callable=AsyncMock, return_value=[]),
+            patch("services.data_collector.numcat_extended_provider.auction_limit_buy", new_callable=AsyncMock, return_value=[]),
+            patch("services.data_collector.numcat_extended_provider.auction_one_price", new_callable=AsyncMock, return_value=[]),
         ):
             result = await collector.fetch_stock_auction_quotes(["600519"])
 

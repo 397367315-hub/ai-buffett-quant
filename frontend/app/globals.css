@@ -871,7 +871,9 @@ body {
 .v5-event-ai-section p { margin-top: 7px; color: #c1cbd6; font-size: 12px; line-height: 1.8; white-space: pre-line; overflow-wrap: anywhere; }
 .v5-event-ai-meta { margin-top: 7px; color: #748191; font-family: Inter, 'PingFang SC', sans-serif; font-size: 8px; line-height: 1.4; }
 .v5-event-ai-error { border-top: 1px solid #3e2d25; background: #1a1712; color: #d9a441; padding: 8px 11px; font-size: 9px; line-height: 1.5; }
-.v5-global-utility { display: none !important; }
+.v5-nav-divider { display: inline-block; width: 1px; height: 18px; flex: 0 0 1px; background: #263440; }
+.v5-global-utility { display: inline-flex !important; height: 30px !important; align-items: center; border-color: #263746 !important; color: #8fb8ff !important; font-size: 10px !important; padding: 0 9px !important; }
+.v5-global-utility:hover { border-color: #4c8dff !important; color: #f2f4f7 !important; background: #111e2b !important; }
 
 .v5-research-grid > .v5-panel, .v5-research-grid > div > .v5-panel { min-height: 0; }
 .v5-table { border-collapse: collapse; font-size: 10px; }
@@ -979,6 +981,8 @@ body {
   .v5-global-header { position: sticky; grid-template-columns: minmax(210px, 1fr) auto; min-height: 59px; }
   .v5-global-nav { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; height: 35px; border-top: 1px solid #18232e; }
   .v5-global-nav a { height: 34px; padding: 0 12px; }
+  .v5-global-nav .v5-global-utility { height: 28px !important; padding: 0 9px !important; }
+  .v5-nav-divider { height: 16px; }
   .v5-layout { display: block; min-height: 0; }
   .v5-sidebar { display: none; }
   .v5-global-utility { display: inline-flex !important; }
@@ -999,6 +1003,7 @@ body {
   .v5-header-time, .v5-trading-state { display: none; }
   .v5-global-nav { overflow-x: auto; }
   .v5-global-nav a { padding: 0 10px; }
+  .v5-global-nav .v5-global-utility { padding: 0 8px !important; }
   .v5-section-header { min-height: 43px; padding: 8px 10px; }
   .v5-section-header h2 { font-size: 12px; }
   .v5-section-header p { display: none; }

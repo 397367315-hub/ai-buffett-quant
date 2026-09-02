@@ -1101,8 +1101,10 @@ export default function MarketDecisionWorkbenchPage() {
           <span className="min-w-0"><strong>AI多因子共振预测中枢 <b>V5.1</b></strong><small>进因势位时止 · 洞察先机 · 驭势而行</small></span>
         </Link>
             <nav className="v5-global-nav" aria-label="预测工作台功能导航">
-          <a className="active" href="#forecast">预测引擎</a><a href="#factors">因子监控</a><a href="#sectors">板块轮动</a><a href="#alpha">Alpha雷达</a><a href="#history">历史回溯</a><a href="#strategy">策略执行</a><a href="#system-status">系统状态</a><Link className="v5-global-utility" href="/market/v4">V4工作台</Link><Link className="v5-global-utility" href="/pro/research">研究中心</Link><Link className="v5-global-utility" href="/pro/personal">个人股票池</Link><Link className="v5-global-utility" href="/quant">量化策略</Link>
-        </nav>
+              <a className="active" href="#forecast">预测引擎</a><a href="#factors">因子监控</a><a href="#sectors">板块轮动</a><a href="#alpha">Alpha雷达</a><a href="#history">历史回溯</a><a href="#strategy">策略执行</a><a href="#system-status">系统状态</a>
+              <span className="v5-nav-divider" aria-hidden="true" />
+              <Link className="v5-global-utility" href="/market/v4">V4工作台</Link><Link className="v5-global-utility" href="/pro/research">研究中心</Link><Link className="v5-global-utility" href="/pro/event-radar">事件雷达</Link><Link className="v5-global-utility" href="/pro/auction">竞价监控</Link><Link className="v5-global-utility" href="/numcat">数据中枢</Link><Link className="v5-global-utility" href="/quant">量化策略</Link>
+            </nav>
         <div className="v5-global-meta"><span className="v5-header-time">{localTime(forecast.generated_at)}</span><span className={`v5-trading-state ${supplement?.meta?.is_realtime ? 'live' : ''}`}><i />{supplement?.meta?.is_realtime ? '交易中' : '缓存快照'}</span><button type="button" className="v5-header-icon" title="刷新工作台" aria-label="刷新工作台" onClick={() => void load(true)} disabled={refreshing}>{refreshing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}</button><UserCircle size={22} className="v5-user-mark" aria-hidden="true" /></div>
         {refreshing && <div className="v5-refresh-progress" role="progressbar" aria-label="刷新工作台进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div>}
       </header>

@@ -27,6 +27,39 @@ class OpenClawGatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("run_midday_research", names)
         self.assertIn("get_decision_workbench_2026", names)
         self.assertIn("get_decision_snapshots", names)
+        self.assertIn("query_numcat_data", names)
+        self.assertIn("get_numcat_research_bundle", names)
+
+    async def test_numcat_tool_is_allowlisted_and_does_not_expose_credentials(self):
+        with patch(
+            "services.openclaw_gateway.numcat_extended_provider.query",
+            new=AsyncMock(return_value={
+                "apiname": "tick", "source": "numcat", "data": {"items": []},
+                "persistent_raw_storage": False,
+            }),
+        ) as query:
+            response = await openclaw_gateway.handle_rpc({
+                "jsonrpc": "2.0", "id": 8, "method": "tools/call",
+                "params": {"name": "query_numcat_data", "arguments": {
+                    "apiname": "tick", "params": {"symbols": ["600519"]},
+                }},
+            })
+
+        payload = response["result"]["structuredContent"]
+        self.assertFalse(response["result"]["isError"])
+        self.assertEqual(payload["source"], "numcat")
+        self.assertFalse(payload["raw_response_persisted"])
+        self.assertNotIn("api_key", str(payload).lower())
+        query.assert_awaited_once()
+
+        rejected = await openclaw_gateway.handle_rpc({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "query_numcat_data", "arguments": {
+                "apiname": "https://example.invalid/api", "params": {},
+            }},
+        })
+        self.assertTrue(rejected["result"]["isError"])
+        self.assertIn("不支持的猫爪接口", rejected["result"]["content"][0]["text"])
 
     async def test_tool_call_is_allowlisted_and_returns_structured_content(self):
         with patch(

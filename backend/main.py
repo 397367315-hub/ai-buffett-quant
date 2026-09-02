@@ -16,6 +16,7 @@ from api.roci_routes import router as roci_router, legacy_router as roci_legacy_
 from api.strong_stock_decision_routes import router as strong_stock_decision_router, v2_router as strong_stock_decision_v2_router
 from api.margin_routes import router as margin_router
 from api.level2_routes import router as level2_router
+from api.numcat_routes import router as numcat_router
 from api.strong_stock_v21_routes import router as strong_stock_v21_router
 from database import init_db
 from config import settings
@@ -109,6 +110,7 @@ app.include_router(strong_stock_decision_v2_router, prefix="/api/v1/strong-stock
 app.include_router(strong_stock_decision_v2_router, prefix="/api/strong-stock-decision/v2")
 app.include_router(margin_router)
 app.include_router(level2_router)
+app.include_router(numcat_router)
 
 
 @app.get("/")

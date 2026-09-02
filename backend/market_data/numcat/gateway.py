@@ -116,6 +116,7 @@ class NumCatGateway:
         self._sleep = sleep
         self.governor = NumCatUsageGovernor()
         self._cache: dict[str, _CacheEntry] = {}
+        self._cache_bytes = 0
         self._inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
         self._metrics = {
@@ -126,6 +127,8 @@ class NumCatGateway:
             "errors": 0,
             "last_latency_ms": None,
             "avg_latency_ms": None,
+            "cache_bytes": 0,
+            "cache_skipped_oversize": 0,
         }
 
     @property
@@ -191,7 +194,7 @@ class NumCatGateway:
         if entry is None:
             return None
         if entry.expires_at <= time.monotonic():
-            self._cache.pop(key, None)
+            self._cache_delete(key)
             return None
         self._metrics["cache_hits"] += 1
         return entry.payload
@@ -200,13 +203,42 @@ class NumCatGateway:
         if ttl <= 0:
             return
         try:
+            payload_bytes = len(json.dumps(payload, ensure_ascii=True, default=str).encode("utf-8"))
+            max_payload_bytes = min(max(int(settings.numcat_cache_max_payload_bytes), 64 * 1024), 16 * 1024 * 1024)
+            max_cache_bytes = min(max(int(settings.numcat_cache_max_bytes), max_payload_bytes), 128 * 1024 * 1024)
+        except (TypeError, ValueError):
+            payload_bytes = 0
+            max_payload_bytes = 2 * 1024 * 1024
+            max_cache_bytes = 16 * 1024 * 1024
+        if payload_bytes <= 0 or payload_bytes > max_payload_bytes:
+            self._metrics["cache_skipped_oversize"] += 1
+            return
+        try:
             limit = min(max(int(settings.numcat_cache_max_entries), 32), 10_000)
         except (TypeError, ValueError):
             limit = 512
-        if len(self._cache) >= limit:
+        self._cache_delete(key)
+        while self._cache and (
+            len(self._cache) >= limit or self._cache_bytes + payload_bytes > max_cache_bytes
+        ):
             oldest = min(self._cache, key=lambda item: self._cache[item].expires_at)
-            self._cache.pop(oldest, None)
+            self._cache_delete(oldest)
         self._cache[key] = _CacheEntry(time.monotonic() + ttl, payload)
+        self._cache_bytes += payload_bytes
+        self._metrics["cache_bytes"] = self._cache_bytes
+
+    def _cache_delete(self, key: str) -> None:
+        entry = self._cache.pop(key, None)
+        if entry is None:
+            return
+        try:
+            self._cache_bytes = max(
+                0,
+                self._cache_bytes - len(json.dumps(entry.payload, ensure_ascii=True, default=str).encode("utf-8")),
+            )
+        except (TypeError, ValueError):
+            self._cache_bytes = 0
+        self._metrics["cache_bytes"] = self._cache_bytes
 
     async def query(
         self,
@@ -354,7 +386,10 @@ class NumCatGateway:
             "public_fallback_enabled": bool(settings.numcat_allow_public_fallback),
             "api_key_exposed_to_frontend": False,
             "cache_entries": len(self._cache),
-            "cache_policy": "短缓存+请求合并，默认不持久化原始行情",
+            "cache_bytes": self._cache_bytes,
+            "cache_max_bytes": settings.numcat_cache_max_bytes,
+            "cache_max_payload_bytes": settings.numcat_cache_max_payload_bytes,
+            "cache_policy": "短缓存+请求合并+字节上限，默认不持久化原始行情",
             "usage": {**self._metrics, **self.governor.snapshot()},
         }
 
@@ -362,7 +397,7 @@ class NumCatGateway:
         now = time.monotonic()
         expired = [key for key, entry in self._cache.items() if entry.expires_at <= now]
         for key in expired:
-            self._cache.pop(key, None)
+            self._cache_delete(key)
         return len(expired)
 
 
