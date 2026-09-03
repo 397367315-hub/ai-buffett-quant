@@ -47,6 +47,7 @@ from services.market_way_v4 import market_way_v4_service
 from services.block_trade_analysis import block_trade_analysis_service
 from services.stock_essence_decision import stock_essence_decision_service
 from quant.market_cache import load_quant_market_snapshot
+from market_data.numcat.market_provider import numcat_market_provider
 
 router = APIRouter(prefix="/api/v1")
 
@@ -1382,32 +1383,63 @@ async def get_north_daily(days: int = Query(10, ge=1, le=60)):
 
 
 @router.get("/market/sentiment")
-async def get_market_sentiment():
+async def get_market_sentiment(refresh: bool = Query(False)):
     """市场情绪综合仪表盘"""
-    breadth, turnover, concept, limit_up, limit_down = await asyncio.gather(
+    breadth, turnover, concept, limit_up, limit_down, numcat_emotion = await asyncio.gather(
         _fetch_market_component("breadth", collector.fetch_market_breadth(), {}),
         _fetch_market_component("turnover", collector.fetch_market_turnover(), {}),
         _fetch_market_component("concept-flow", collector.fetch_concept_flow(page_size=20), []),
         _fetch_market_component("limit-up", collector.fetch_limit_up_pool(), {"stocks": [], "total": 0, "trade_date": None}),
         _fetch_market_component("limit-down", collector.fetch_limit_down_pool(), {"stocks": [], "total": 0, "trade_date": None}),
+        _fetch_market_component(
+            "numcat-emotion",
+            numcat_market_provider.market_emotion(recentdays=10) if numcat_market_provider.configured else asyncio.sleep(0, result=[]),
+            [],
+        ),
     )
-    available = bool(breadth or turnover or concept)
+    emotion_history = sorted(
+        [row for row in numcat_emotion if isinstance(row, dict) and row.get("trade_date")],
+        key=lambda row: str(row.get("trade_date")),
+    )
+    emotion = emotion_history[-1] if emotion_history else {}
+    emotion_up = emotion.get("up_count")
+    emotion_down = emotion.get("down_count")
+    emotion_flat = emotion.get("flat_count")
+    emotion_total = emotion.get("stock_count")
+    if emotion_total and emotion_up is not None and emotion_down is not None:
+        breadth = {
+            "全市场": {
+                "up": as_int(emotion_up),
+                "down": as_int(emotion_down),
+                "flat": as_int(emotion_flat),
+                "total": as_int(emotion_total),
+                "ratio": round(as_int(emotion_up) / max(as_int(emotion_up) + as_int(emotion_down), 1) * 100, 2),
+                "source": "numcat_emoindic_daily",
+            },
+            **{key: value for key, value in breadth.items() if key != "全市场"},
+        }
+    available = bool(breadth or turnover or concept or emotion)
     score = 50
     details: list[str] = []
-    for market, market_data in breadth.items():
+    scored_breadth = next(iter(breadth.items()), None)
+    if scored_breadth:
+        market, market_data = scored_breadth
         if market_data["total"] <= 0:
-            continue
-        ratio = market_data["ratio"]
-        if ratio > 70:
-            score += 10
-            details.append(f"{market}涨跌比{ratio}%，偏乐观")
-        elif ratio < 30:
-            score -= 10
-            details.append(f"{market}涨跌比{ratio}%，偏悲观")
+            scored_breadth = None
         else:
-            details.append(f"{market}涨跌比{ratio}%，中性")
-    up_count, down_count = limit_up["total"], limit_down["total"]
-    if limit_up["trade_date"]:
+            ratio = market_data["ratio"]
+            if ratio > 70:
+                score += 12
+                details.append(f"{market}上涨占比{ratio}%，赚钱效应较强")
+            elif ratio < 30:
+                score -= 12
+                details.append(f"{market}上涨占比{ratio}%，亏钱效应较强")
+            else:
+                details.append(f"{market}上涨占比{ratio}%，多空分化")
+    up_count = as_int(emotion.get("limit_up_count"), as_int(limit_up.get("total")))
+    down_count = as_int(emotion.get("limit_down_count"), as_int(limit_down.get("total")))
+    data_date = emotion.get("trade_date") or limit_up.get("trade_date") or limit_down.get("trade_date")
+    if data_date:
         details.append(f"涨停{up_count}只，跌停{down_count}只")
     if up_count > 100:
         score += 15
@@ -1417,21 +1449,51 @@ async def get_market_sentiment():
         score -= 15
     elif down_count > 10:
         score -= 5
-    total_inflow = sum(as_int(row.get("main_net_inflow")) for row in concept)
-    if concept:
+    concept_inflow = sum(as_int(row.get("main_net_inflow")) for row in concept)
+    total_inflow = emotion.get("main_net_inflow")
+    total_inflow = as_int(total_inflow, concept_inflow) if total_inflow is not None else concept_inflow
+    if concept or emotion.get("main_net_inflow") is not None:
         if total_inflow > 5_000_000_000:
             score += 10
             details.append("主力资金大幅流入")
         elif total_inflow < -5_000_000_000:
             score -= 10
             details.append("主力资金大幅流出")
+    failed_limit_rate = emotion.get("failed_limit_rate")
+    promotion_rate = emotion.get("promotion_rate")
+    if failed_limit_rate is not None:
+        failed_limit_rate = as_float(failed_limit_rate)
+        if failed_limit_rate >= 40:
+            score -= 8
+            details.append(f"炸板率{failed_limit_rate:.1f}%，封板承接偏弱")
+        elif failed_limit_rate <= 20:
+            score += 4
+            details.append(f"炸板率{failed_limit_rate:.1f}%，封板质量较好")
+    if promotion_rate is not None:
+        promotion_rate = as_float(promotion_rate)
+        if promotion_rate >= 40:
+            score += 5
+        elif promotion_rate < 20:
+            score -= 5
     score = max(0, min(100, score)) if available else None
     label = "数据暂不可用" if score is None else (
         "极度乐观" if score >= 75 else "偏乐观" if score >= 60 else "中性" if score >= 45 else "偏悲观" if score >= 30 else "极度悲观"
     )
 
-    main_flow_trend = None if not concept else (
+    main_flow_trend = None if not concept and emotion.get("main_net_inflow") is None else (
         "流入" if total_inflow > 0 else "流出" if total_inflow < 0 else "平衡"
+    )
+    failed_count = emotion.get("failed_limit_count")
+    high_feedback = emotion.get("deep_retrace_count")
+    psychology = "冷漠"
+    if score is not None:
+        psychology = "亢奋" if score >= 78 else "追逐" if score >= 68 else "相信" if score >= 58 else "分歧" if score >= 43 else "恐慌" if score >= 25 else "绝望"
+    risk_level = "高" if (down_count >= 30 or as_float(failed_limit_rate) >= 45) else "中" if (down_count >= 10 or as_float(failed_limit_rate) >= 30) else "低"
+    metadata = _market_metadata(
+        available=available,
+        data_date=str(data_date) if data_date else None,
+        is_realtime=bool(data_date == shanghai_now().date().isoformat() and is_a_share_market_session(shanghai_now())),
+        source="numcat+eastmoney" if emotion else "eastmoney",
     )
     return {
         "code": 0,
@@ -1444,7 +1506,28 @@ async def get_market_sentiment():
             "limit_counts": {"up": up_count, "down": down_count},
             "main_flow_trend": main_flow_trend,
             "main_flow_amount": total_inflow,
-            **_quote_metadata(available=available),
+            "emotion": {
+                "failed_limit_count": failed_count,
+                "failed_limit_rate": failed_limit_rate,
+                "promotion_rate": promotion_rate,
+                "promotion_rate_1_to_2": emotion.get("promotion_rate_1_to_2"),
+                "max_streak_height": emotion.get("max_streak_height"),
+                "high_negative_feedback_count": high_feedback,
+                "market_amount": emotion.get("market_amount"),
+                "market_amount_change": emotion.get("market_amount_change"),
+                "market_amount_forecast": emotion.get("market_amount_forecast"),
+                "market_amount_forecast_change_pct": emotion.get("market_amount_forecast_change_pct"),
+                "up_7pct_count": emotion.get("up_7pct_count"),
+                "down_7pct_count": emotion.get("down_7pct_count"),
+                "second_board_or_higher_count": emotion.get("second_board_or_higher_count"),
+                "third_board_or_higher_count": emotion.get("third_board_or_higher_count"),
+                "source": emotion.get("source"),
+            },
+            "psychology_state": psychology,
+            "risk_level": risk_level,
+            "history": emotion_history[-10:],
+            "refresh_requested": refresh,
+            **metadata,
         },
     }
 
@@ -1896,7 +1979,7 @@ async def run_stock_selection(request: dict | None = None):
         raise HTTPException(status_code=422, detail="top_n 必须是整数") from exc
 
     if mode not in VALID_SELECTION_MODES:
-        raise HTTPException(status_code=422, detail="mode 仅支持 quick 或 full")
+        raise HTTPException(status_code=422, detail="mode 仅支持 quick、full 或 numcat")
     if risk_profile not in VALID_RISK_PROFILES:
         raise HTTPException(status_code=422, detail="risk_profile 仅支持 conservative、balanced 或 aggressive")
     if horizon not in VALID_HORIZONS:

@@ -19,6 +19,7 @@ from models import (
     ConceptFundFlowDaily,
     EvolutionProposal,
     IndustryFundFlowDaily,
+    MarketDataCache,
     MarketBoard,
     MarketFundFlowDaily,
     MarketRegimeState,
@@ -38,7 +39,7 @@ from models import (
     TradingZoneGeometry,
     MainForceState,
 )
-from services.data_collector import shanghai_now
+from services.data_collector import collector, is_a_share_market_session, shanghai_now
 from strong_stock_decision.v21_engine import (
     EVOLUTION_VERSION,
     MARKET_SECTOR_BRIDGE_VERSION,
@@ -103,6 +104,9 @@ def _row_payload(row: Any) -> dict[str, Any]:
 
 
 class StrongStockV21Service:
+    CANDIDATE_CACHE_PREFIX = "strong_stock_v21_full_market_v1"
+    MAX_SHORTLIST = 120
+
     def __init__(self) -> None:
         self.orchestrator = PostMarketDecisionOrchestrator()
         self.evolution_engine = EvolutionEngine()
@@ -232,17 +236,188 @@ class StrongStockV21Service:
             lifecycle[sector_id] = {"sector_id": sector_id, "sector_name": rows[-1].get("sector_name"), **state}
         return {"histories": histories, "latest": latest, "lifecycle": lifecycle}
 
-    async def _candidate_rows(self, target: date) -> list[dict[str, Any]]:
+    @classmethod
+    def _candidate_cache_key(cls, *, exclude_star_market: bool, exclude_gem: bool) -> str:
+        return f"{cls.CANDIDATE_CACHE_PREFIX}:star{int(exclude_star_market)}:gem{int(exclude_gem)}"
+
+    @staticmethod
+    def _market_segment(symbol: str) -> str:
+        if symbol.startswith(("688", "689")):
+            return "STAR"
+        if symbol.startswith(("300", "301", "302")):
+            return "GEM"
+        if symbol.startswith(("4", "8", "92")):
+            return "BSE"
+        return "MAIN"
+
+    async def _current_scan_candidates(
+        self,
+        *,
+        exclude_star_market: bool,
+        exclude_gem: bool,
+        refresh: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        cache_key = self._candidate_cache_key(
+            exclude_star_market=exclude_star_market,
+            exclude_gem=exclude_gem,
+        )
+        cached: dict[str, Any] = {}
+        try:
+            async with async_session() as session:
+                cache_row = await session.get(MarketDataCache, cache_key)
+            if cache_row and isinstance(cache_row.payload, dict):
+                cached = dict(cache_row.payload)
+        except Exception:
+            cached = {}
+
+        market_open = is_a_share_market_session(shanghai_now())
+        source_result: dict[str, Any] = {}
+        should_fetch = refresh or market_open or not cached.get("stocks")
+        if should_fetch:
+            try:
+                source_result = await collector.fetch_intelligent_selection_candidates(page_size=500)
+            except Exception:
+                source_result = {}
+        if not source_result.get("stocks") and cached.get("stocks"):
+            source_result = {
+                **cached,
+                "source": "cache",
+                "upstream_source": cached.get("upstream_source") or cached.get("source"),
+                "is_realtime": False,
+                "cache_used": True,
+                "cache_reason": "market_closed" if not market_open else "upstream_unavailable",
+            }
+
+        raw_rows = [item for item in source_result.get("stocks") or [] if isinstance(item, dict)]
+        total_scanned = int(source_result.get("scan_total") or source_result.get("total") or len(raw_rows))
+        filtered_counts = {"star_market": 0, "gem": 0, "invalid": 0}
+        selected: list[dict[str, Any]] = []
+        for item in raw_rows:
+            symbol = str(item.get("code") or item.get("symbol") or item.get("stock_code") or "").split(".", 1)[0].strip()
+            if len(symbol) != 6 or not symbol.isdigit():
+                filtered_counts["invalid"] += 1
+                continue
+            segment = self._market_segment(symbol)
+            if exclude_star_market and segment == "STAR":
+                filtered_counts["star_market"] += 1
+                continue
+            if exclude_gem and segment == "GEM":
+                filtered_counts["gem"] += 1
+                continue
+            selected.append({
+                "symbol": symbol,
+                "stock_name": str(item.get("name") or item.get("stock_name") or symbol),
+                "selection_source": "full_market_scan",
+                "selection_source_label": "全市场系统扫描",
+                "selection_evidence": self._selection_evidence(item),
+                "sector_id": "UNKNOWN",
+                "sector_name": str(item.get("sector") or item.get("industry") or item.get("sector_name") or "").strip() or None,
+                "sector_type": "industry" if item.get("sector") or item.get("industry") or item.get("sector_name") else None,
+                "zone": "UNKNOWN",
+                "zone_stage": "UNKNOWN",
+                "main_force_state": self._selection_text(item, "main_force_state", "main_force"),
+                "volume_price_state": self._selection_text(item, "volume_price_state", "volume_price"),
+                "ma_state": None,
+                "big_pattern_state": None,
+                "rising_star_state": None,
+                "three_books_consensus": None,
+                "risk_state": None,
+                "close_price": self._number(item.get("price") or item.get("close_price")),
+                "change_pct": self._number(item.get("change_pct") or item.get("change")),
+                "invalidation": ["等待V2.0交易区与板块生命周期确认"],
+                "system_selection": {
+                    "score": self._number(item.get("score") or item.get("confidence") or item.get("total_score") or (item.get("system_selection") or {}).get("score")),
+                    "source": source_result.get("upstream_source") or source_result.get("source") or "system",
+                    "is_realtime": bool(source_result.get("is_realtime")),
+                    "data_date": source_result.get("data_date"),
+                },
+            })
+            if len(selected) >= self.MAX_SHORTLIST:
+                break
+
+        metadata = {
+            "source": source_result.get("upstream_source") or source_result.get("source") or "system",
+            "source_label": "全市场系统扫描",
+            "data_date": source_result.get("data_date"),
+            "is_realtime": bool(source_result.get("is_realtime")),
+            "cache_used": bool(source_result.get("cache_used")),
+            "total_scanned": total_scanned,
+            "source_shortlisted": int(source_result.get("source_shortlisted") or len(raw_rows)),
+            "shortlisted": len(selected),
+            "filtered": filtered_counts,
+            "filters": {
+                "exclude_star_market": exclude_star_market,
+                "exclude_gem": exclude_gem,
+            },
+        }
+        if selected and source_result.get("source") != "cache":
+            try:
+                payload = {
+                    "stocks": selected,
+                    **metadata,
+                    "upstream_source": metadata["source"],
+                    "cached_at": shanghai_now().isoformat(),
+                }
+                async with async_session() as session:
+                    cache_row = await session.get(MarketDataCache, cache_key)
+                    if cache_row is None:
+                        session.add(MarketDataCache(key=cache_key, payload=payload))
+                    else:
+                        cache_row.payload = payload
+                    await session.commit()
+            except Exception:
+                pass
+        return selected, metadata
+
+    async def _candidate_rows(
+        self,
+        target: date,
+        *,
+        current_scan: bool,
+        exclude_star_market: bool,
+        exclude_gem: bool,
+        refresh: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if current_scan:
+            base_rows, scan_metadata = await self._current_scan_candidates(
+                exclude_star_market=exclude_star_market,
+                exclude_gem=exclude_gem,
+                refresh=refresh,
+            )
+        else:
+            base_rows = await self._load_system_selection_candidates(target)
+            before_filter = len(base_rows)
+            base_rows = [
+                row for row in base_rows
+                if not (exclude_star_market and self._market_segment(str(row.get("symbol") or "")) == "STAR")
+                and not (exclude_gem and self._market_segment(str(row.get("symbol") or "")) == "GEM")
+            ]
+            scan_metadata = {
+                "source": "stock_selection_runs",
+                "source_label": "历史全市场系统扫描快照",
+                "data_date": target.isoformat(),
+                "is_realtime": False,
+                "cache_used": True,
+                "total_scanned": before_filter,
+                "source_shortlisted": before_filter,
+                "shortlisted": len(base_rows),
+                "filtered": {"board_scope": before_filter - len(base_rows)},
+                "filters": {"exclude_star_market": exclude_star_market, "exclude_gem": exclude_gem},
+            }
+
+        symbols = list(dict.fromkeys(str(row.get("symbol")) for row in base_rows if row.get("symbol")))
+        if not symbols:
+            return [], scan_metadata
         async with async_session() as session:
             zones = list((await session.execute(
-                select(TradingZoneGeometry).where(TradingZoneGeometry.trade_time <= datetime.combine(target, datetime.max.time())).order_by(desc(TradingZoneGeometry.trade_time)).limit(1500)
+                select(TradingZoneGeometry).where(
+                    TradingZoneGeometry.symbol.in_(symbols),
+                    TradingZoneGeometry.trade_time <= datetime.combine(target, datetime.max.time()),
+                ).order_by(desc(TradingZoneGeometry.trade_time)).limit(max(300, len(symbols) * 3))
             )).scalars().all())
             latest_zone: dict[str, Any] = {}
             for row in zones:
                 latest_zone.setdefault(row.symbol, row)
-            symbols = list(latest_zone)[:800]
-            if not symbols:
-                return []
             main_rows = list((await session.execute(select(MainForceState).where(MainForceState.symbol.in_(symbols), MainForceState.trade_time <= datetime.combine(target, datetime.max.time())).order_by(desc(MainForceState.trade_time)).limit(1600))).scalars().all())
             consensus_rows = list((await session.execute(select(ThreeBooksConsensus).where(ThreeBooksConsensus.symbol.in_(symbols), ThreeBooksConsensus.trade_time <= datetime.combine(target, datetime.max.time())).order_by(desc(ThreeBooksConsensus.trade_time)).limit(1600))).scalars().all())
             themes = list((await session.execute(select(ThemeState).where(ThemeState.symbol.in_(symbols), ThemeState.trade_time <= datetime.combine(target, datetime.max.time())).order_by(desc(ThemeState.trade_time)).limit(1600))).scalars().all())
@@ -271,15 +446,16 @@ class StrongStockV21Service:
             for row in bars: latest_bar.setdefault(row.stock_code, row)
             for row in universes: latest_universe.setdefault(row.stock_code, row)
         result = []
-        for symbol, zone in latest_zone.items():
+        for candidate in base_rows:
+            symbol = str(candidate.get("symbol") or "")
+            zone = latest_zone.get(symbol)
             main, consensus, theme, bar = latest_main.get(symbol), latest_consensus.get(symbol), latest_theme.get(symbol), latest_bar.get(symbol)
             universe = latest_universe.get(symbol)
-            industry_name = str(getattr(universe, "industry", None) or "").strip() or None
+            industry_name = str(getattr(universe, "industry", None) or candidate.get("sector_name") or "").strip() or None
             theme_name = getattr(theme, "theme_name", None) if theme else None
             result.append({
-                "symbol": symbol, "stock_name": getattr(bar, "stock_name", None) or symbol,
-                "selection_source": "v2_query",
-                "selection_source_label": "个股查询",
+                **candidate,
+                "symbol": symbol, "stock_name": getattr(bar, "stock_name", None) or candidate.get("stock_name") or symbol,
                 # Use the point-in-time industry directory as the primary
                 # sector link. ThemeState is a useful supporting signal, but
                 # its free-form theme name is not a stable sector identifier.
@@ -287,35 +463,17 @@ class StrongStockV21Service:
                 "sector_name": industry_name or theme_name,
                 "sector_type": "industry" if industry_name else None,
                 "theme_name": theme_name,
-                "zone": zone.zone, "zone_stage": zone.zone_stage,
+                "zone": zone.zone if zone else "UNKNOWN", "zone_stage": zone.zone_stage if zone else "UNKNOWN",
                 "main_force_state": getattr(main, "main_force_direction", None) if main else None,
                 "volume_price_state": None, "ma_state": None,
                 "big_pattern_state": None, "rising_star_state": None,
                 "three_books_consensus": getattr(consensus, "consensus_level", None) if consensus else None,
-                "risk_state": "C_RISK" if "C" in str(zone.zone) or "C_" in str(zone.zone_stage) else None,
-                "close_price": getattr(bar, "close_price", None) if bar else None,
-                "change_pct": getattr(bar, "change_pct", None) if bar else None,
-                "invalidation": ["交易区进入C区", "板块生命周期转为FADING"],
+                "risk_state": "C_RISK" if zone and ("C" in str(zone.zone) or "C_" in str(zone.zone_stage)) else None,
+                "close_price": getattr(bar, "close_price", None) if bar else candidate.get("close_price"),
+                "change_pct": getattr(bar, "change_pct", None) if bar else candidate.get("change_pct"),
+                "invalidation": ["交易区进入C区", "板块生命周期转为FADING"] if zone else ["等待V2.0交易区与板块生命周期确认"],
             })
-        # V2.1 also surfaces the system's own intelligent-selection runs. A
-        # run is a persisted decision snapshot, so choose the newest run whose
-        # point-in-time data date is not after the requested date. This keeps
-        # historical replay free of future selection results.
-        system_rows = await self._load_system_selection_candidates(target)
-        by_symbol: dict[str, dict[str, Any]] = {str(row.get("symbol")): row for row in result if row.get("symbol")}
-        for row in system_rows:
-            symbol = str(row.get("symbol") or "")
-            if not symbol:
-                continue
-            existing = by_symbol.get(symbol)
-            if existing:
-                existing["selection_source"] = "system_scan+v2_query"
-                existing["selection_source_label"] = "系统筛选 + 个股查询"
-                existing["selection_evidence"] = list(dict.fromkeys(list(existing.get("selection_evidence") or []) + list(row.get("selection_evidence") or [])))
-                existing["system_selection"] = row.get("system_selection") or {}
-                continue
-            by_symbol[symbol] = row
-        return list(by_symbol.values())
+        return result, scan_metadata
 
     async def _load_system_selection_candidates(self, target: date) -> list[dict[str, Any]]:
         """Load saved intelligent-selection results without starting a scan.
@@ -354,7 +512,7 @@ class StrongStockV21Service:
                 "symbol": symbol,
                 "stock_name": str(item.get("name") or item.get("stock_name") or symbol),
                 "selection_source": "system_scan",
-                "selection_source_label": "系统筛选",
+                "selection_source_label": "历史全市场系统扫描快照",
                 "selection_evidence": evidence,
                 "sector_id": "UNKNOWN",
                 "sector_name": sector_name,
@@ -417,7 +575,7 @@ class StrongStockV21Service:
     @classmethod
     def _selection_evidence(cls, item: dict[str, Any]) -> list[str]:
         values: list[str] = []
-        for key in ("why_selected", "reasons", "basis", "evidence"):
+        for key in ("why_selected", "reasons", "basis", "evidence", "selection_evidence"):
             value = item.get(key)
             if isinstance(value, str) and value.strip():
                 values.append(value.strip())
@@ -433,7 +591,15 @@ class StrongStockV21Service:
                     values.append(str(summary).strip())
         return list(dict.fromkeys(values))[:6]
 
-    async def build(self, requested: date | None = None, *, persist: bool = False) -> dict[str, Any]:
+    async def build(
+        self,
+        requested: date | None = None,
+        *,
+        persist: bool = False,
+        refresh: bool = False,
+        exclude_star_market: bool = True,
+        exclude_gem: bool = True,
+    ) -> dict[str, Any]:
         target = await self._target_date(requested)
         market, market_history = await self._market(target)
         sector_context = await self._sector_context(target)
@@ -451,7 +617,13 @@ class StrongStockV21Service:
         current = sector_context["latest"]
         previous = [rows[-2] for rows in sector_context["histories"].values() if len(rows) > 1]
         migration = self.orchestrator.migration.infer(current, previous)
-        candidates = await self._candidate_rows(target)
+        candidates, scan_metadata = await self._candidate_rows(
+            target,
+            current_scan=requested is None or requested >= shanghai_now().date(),
+            exclude_star_market=exclude_star_market,
+            exclude_gem=exclude_gem,
+            refresh=refresh,
+        )
         for row in candidates:
             if row.get("sector_name"):
                 match = next((item for item in current if item.get("sector_name") == row["sector_name"]), None)
@@ -470,6 +642,7 @@ class StrongStockV21Service:
             "lifecycle": list(lifecycle.values()),
             "migration": migration,
             "opportunities": opportunities,
+            "candidate_scan": scan_metadata,
             "data_quality": {"status": "COMPLETE" if current and market.get("up_count") is not None else "PARTIAL", "source_name": "MarketSentimentDaily + IndustryFundFlowDaily + ConceptFundFlowDaily + V2.0 snapshots", "source_time": target.isoformat(), "missing_fields": sorted({field for row in current for field in row.get("data_quality", {}).get("missing_fields", [])})},
             "constraints": {"c_zone_overrides_attack": True, "automatic_trade": False, "future_data": False, "fund_migration_is_inference": True},
         }
@@ -519,8 +692,21 @@ class StrongStockV21Service:
                     session.add(ABOppSnapshot(trade_date=target, symbol=item.get("symbol") or "UNKNOWN", opportunity_pool=pool, engine_version=STRONG_STOCK_V21_VERSION, **opp_values))
             await session.commit()
 
-    async def overview(self, requested: date | None = None, *, refresh: bool = False) -> dict[str, Any]:
-        return await self.build(requested, persist=refresh)
+    async def overview(
+        self,
+        requested: date | None = None,
+        *,
+        refresh: bool = False,
+        exclude_star_market: bool = True,
+        exclude_gem: bool = True,
+    ) -> dict[str, Any]:
+        return await self.build(
+            requested,
+            persist=refresh,
+            refresh=refresh,
+            exclude_star_market=exclude_star_market,
+            exclude_gem=exclude_gem,
+        )
 
     async def regime(self, requested: date | None = None) -> dict[str, Any]:
         payload = await self.build(requested)
