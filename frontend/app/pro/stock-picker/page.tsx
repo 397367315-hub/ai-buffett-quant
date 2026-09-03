@@ -27,7 +27,7 @@ import { apiFetch, formatYi, getChangeColor } from '@/lib/api';
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import StockKlineButton from '@/components/StockKlineButton';
 
-type SelectionMode = 'quick' | 'full';
+type SelectionMode = 'quick' | 'full' | 'numcat';
 type RiskProfile = 'conservative' | 'balanced' | 'aggressive';
 type ResearchHorizon = 'week' | 'half_month' | 'month';
 type FactorPreset = 'off' | 'short' | 'long' | 'custom';
@@ -342,6 +342,7 @@ interface SelectionResult {
 const modes: Array<{ id: SelectionMode; label: string; detail: string }> = [
   { id: 'quick', label: '快速扫描', detail: '来源候选池 + 多维交叉验证' },
   { id: 'full', label: '深度扫描', detail: '扩大候选池并完整保留研究轨迹' },
+  { id: 'numcat', label: '猫爪实时扫描', detail: '盘中官方筛选；闭市读取最近成功缓存' },
 ];
 
 const profiles: Array<{ id: RiskProfile; label: string }> = [
@@ -478,6 +479,7 @@ function sourceLabel(source: string): string {
 
 function marketSourceLabel(source: string): string {
   if (source === 'eastmoney') return '东方财富';
+  if (source === 'numcat') return '猫爪官方数据';
   if (source === 'ftshare_mcp') return 'FTShare MCP';
   if (source === 'cache') return '系统缓存';
   return source;
@@ -746,7 +748,7 @@ export default function StockPickerPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(260px,1fr)_auto_auto_auto_auto] gap-4 items-end">
             <div>
               <div className="text-xs text-text-secondary mb-1.5">运行模式</div>
-              <div className="grid grid-cols-2 gap-1 rounded-md bg-[#0D1117] p-1" role="group" aria-label="运行模式">
+              <div className="grid grid-cols-1 gap-1 rounded-md bg-[#0D1117] p-1 sm:grid-cols-3 xl:grid-cols-1" role="group" aria-label="运行模式">
                 {modes.map((item) => (
                   <button
                     key={item.id}

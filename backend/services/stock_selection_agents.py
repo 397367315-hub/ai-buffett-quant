@@ -41,7 +41,7 @@ from services.stock_features import (
 from quant.risk import assess_stock_risk
 
 
-VALID_SELECTION_MODES = {"quick", "full"}
+VALID_SELECTION_MODES = {"quick", "full", "numcat"}
 VALID_RISK_PROFILES = {"conservative", "balanced", "aggressive"}
 
 PROFILE_CONFIG = {
@@ -1340,7 +1340,7 @@ class StockSelectionAgentService:
         factor_filters: dict | None = None,
     ) -> dict:
         if mode not in VALID_SELECTION_MODES:
-            raise ValueError("mode 必须是 quick 或 full")
+            raise ValueError("mode 必须是 quick、full 或 numcat")
         if risk_profile not in VALID_RISK_PROFILES:
             raise ValueError("risk_profile 必须是 conservative、balanced 或 aggressive")
         if horizon not in VALID_HORIZONS:
@@ -1355,11 +1355,14 @@ class StockSelectionAgentService:
 
         candidate_fetcher = (
             (lambda: collector.fetch_all_board_stocks(sector_board_code, sector_name=sector_filter))
-            if sector_board_code
-            else (lambda: collector.fetch_intelligent_selection_candidates())
+            if sector_board_code and mode != "numcat"
+            else (lambda: collector.fetch_intelligent_selection_candidates(
+                page_size=500 if mode == "numcat" else 180,
+                force_numcat=mode == "numcat",
+            ))
         )
         source_awaitable = self._candidate_snapshot(
-            f"stock_selection_candidates_v1:{sector_board_code or 'market'}",
+            f"stock_selection_candidates_v1:{'numcat:' if mode == 'numcat' else ''}{sector_board_code or 'market'}",
             candidate_fetcher,
             prefer_cache=not market_session,
         )
@@ -1473,7 +1476,7 @@ class StockSelectionAgentService:
             if source_realtime is not None
             else market_session and source_name == "eastmoney"
         )
-        if source_name != "eastmoney":
+        if source_name not in {"eastmoney", "numcat"}:
             is_realtime = False
         cached_dates = [
             row["date"]

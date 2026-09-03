@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
@@ -98,20 +99,35 @@ const GROUP_LABELS: Record<string, string> = {
   '公司问答': '公司问答',
 };
 
-const QUICK_MODULES = [
-  { label: '交易日历', description: '交易日与历史口径', icon: CalendarDays, api: 'tradecal', params: '{\n  "recentdays": 10\n}' },
-  { label: '板块周期强度', description: '行业、概念和周期板块', icon: Layers3, api: 'themedaily_jx', params: '{\n  "recentdays": 20\n}' },
-  { label: '板块资金迁徙', description: '板块主力买卖和分钟变化', icon: Wallet, api: 'themefundflow_jx', params: '{\n  "recentdays": 20\n}' },
-  { label: '板块竞价', description: '竞价爆量与异动', icon: Activity, api: 'theme_auc_kp', params: '{\n  "recentdays": 5\n}' },
-  { label: '板块异动原因', description: '事件和因果证据', icon: FileText, api: 'theme_reason', params: '{\n  "recentdays": 10\n}' },
-  { label: '竞价确认', description: '09:15-09:25 价格量能', icon: Gauge, api: 'daily_auc_detail', params: '{\n  "recentdays": 5\n}' },
-  { label: 'Level-2 逐笔', description: '按标的和时间查询', icon: BarChart3, api: 'level2_trade_history', params: '{\n  "symbols": ["600519"],\n  "limit": 100\n}' },
-  { label: '监管异动', description: '异动历史与风控证据', icon: ShieldCheck, api: 'limit_event_v2_history', params: '{\n  "recentdays": 30\n}' },
-  { label: '财务 PIT', description: '公告时点财务指标', icon: Table2, api: 'finance_indicator', params: '{\n  "symbols": ["600519"],\n  "version": "latest"\n}' },
-  { label: '公告新闻', description: '公司公告和实时资讯', icon: FileText, api: 'finance_announcement', params: '{\n  "symbols": ["600519"],\n  "limit": 50\n}' },
-  { label: '互联互通', description: '北向、南向资金', icon: Activity, api: 'northbound_flow', params: '{\n  "recentdays": 20\n}' },
-  { label: '新股与交易约束', description: '新股、ST、停牌、涨跌停', icon: AlertTriangle, api: 'new_share', params: '{\n  "recentdays": 20\n}' },
-] as const;
+interface BusinessModule {
+  label: string;
+  description: string;
+  icon: typeof Database;
+  href?: string;
+  api?: string;
+  params?: AnyMap;
+}
+
+const QUICK_MODULES: BusinessModule[] = [
+  { label: '交易日历', description: '直接查看最近交易日与休市安排', icon: CalendarDays, api: 'tradecal', params: { recentdays: 20 } },
+  { label: '板块周期强度', description: '周、月、季度、半年强度与个股排名', icon: Layers3, href: '/pro/topic-strength?view=period' },
+  { label: '板块资金迁徙', description: '主力净额、周期资金持续性和板块轮动', icon: Wallet, href: '/pro/topic-strength?view=period' },
+  { label: '板块竞价', description: '竞价爆量、异动和候选确认', icon: Activity, href: '/pro/auction' },
+  { label: '板块异动原因', description: '题材原因、事件证据和板块成员', icon: FileText, href: '/pro/topic-strength?view=period' },
+  { label: '竞价确认', description: '09:15-09:25 价格与量能确认', icon: Gauge, href: '/pro/auction' },
+  { label: 'Level-2 逐笔', description: '输入股票后查看逐笔、盘口与隐性资金雷达', icon: BarChart3, href: '/pro/stock' },
+  { label: '监管异动', description: '监管事件、公告与风险证据', icon: ShieldCheck, href: '/pro/event-radar' },
+  { label: '财务 PIT', description: '按公告可见时点查看财务与估值', icon: Table2, href: '/pro/stock' },
+  { label: '公告新闻', description: '公司公告、实时事件与因果影响', icon: FileText, href: '/pro/event-radar' },
+  { label: '互联互通', description: '北向、南向资金及最近有效缓存', icon: Activity, href: '/pro/north-flow' },
+  { label: '新股与交易约束', description: '新股、ST、停牌和涨跌停约束', icon: AlertTriangle, api: 'new_share', params: { recentdays: 30 } },
+];
+
+const BUSINESS_FIELD_LABELS: Record<string, string> = {
+  tradedate: '交易日', cal_date: '日期', is_open: '是否交易', pretrade_date: '上一交易日',
+  symbol: '股票代码', code: '股票代码', name: '股票名称', list_date: '上市日期', issue_date: '发行日期',
+  is_st: 'ST状态', suspend_type: '停牌状态', up_limit: '涨停价', down_limit: '跌停价', market: '市场',
+};
 
 const BUNDLE_LABELS: Record<string, string> = {
   trade_calendar: '交易日历',
@@ -221,6 +237,10 @@ export default function NumCatPage() {
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryError, setQueryError] = useState('');
   const [queryResult, setQueryResult] = useState<QueryPayload | null>(null);
+  const [businessModule, setBusinessModule] = useState<BusinessModule | null>(null);
+  const [businessLoading, setBusinessLoading] = useState(false);
+  const [businessError, setBusinessError] = useState('');
+  const [businessResult, setBusinessResult] = useState<QueryPayload | null>(null);
   const [symbolsText, setSymbolsText] = useState('600519,000333');
   const [bundleDate, setBundleDate] = useState('');
   const [bundleFinance, setBundleFinance] = useState(true);
@@ -272,12 +292,28 @@ export default function NumCatPage() {
   const cacheMaxBytes = Number(status?.gateway?.cache_max_bytes || 16 * 1024 * 1024);
   const cachePercent = Math.min(100, Math.max(0, cacheBytes / Math.max(cacheMaxBytes, 1) * 100));
 
-  const applyModule = (module: typeof QUICK_MODULES[number]) => {
-    setApiName(module.api);
-    setParamsText(module.params);
-    setFieldsText('');
-    setQueryError('');
-    window.requestAnimationFrame(() => queryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  const runBusinessModule = async (module: BusinessModule, refresh = false) => {
+    if (!module.api) return;
+    setBusinessModule(module);
+    setBusinessLoading(true);
+    setBusinessError('');
+    try {
+      const response = await apiFetch<{ data: QueryPayload }>('/numcat/query', {
+        method: 'POST',
+        body: JSON.stringify({ apiname: module.api, params: module.params || {}, refresh }),
+        timeoutMs: 60000,
+      });
+      setBusinessResult(response.data);
+    } catch (caught) {
+      setBusinessResult(null);
+      setBusinessError(friendlyApiError(caught, `${module.label}暂时无法读取`));
+    } finally {
+      setBusinessLoading(false);
+    }
+  };
+
+  const applyModule = (module: BusinessModule) => {
+    if (module.api) void runBusinessModule(module);
   };
 
   const runQuery = async () => {
@@ -360,22 +396,27 @@ export default function NumCatPage() {
 
       <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-4">
-          <Panel title="缺失页面能力整合" icon={Layers3} action={<span className="text-[10px] text-text-secondary">快捷进入统一查询</span>}>
+          <Panel title="猫爪业务功能" icon={Layers3} action={<span className="text-[10px] text-text-secondary">点击直接使用</span>}>
             <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 xl:grid-cols-3">
               {QUICK_MODULES.map((module) => {
                 const Icon = module.icon;
-                const isSelected = apiName === module.api;
-                return <button key={module.api} type="button" onClick={() => applyModule(module)} className={`flex min-w-0 items-center gap-3 bg-card px-3 py-3 text-left transition-colors hover:bg-[#18212C] ${isSelected ? 'border-l-2 border-accent bg-[#18212C]' : 'border-l-2 border-transparent'}`}>
-                  <Icon size={16} className="shrink-0 text-accent" />
-                  <span className="min-w-0"><b className="block truncate text-xs font-medium text-text">{module.label}</b><small className="mt-1 block truncate text-[10px] text-text-secondary">{module.description}</small></span>
-                  <ChevronRight size={13} className="ml-auto shrink-0 text-text-secondary" />
+                const isSelected = businessModule?.label === module.label;
+                const className = `flex min-w-0 items-center gap-3 border-l-2 bg-card px-3 py-3 text-left transition-colors hover:bg-[#18212C] ${isSelected ? 'border-accent bg-[#18212C]' : 'border-transparent'}`;
+                const content = <><Icon size={16} className="shrink-0 text-accent" /><span className="min-w-0"><b className="block truncate text-xs font-medium text-text">{module.label}</b><small className="mt-1 block text-[10px] leading-4 text-text-secondary">{module.description}</small></span><ChevronRight size={13} className="ml-auto shrink-0 text-text-secondary" /></>;
+                return module.href ? <Link key={module.label} href={module.href} className={className}>{content}</Link> : <button key={module.label} type="button" onClick={() => applyModule(module)} className={className}>
+                  {content}
                 </button>;
               })}
             </div>
-            <div className="border-t border-border px-4 py-3"><MetaLine><Check size={12} className="text-up" />已有板块强弱、两融、龙虎榜、研究、量化等页面继续使用现有业务接口</MetaLine><MetaLine><Check size={12} className="text-up" />没有独立页面的官方能力在此集中查询，不额外建立数据仓库</MetaLine></div>
+            <div className="border-t border-border px-4 py-3"><MetaLine><Check size={12} className="text-up" />业务页直接展示图表、筛选和分析，不需要填写接口参数</MetaLine><MetaLine><Check size={12} className="text-up" />交易日历和交易约束在本页按业务字段显示，原始响应不落库</MetaLine></div>
           </Panel>
 
-          <section ref={queryRef} className="scroll-mt-16">
+          {(businessModule || businessLoading || businessError) && <Panel title={businessModule?.label || '业务数据'} icon={businessModule?.icon || Table2} action={businessModule?.api ? <button type="button" onClick={() => businessModule && void runBusinessModule(businessModule, true)} disabled={businessLoading} className="command-button"><RefreshCw size={13} className={businessLoading ? 'animate-spin' : ''} />刷新</button> : undefined}>
+            {businessLoading && !businessResult ? <div className="flex min-h-36 items-center justify-center gap-2 px-4 text-xs text-text-secondary"><Loader2 size={15} className="animate-spin text-accent" />正在读取猫爪官方数据</div> : businessError ? <div className="m-4 border-l-2 border-warn bg-warn/5 px-3 py-3 text-xs text-warn">{businessError}</div> : businessResult ? <BusinessResult result={businessResult} /> : null}
+          </Panel>}
+
+          <details className="group scroll-mt-16 overflow-hidden rounded-md border border-border bg-card" ref={queryRef as React.RefObject<HTMLDetailsElement>}>
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-text hover:bg-[#18212C]"><span className="flex items-center gap-2"><SlidersHorizontal size={15} className="text-accent" />高级接口查询</span><span className="text-[10px] font-normal text-text-secondary">开发与诊断工具 <ChevronRight size={13} className="ml-1 inline transition-transform group-open:rotate-90" /></span></summary>
             <Panel title="官方接口查询" icon={SlidersHorizontal} action={<span className="font-mono text-[10px] text-text-secondary">{selectedCatalogItem?.apiname || apiName}</span>}>
               <div className="grid min-w-0 gap-4 p-4 xl:grid-cols-[250px_minmax(0,1fr)]">
                 <div className="min-w-0 space-y-3">
@@ -393,7 +434,7 @@ export default function NumCatPage() {
               {queryError && <div className="border-t border-border px-4 py-3 text-xs text-warn">{queryError}</div>}
               {queryResult && <QueryResult result={queryResult} rows={resultRows} columns={resultColumns} />}
             </Panel>
-          </section>
+          </details>
 
           <Panel title="多标的研究包" icon={Sparkles} action={<span className="text-[10px] text-text-secondary">最多20只 · 分区返回</span>}>
             <div className="space-y-4 p-4">
@@ -445,6 +486,15 @@ function QueryResult({ result, rows, columns }: { result: QueryPayload; rows: An
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3"><MetaLine><span className="text-text">{result.apiname}</span><span>来源 {result.source}</span><span>抓取 {new Date(result.fetched_at).toLocaleString('zh-CN')}</span><span>记录 {result.row_count}</span><span className="text-accent">内存短缓存</span></MetaLine></div>
     {rows.length ? <div className="overflow-x-auto"><table className="w-full min-w-[720px] border-collapse text-[11px]"><thead><tr className="border-y border-border bg-[#151D27] text-left text-[10px] text-text-secondary">{columns.map((column) => <th key={column} className="whitespace-nowrap px-3 py-2 font-normal">{column}</th>)}</tr></thead><tbody>{rows.slice(0, 100).map((row, index) => <tr key={`${index}-${String(row.symbol || row.code || '')}`} className="border-b border-border/70 align-top hover:bg-[#18212C]">{columns.map((column) => <td key={column} className="max-w-[220px] px-3 py-2 font-mono text-text-secondary" title={jsonText(row[column])}>{compactNumber(row[column])}</td>)}</tr>)}</tbody></table></div> : <pre className="max-h-80 overflow-auto border-t border-border bg-[#0E131A] p-4 font-mono text-[10px] leading-5 text-text-secondary">{JSON.stringify(result.data, null, 2)}</pre>}
     {rows.length > 100 && <div className="px-4 py-2 text-[10px] text-text-secondary">页面仅展示前100行，完整响应不会写入数据库。</div>}
+  </div>;
+}
+
+function BusinessResult({ result }: { result: QueryPayload }) {
+  const rows = rowsFromData(result.data);
+  const columns = columnsFor(rows).slice(0, 10);
+  return <div className="min-w-0">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-4 py-3 text-[11px] text-text-secondary"><span>来源 {result.source}</span><span>更新 {new Date(result.fetched_at).toLocaleString('zh-CN')}</span><span>共 {result.row_count} 条</span><span className="text-accent">进程内短缓存，不写入数据库</span></div>
+    {rows.length ? <div className="overflow-x-auto"><table className="w-full min-w-[680px] border-collapse text-xs"><thead><tr className="border-b border-border bg-[#151D27] text-left text-[10px] text-text-secondary">{columns.map((column) => <th key={column} className="whitespace-nowrap px-3 py-2 font-normal">{BUSINESS_FIELD_LABELS[column] || column}</th>)}</tr></thead><tbody>{rows.slice(0, 100).map((row, index) => <tr key={`${row.symbol || row.code || row.tradedate || index}-${index}`} className="border-b border-border/70 hover:bg-[#18212C]">{columns.map((column) => <td key={column} className="max-w-[240px] px-3 py-2.5 font-mono text-text-secondary" title={jsonText(row[column])}>{compactNumber(row[column])}</td>)}</tr>)}</tbody></table></div> : <div className="px-4 py-8 text-center text-xs text-text-secondary">当前接口没有返回有效记录，未用默认值替代。</div>}
   </div>;
 }
 

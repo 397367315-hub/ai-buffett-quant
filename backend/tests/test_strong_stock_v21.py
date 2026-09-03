@@ -1,6 +1,6 @@
 import unittest
 from datetime import date, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -126,6 +126,10 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
                     symbol="600188", trade_time=datetime.combine(target, datetime.min.time()),
                     zone="强势A区", zone_stage="A_FORMING",
                 ),
+                TradingZoneGeometry(
+                    symbol="000001", trade_time=datetime.combine(target, datetime.min.time()),
+                    zone="强势B区", zone_stage="B_ACTIVE",
+                ),
                 ThemeState(
                     symbol="600188", trade_time=datetime.combine(target, datetime.min.time()),
                     theme_name="高股息", theme_type="事件题材",
@@ -133,11 +137,33 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
             ])
             await session.commit()
 
-        rows = await StrongStockV21Service()._candidate_rows(target)
+        with patch(
+            "services.strong_stock_v21.collector.fetch_intelligent_selection_candidates",
+            new=AsyncMock(return_value={
+                "scan_total": 5200,
+                "total": 2,
+                "stocks": [
+                    {"code": "600188", "name": "兖矿能源", "sector": "煤炭行业", "price": 12.3},
+                ],
+                "source": "numcat",
+                "data_date": target.isoformat(),
+                "is_realtime": False,
+            }),
+        ):
+            rows, metadata = await StrongStockV21Service()._candidate_rows(
+                target,
+                current_scan=True,
+                exclude_star_market=True,
+                exclude_gem=True,
+                refresh=True,
+            )
 
         self.assertEqual(rows[0]["sector_id"], "BK0475")
         self.assertEqual(rows[0]["sector_name"], "煤炭行业")
         self.assertEqual(rows[0]["theme_name"], "高股息")
+        self.assertEqual([row["symbol"] for row in rows], ["600188"])
+        self.assertEqual(metadata["total_scanned"], 5200)
+        self.assertEqual(metadata["source_label"], "全市场系统扫描")
 
 
 if __name__ == "__main__":

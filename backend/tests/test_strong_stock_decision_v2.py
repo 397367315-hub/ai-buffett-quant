@@ -53,6 +53,22 @@ class StrongStockV2EngineTests(unittest.TestCase):
         if result["zones"]["zone"] == "风险C区":
             self.assertEqual(result["consensus"]["dominant_side"], "RISK")
 
+    def test_v1_zone_is_the_single_canonical_conclusion(self):
+        result = build_v2(
+            {"symbol": "000001", "name": "测试", "bars": bars_for(falling=True)},
+            legacy={
+                "module_id": "STRONG_STOCK_DECISION_V1",
+                "decision": {"action": "WATCH"},
+                "best_trading_zone": {"zone": "强势B区", "reasons": ["V1状态机结论"]},
+            },
+        )
+        self.assertEqual(result["zones"]["zone"], "强势B区")
+        self.assertEqual(result["zone_comparison"]["canonical_source"], "V1统一交易区状态机")
+        self.assertTrue(result["zone_comparison"]["different"])
+        zone_signals = {item["skill_id"]: item for item in result["zones"]["signals"]}
+        self.assertEqual(zone_signals["HQS_009"]["status"], "CONFIRMED")
+        self.assertEqual(zone_signals["HQS_010"]["status"], "NOT_FOUND")
+
     def test_output_is_json_serializable(self):
         result = self.build(sector={"name": "测试行业", "change_pct": 1.5})
         json.dumps(result, ensure_ascii=False)

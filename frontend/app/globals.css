@@ -1597,6 +1597,9 @@ body {
 .strong-v2-metric > span { min-width: 0; overflow: hidden; color: #8F9AAA; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .strong-v2-metric > b { min-width: 0; overflow: hidden; color: #DCE3EB; font: 600 11px Inter, 'PingFang SC', sans-serif; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .strong-v2-metric > small { grid-column: 1 / -1; min-width: 0; overflow: hidden; color: #667085; font-size: 8px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.strong-v2-zone-comparison { display: grid; gap: 4px; margin-top: 8px; border-left: 2px solid #D9A441; background: rgba(217,164,65,.06); padding: 8px; color: #C8D1DC; font-size: 11px; line-height: 1.45; }
+.strong-v2-zone-comparison b { color: #D9A441; font-size: 11px; }
+.strong-v2-zone-comparison small { color: #9AA4B2; font-size: 10px; }
 .strong-v2-conflict-list { display: grid; gap: 5px; margin-top: 8px; }
 .strong-v2-conflict-list > div { display: flex; min-width: 0; align-items: flex-start; gap: 6px; border-left: 2px solid #F85149; background: rgba(248,81,73,.06); padding: 6px 7px; color: #E9A4A9; font-size: 9px; line-height: 1.4; }
 .strong-v2-conflict-list svg { flex: 0 0 auto; margin-top: 1px; }
@@ -1839,6 +1842,72 @@ body {
 .is-warn { color: #D9A441 !important; }
 .strong-v2-footer { display: flex; min-width: 0; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; border-top: 1px solid rgba(255,255,255,.07); margin: 8px 10px 0; padding: 9px 0 11px; color: #667085; font-size: 8px; line-height: 1.4; }
 .strong-v2-unavailable { display: flex; align-items: center; gap: 7px; margin-top: 10px; border: 1px solid rgba(217,164,65,.35); background: #151D27; padding: 10px; color: #D9A441; font-size: 10px; }
+/* Dense terminal panels remain compact, but text must be readable on a real display. */
+.strong-v2-shell .strong-v2-panel-body { font-size: 11px; }
+.strong-v2-shell .strong-v2-panel-header p,
+.strong-v2-shell .strong-v2-book-state-list b,
+.strong-v2-shell .strong-v2-book-state-list small,
+.strong-v2-shell .strong-v2-action-row > span,
+.strong-v2-shell .strong-v2-action-row > p,
+.strong-v2-shell .strong-v2-metric > span,
+.strong-v2-shell .strong-v2-metric > small,
+.strong-v2-shell .strong-v2-conflict-list > div,
+.strong-v2-shell .strong-v2-ok-line,
+.strong-v2-shell .strong-v2-risk-summary span,
+.strong-v2-shell .strong-v2-risk-summary em,
+.strong-v2-shell .strong-v2-risk-summary p,
+.strong-v2-shell .strong-v2-risk-columns h3,
+.strong-v2-shell .strong-v2-risk-columns p,
+.strong-v2-shell .strong-v2-chip-list span,
+.strong-v2-shell .strong-v2-zone-reasons span,
+.strong-v2-shell .strong-v2-matched-list span,
+.strong-v2-shell .strong-v2-main-force-top span,
+.strong-v2-shell .strong-v2-intent > span,
+.strong-v2-shell .strong-v2-path b,
+.strong-v2-shell .strong-v2-path em,
+.strong-v2-shell .strong-v2-evidence li,
+.strong-v2-shell .strong-v2-ma-stage span,
+.strong-v2-shell .strong-v2-ma-stage em,
+.strong-v2-shell .strong-v2-zone-hero span,
+.strong-v2-shell .strong-v2-note,
+.strong-v2-shell .strong-v2-collection-heading span,
+.strong-v2-shell .strong-v2-signal-head b,
+.strong-v2-shell .strong-v2-subtype,
+.strong-v2-shell .strong-v2-mechanism,
+.strong-v2-shell .strong-v2-confirm-grid p,
+.strong-v2-shell .strong-v2-degree-grid span,
+.strong-v2-shell .strong-v2-degree-grid b,
+.strong-v2-shell .strong-v2-degree-grid em,
+.strong-v2-shell .strong-v2-degree-grid small,
+.strong-v2-shell .strong-v2-stack-path h3,
+.strong-v2-shell .strong-v2-stack-path span,
+.strong-v2-shell .strong-v2-stack-level span,
+.strong-v2-shell .strong-v2-stack-level p,
+.strong-v2-shell .strong-v2-buy-levels b,
+.strong-v2-shell .strong-v2-buy-levels small,
+.strong-v2-shell .strong-v2-explanation h3,
+.strong-v2-shell .strong-v2-explanation p,
+.strong-v2-shell .strong-v2-audit h3,
+.strong-v2-shell .strong-v2-learning-header p,
+.strong-v2-shell .strong-v2-learning-toggle,
+.strong-v2-shell .strong-v2-learning-actions button,
+.strong-v2-shell .strong-v2-learning-actions label,
+.strong-v2-shell .strong-v2-learning-error,
+.strong-v2-shell .strong-v2-learning-tabs button,
+.strong-v2-shell .strong-v2-learning-empty,
+.strong-v2-shell .strong-v2-learning-loading,
+.strong-v2-shell .strong-v2-inline-note,
+.strong-v2-shell .strong-v2-learning-method,
+.strong-v2-shell .strong-v2-footer { font-size: 11px; }
+.strong-v2-shell .strong-v2-status,
+.strong-v2-shell .strong-v2-signal-head code,
+.strong-v2-shell .strong-v2-evidence li em,
+.strong-v2-shell .strong-v2-confirm-grid span,
+.strong-v2-shell .strong-v2-feature-summary span,
+.strong-v2-shell .strong-v2-feature-summary strong,
+.strong-v2-shell .strong-v2-character span,
+.strong-v2-shell .strong-v2-character b,
+.strong-v2-shell .strong-v2-zone-reasons span small { font-size: 10px; }
 @media (max-width: 1100px) { .strong-v2-overview-grid, .strong-v2-grid-2 { grid-template-columns: 1fr; } .strong-v2-bottom-grid { grid-template-columns: 1fr; } .strong-v2-audit { border-left: 0; border-top: 1px solid rgba(255,255,255,.07); padding: 10px 0 0; } .strong-v2-history-columns { grid-template-columns: 1fr; } }
 @media (max-width: 700px) { .strong-v2-system-nav { align-items: flex-start; flex-direction: column; gap: 3px; padding: 8px 10px 5px; } .strong-v2-system-nav nav { width: 100%; } .strong-v2-header { padding: 11px 11px 10px; } .strong-v2-header h1 { font-size: 16px; } .strong-v2-header-actions { gap: 5px; } .strong-v2-local-nav a { padding-left: 8px; padding-right: 8px; } .strong-v2-overview-grid, .strong-v2-grid { padding-left: 6px; padding-right: 6px; } .strong-v2-pressure-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .strong-v2-risk-summary { grid-template-columns: 115px minmax(0,1fr); gap: 8px; } .strong-v2-main-force-top { grid-template-columns: repeat(2,minmax(0,1fr)); } .strong-v2-signal-grid { grid-template-columns: 1fr; } .strong-v2-theme-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .strong-v2-zone-metrics, .strong-v2-sell-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .strong-v2-degree-grid { grid-template-columns: 1fr; } .strong-v2-character { grid-template-columns: repeat(3,minmax(0,1fr)); } .strong-v2-footer { margin-left: 6px; margin-right: 6px; } .strong-v2-learning { margin-left: 6px; margin-right: 6px; } .strong-v2-learning-header { align-items: flex-start; } .strong-v2-learning-header p { max-width: 230px; } .strong-v2-learning-body { padding: 8px; } .strong-v2-learning-actions > label, .strong-v2-learning-actions > button { max-width: 100%; } .strong-v2-skill-select { width: 100%; max-width: none; } .strong-v2-skill-select select { flex: 1; max-width: none; } .strong-v2-history-summary, .strong-v2-case-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } .strong-v2-pressure-history-row { grid-template-columns: 55px 24px minmax(0,1fr); } .strong-v2-pressure-history-row > div { grid-template-columns: repeat(2,minmax(0,1fr)); row-gap: 3px; } .strong-v2-main-history > div { grid-template-columns: 55px 54px minmax(0,1fr) 32px; } .strong-v2-evolution > div { grid-template-columns: repeat(2,minmax(0,1fr)); } .strong-v2-case-grid, .strong-v2-why-different > div { grid-template-columns: 1fr; } .strong-v2-replay-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .strong-v2-backtest-head { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 420px) { .strong-v2-header { display: block; } .strong-v2-header-actions { margin-top: 8px; justify-content: space-between; } .strong-v2-consensus-books { grid-template-columns: 1fr; } .strong-v2-qts-grid { grid-template-columns: 1fr; } .strong-v2-buy-levels > div { grid-template-columns: 66px auto minmax(0,1fr); } .strong-v2-learning-toggle { padding-left: 6px; padding-right: 6px; } .strong-v2-learning-header p { max-width: 190px; } .strong-v2-learning-actions input[type='date'] { width: 105px; } }

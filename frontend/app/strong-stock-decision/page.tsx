@@ -34,13 +34,20 @@ function V21BridgeWorkspace() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [excludeStarMarket, setExcludeStarMarket] = useState(true);
+  const [excludeGem, setExcludeGem] = useState(true);
 
   const load = useCallback(async (refresh = false) => {
     setLoading(true);
     if (refresh) setRefreshing(true);
     setError('');
     try {
-      const response = await apiFetch<{ data: AnyMap }>('/strong-stock-decision/v21/overview' + (refresh ? '?refresh=true' : ''), { timeoutMs: 45000 });
+      const params = new URLSearchParams({
+        refresh: String(refresh),
+        exclude_star_market: String(excludeStarMarket),
+        exclude_gem: String(excludeGem),
+      });
+      const response = await apiFetch<{ data: AnyMap }>(`/strong-stock-decision/v21/overview?${params}`, { timeoutMs: 45000 });
       setPayload(response.data);
     } catch (caught) {
       setError(friendlyApiError(caught, 'V2.1桥接层暂时不可用'));
@@ -48,7 +55,7 @@ function V21BridgeWorkspace() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [excludeGem, excludeStarMarket]);
 
   useEffect(() => { void load(false); }, [load]);
 
@@ -57,25 +64,30 @@ function V21BridgeWorkspace() {
   const riskItems = (payload?.opportunities || []).filter((item: AnyMap) => item.opportunity_pool === 'RISK_EXCLUDE');
   const lifecycle = (payload?.lifecycle || []).slice(0, 12);
   const migration = (payload?.migration?.paths || []).slice(0, 6);
-  const renderRows = (rows: AnyMap[], empty: string) => rows.length ? rows.slice(0, 10).map((item, index) => (
-    <div key={`${item.symbol || item.sector_id || index}-${index}`} className="grid min-w-0 grid-cols-[1fr_auto] gap-3 border-b border-border py-2.5 last:border-0">
-      <div className="min-w-0"><div className="truncate text-xs text-text">{item.stock_name || item.sector_name || item.sector_id || '未命名'}</div><div className="mt-1 truncate text-[10px] text-text-secondary">{item.symbol ? `${item.selection_source_label || '候选'} · ${item.symbol}` : `${labelOf(item.state || item.sector_type)} · 置信度 ${item.confidence ?? '--'}`}{item.zone_stage ? ` · ${labelOf(item.zone_stage)}` : item.selection_source === 'system_scan' ? ' · 等待交易区确认' : ''}</div></div>
-      <span className={`self-start whitespace-nowrap text-[10px] ${item.priority === 'P1' || item.state === 'STARTING' ? 'text-up' : item.priority === 'EXCLUDE' ? 'text-down' : 'text-text-secondary'}`}>{labelOf(item.priority || item.state || 'WATCH')}</span>
-    </div>
-  )) : <div className="py-5 text-xs text-text-secondary">{empty}</div>;
+  const scan = payload?.candidate_scan || {};
+  const renderRows = (rows: AnyMap[], empty: string) => rows.length ? rows.slice(0, 10).map((item, index) => {
+    const key = `${item.symbol || item.sector_id || index}-${index}`;
+    const content = <><div className="min-w-0"><div className="truncate text-xs text-text">{item.stock_name || item.sector_name || item.sector_id || '未命名'}</div><div className="mt-1 truncate text-[10px] text-text-secondary">{item.symbol ? `${item.selection_source_label || '候选'} · ${item.symbol}` : `${labelOf(item.state || item.sector_type)} · 置信度 ${item.confidence ?? '--'}`}{item.zone_stage ? ` · ${labelOf(item.zone_stage)}` : item.selection_source === 'system_scan' ? ' · 等待交易区确认' : ''}</div></div><span className={`self-start whitespace-nowrap text-[10px] ${item.priority === 'P1' || item.state === 'STARTING' ? 'text-up' : item.priority === 'EXCLUDE' ? 'text-down' : 'text-text-secondary'}`}>{labelOf(item.priority || item.state || 'WATCH')}</span></>;
+    const className = "grid min-w-0 grid-cols-[1fr_auto] gap-3 border-b border-border py-2.5 no-underline last:border-0 hover:bg-white/[0.02]";
+    return item.symbol ? <a key={key} href={`/strong-stock-decision?code=${encodeURIComponent(item.symbol)}`} className={className}>{content}</a> : <div key={key} className={className}>{content}</div>;
+  }) : <div className="py-5 text-xs text-text-secondary">{empty}</div>;
 
   return <section className="mt-5 overflow-hidden rounded-md border border-border bg-card" aria-label="强势股交易决策系统 V2.1桥接层">
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
       <div className="min-w-0"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Network size={15} className="text-accent" />强势股交易决策 V2.1 · 板块轮动与机会雷达</h2><p className="mt-1 text-[10px] text-text-secondary">市场状态 → 板块生命周期 → 资金迁徙推断 → A/B区机会 → 盘后复盘 · Shadow</p></div>
-      <button type="button" onClick={() => void load(true)} disabled={loading} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs text-text-secondary hover:border-accent hover:text-accent disabled:opacity-50" title="刷新V2.1研究快照"><RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />刷新桥接层</button>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-text-secondary"><input type="checkbox" checked={excludeStarMarket} onChange={(event) => setExcludeStarMarket(event.target.checked)} />排除科创板</label>
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-text-secondary"><input type="checkbox" checked={excludeGem} onChange={(event) => setExcludeGem(event.target.checked)} />排除创业板</label>
+        <button type="button" onClick={() => void load(true)} disabled={loading} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs text-text-secondary hover:border-accent hover:text-accent disabled:opacity-50" title="刷新全市场扫描与V2.1研究快照"><RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />刷新全市场</button>
+      </div>
     </header>
     <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">{([['overview', '市场与板块'], ['opportunities', 'A/B机会'], ['review', '盘后复盘']] as const).map(([key, label]) => <button key={key} type="button" onClick={() => setTab(key)} className={`rounded px-3 py-1.5 text-[11px] ${tab === key ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text'}`}>{label}</button>)}</div>
     {loading && !payload ? <div className="px-4 py-6 text-xs text-text-secondary"><div className="flex items-center gap-2"><Loader2 size={14} className="animate-spin text-accent" />正在读取市场状态、板块轨迹和V2.0快照</div><div className="mt-3 h-1 overflow-hidden rounded-full bg-border"><div className="h-full w-1/2 animate-pulse bg-accent" /></div></div> : error ? <div className="m-4 border-l-2 border-warn bg-warn/5 px-3 py-3 text-xs leading-5 text-warn">{error}<button type="button" className="ml-3 text-accent underline" onClick={() => void load(true)}>重试</button></div> : payload && <div className="grid gap-4 p-4 xl:grid-cols-[1.05fr_1fr_1fr]">
       <div className="min-w-0"><div className="mb-2 flex items-center justify-between"><span className="text-[11px] text-text-secondary">当前市场状态</span><span className="font-mono text-[10px] text-text-secondary">{payload.trade_date || '--'} · {payload.mode}</span></div><div className="border border-border bg-bg p-3"><div className="flex flex-wrap items-end justify-between gap-3"><strong className="text-lg text-text">{({ TREND_ATTACK: '进攻趋势市', ROTATION_RANGE: '高活跃震荡轮动市', DEFENSIVE_FADE: '防守退潮市', TRANSITION: '过渡/混沌市' } as Record<string, string>)[String(regime.regime)] || '过渡/混沌市'}</strong><span className="font-mono text-accent">{regime.confidence ?? '--'}%</span></div><div className="mt-2 text-xs leading-5 text-text-secondary">{regime.strategy_bias?.text || '等待足够市场证据'}</div><div className="mt-3 space-y-1 text-[10px] text-text-secondary">{(regime.evidence || []).slice(0, 3).map((item: AnyMap) => <div key={item.text}>事实 · {item.text}</div>)}{(regime.counter_evidence || []).slice(0, 2).map((item: AnyMap) => <div key={item.text} className="text-warn">反证 · {item.text}</div>)}</div></div><div className="mt-3 grid grid-cols-2 gap-2"><div className="border border-border p-2"><div className="text-[10px] text-text-secondary">板块数量</div><b className="font-mono text-sm text-text">{payload.sectors?.length || 0}</b></div><div className="border border-border p-2"><div className="text-[10px] text-text-secondary">迁徙推断</div><b className="font-mono text-sm text-text">{migration.length}</b></div></div></div>
       <div className="min-w-0"><div className="mb-2 flex items-center justify-between"><span className="text-[11px] font-semibold text-text">板块生命周期</span><span className="text-[10px] text-text-secondary">多日状态机</span></div><div className="max-h-64 overflow-auto pr-1">{renderRows(lifecycle, '暂无足够板块历史样本')}</div><div className="mt-3 border-t border-border pt-3">{migration.slice(0, 3).map((item: AnyMap) => <div key={`${item.source?.id}-${item.target?.id}`} className="flex min-w-0 items-center gap-2 py-1.5 text-[10px] text-text-secondary"><span className="truncate">{item.source?.name || '未命名板块'}</span><span className="text-accent">→</span><span className="truncate text-text">{item.target?.name || '未命名板块'}</span><span className="ml-auto shrink-0 font-mono">{item.confidence ?? '--'}%</span></div>)}</div></div>
-      <div className="min-w-0">{tab === 'overview' && <><div className="mb-2 flex items-center justify-between"><span className="text-[11px] font-semibold text-text">机会与风险摘要</span><span className="text-[10px] text-text-secondary">A/B/C融合 + 系统筛选</span></div>{renderRows([...opportunities, ...riskItems], '暂无系统筛选或个股查询机会')}<div className="mt-3 text-[10px] leading-4 text-text-secondary">资金迁徙是板块聚合数据的相对强弱推断，不是逐笔资金账户迁移。</div></>}{tab === 'opportunities' && <><div className="mb-2 text-[11px] font-semibold text-text">A区发现 / A区确认 / B区二攻 / 系统观察</div>{renderRows(opportunities, '暂无满足板块生命周期与A/B区条件的候选')}<div className="mt-3 border-t border-border pt-3 text-[10px] text-warn">风险淘汰：{riskItems.length} 条，C区优先级覆盖攻击信号。</div></>}{tab === 'review' && <><div className="mb-2 text-[11px] font-semibold text-text">今日盘后复盘入口</div><div className="space-y-2 text-xs leading-5 text-text-secondary"><p>状态：{regime.strategy_bias?.text || '数据不足，不能强行分类'}</p><p>明日验证：板块宽度、核心股跟随、资金连续性。</p><p>失效条件：市场转为防守退潮市，或核心股与板块宽度同步破坏。</p><p className="text-warn">结果需经过T+1/T+3/T+5验证后才进入经验层。</p></div></>}</div>
+      <div className="min-w-0">{tab === 'overview' && <><div className="mb-2 flex items-center justify-between"><span className="text-[11px] font-semibold text-text">机会与风险摘要</span><span className="text-[10px] text-text-secondary">A/B/C融合 + 全市场系统扫描</span></div><div className="mb-2 grid grid-cols-3 gap-1.5 text-[10px]"><div className="border border-border p-1.5 text-text-secondary">扫描 <b className="font-mono text-text">{scan.total_scanned ?? '--'}</b></div><div className="border border-border p-1.5 text-text-secondary">初筛 <b className="font-mono text-text">{scan.source_shortlisted ?? '--'}</b></div><div className="border border-border p-1.5 text-text-secondary">候选 <b className="font-mono text-text">{scan.shortlisted ?? '--'}</b></div></div>{renderRows([...opportunities, ...riskItems], '当前全市场扫描没有形成可展示候选')}<div className="mt-3 text-[10px] leading-4 text-text-secondary">资金迁徙是板块聚合数据的相对强弱推断，不是逐笔资金账户迁移。</div></>}{tab === 'opportunities' && <><div className="mb-2 text-[11px] font-semibold text-text">A区发现 / A区确认 / B区二攻 / 系统观察</div>{renderRows(opportunities, '暂无满足板块生命周期与A/B区条件的候选')}<div className="mt-3 border-t border-border pt-3 text-[10px] text-warn">风险淘汰：{riskItems.length} 条，C区优先级覆盖攻击信号。</div></>}{tab === 'review' && <><div className="mb-2 text-[11px] font-semibold text-text">今日盘后复盘入口</div><div className="space-y-2 text-xs leading-5 text-text-secondary"><p>状态：{regime.strategy_bias?.text || '数据不足，不能强行分类'}</p><p>明日验证：板块宽度、核心股跟随、资金连续性。</p><p>失效条件：市场转为防守退潮市，或核心股与板块宽度同步破坏。</p><p className="text-warn">结果需经过T+1/T+3/T+5验证后才进入经验层。</p></div></>}</div>
     </div>}
-    {payload && <footer className="border-t border-border px-4 py-2 text-[10px] text-text-secondary">数据质量：{labelOf(payload.data_quality?.status || 'DATA_INCOMPLETE')} · 来源：{payload.data_quality?.source_name || '已有系统缓存'} · 运行模式：{labelOf(payload.mode || 'SHADOW')} · 不自动交易</footer>}
+    {payload && <footer className="border-t border-border px-4 py-2 text-[10px] text-text-secondary">数据质量：{labelOf(payload.data_quality?.status || 'DATA_INCOMPLETE')} · 候选来源：{scan.source_label || '全市场系统扫描'} · 数据日：{scan.data_date || payload.trade_date || '--'} · {scan.is_realtime ? '实时' : scan.cache_used ? '缓存快照' : '最新可用'} · 运行模式：{labelOf(payload.mode || 'SHADOW')} · 不自动交易</footer>}
   </section>;
 }
 
@@ -472,8 +484,6 @@ export default function StrongStockDecisionPage() {
           {loading && <div className="strong-loading"><Loader2 size={17} className="animate-spin" /><span>正在核验日线、量价、主力与三书技能…</span><div><i style={{ width: `${progress}%` }} /></div><b>{progress}%</b></div>}
 
           {!data && !loading ? <div className="strong-empty-page"><Search size={28} /><p>输入六位股票代码开始分析</p></div> : data && <>
-            {v2 && <StrongStockV2Dashboard v2={v2} symbol={symbol} onRefresh={() => void loadOverview(symbol, true)} />}
-            <V21BridgeWorkspace />
             <div className="strong-primary-grid">
               <Panel title="实时K线图（日线）" icon={LineChart} meta={<span>{data?.trade_date || '--'} · {bars.length}根日线</span>} className="strong-kline-panel">
                 <div className="strong-ma-legend"><span>MA5:{numberText(data?.engine_features?.ma5)}</span><span>MA10:{numberText(data?.engine_features?.ma10)}</span><span>MA20:{numberText(data?.engine_features?.ma20)}</span><span>MA30:{numberText(data?.v2?.moving_average?.values?.ma30)}</span><span>MA60:{numberText(data?.engine_features?.ma60)}</span></div>
@@ -528,6 +538,9 @@ export default function StrongStockDecisionPage() {
               <div className="strong-detail-tabs">{DETAIL_TABS.map((tab) => <button type="button" key={tab.id} onClick={() => setDetailTab(tab.id)} className={detailTab === tab.id ? 'is-active' : ''}>{tab.label}</button>)}</div>
               <div className="strong-detail-content">{renderDetail()}</div>
             </section>
+
+            {v2 && <StrongStockV2Dashboard v2={v2} symbol={symbol} onRefresh={() => void loadOverview(symbol, true)} />}
+            <V21BridgeWorkspace />
 
             <footer className="strong-terminal-footer"><span>免责声明：本系统基于三本书理论与可核验数据开发，仅供学习和研究参考，不构成投资建议。</span><span><b>ⓘ</b> Shadow模式：仅分析不执行交易</span></footer>
           </>}

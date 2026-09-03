@@ -372,7 +372,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "run_smart_stock_selection",
         "description": "运行系统智能选股Agent，支持短期/半月/月度周期、板块和因子筛选，并保留数据审计。",
-        "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["quick", "full"]}, "risk_profile": {"type": "string", "enum": ["conservative", "balanced", "aggressive"]}, "horizon": {"type": "string", "enum": ["week", "half_month", "month"]}, "top_n": {"type": "integer", "minimum": 3, "maximum": 10}, "sector": {"type": "string"}, "sector_code": {"type": "string"}, "factor_filters": {"type": "object"}}, "additionalProperties": False},
+        "inputSchema": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["quick", "full", "numcat"]}, "risk_profile": {"type": "string", "enum": ["conservative", "balanced", "aggressive"]}, "horizon": {"type": "string", "enum": ["week", "half_month", "month"]}, "top_n": {"type": "integer", "minimum": 3, "maximum": 10}, "sector": {"type": "string"}, "sector_code": {"type": "string"}, "factor_filters": {"type": "object"}}, "additionalProperties": False},
     },
     {
         "name": "run_technical_screen",

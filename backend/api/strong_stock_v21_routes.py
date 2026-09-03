@@ -31,13 +31,30 @@ async def _call(factory, *args, **kwargs):
 
 
 @router.get("/strong-stock-decision/v21/overview")
-async def v21_overview(date_value: str | None = Query(None, alias="date"), refresh: bool = Query(False)):
-    return await _call(strong_stock_v21_service.overview, _date(date_value), refresh=refresh)
+async def v21_overview(
+    date_value: str | None = Query(None, alias="date"),
+    refresh: bool = Query(False),
+    exclude_star_market: bool = Query(True),
+    exclude_gem: bool = Query(True),
+):
+    return await _call(
+        strong_stock_v21_service.overview,
+        _date(date_value),
+        refresh=refresh,
+        exclude_star_market=exclude_star_market,
+        exclude_gem=exclude_gem,
+    )
 
 
 @router.post("/strong-stock-decision/v21/refresh")
 async def v21_refresh(payload: dict = Body(default_factory=dict)):
-    return await _call(strong_stock_v21_service.overview, _date(payload.get("date")), refresh=True)
+    return await _call(
+        strong_stock_v21_service.overview,
+        _date(payload.get("date")),
+        refresh=True,
+        exclude_star_market=bool(payload.get("exclude_star_market", True)),
+        exclude_gem=bool(payload.get("exclude_gem", True)),
+    )
 
 
 @router.get("/market/regime")

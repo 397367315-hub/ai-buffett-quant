@@ -2934,7 +2934,12 @@ class EastMoneyDataCollector:
             results.append(stock)
         return {"total": len(results), "stocks": results, **self._quote_snapshot_metadata(results)}
 
-    async def fetch_intelligent_selection_candidates(self, page_size: int = 180) -> dict:
+    async def fetch_intelligent_selection_candidates(
+        self,
+        page_size: int = 180,
+        *,
+        force_numcat: bool = False,
+    ) -> dict:
         """Build a live candidate pool from capital flow, volume and momentum leaders.
 
         The union avoids a single sorting dimension dominating the stock picker.
@@ -2987,6 +2992,7 @@ class EastMoneyDataCollector:
                     now = shanghai_now()
                     return {
                         "total": len(stocks),
+                        "scan_total": len(rows),
                         "stocks": stocks,
                         "source": "numcat",
                         "is_realtime": bool(
@@ -2999,6 +3005,25 @@ class EastMoneyDataCollector:
                     }
             except Exception as exc:
                 print(f"NumCat screening failed: {type(exc).__name__}")
+                if force_numcat:
+                    return {
+                        "total": 0,
+                        "stocks": [],
+                        "source": "numcat",
+                        "is_realtime": False,
+                        "data_date": None,
+                        "error": "numcat_upstream_unavailable",
+                    }
+
+        if force_numcat:
+            return {
+                "total": 0,
+                "stocks": [],
+                "source": "numcat",
+                "is_realtime": False,
+                "data_date": None,
+                "error": "numcat_not_configured",
+            }
 
         base_filters = {
             "min_change": -100,
@@ -3033,6 +3058,7 @@ class EastMoneyDataCollector:
         if stocks:
             return {
                 "total": len(stocks),
+                "scan_total": len(candidates),
                 "stocks": stocks,
                 "source": "eastmoney",
                 **self._quote_snapshot_metadata(stocks),

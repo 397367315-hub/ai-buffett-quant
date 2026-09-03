@@ -1120,7 +1120,59 @@ def build_v2(context: dict[str, Any], legacy: dict[str, Any] | None = None) -> d
     qts = _quantity_time_space(features, risk)
     main_force = _main_force(features)
     ma = _moving_average(features)
-    zones = _zones(features, risk, main_force, ma)
+    raw_v2_zone = _zones(features, risk, main_force, ma)
+    legacy_zone = (legacy or {}).get("best_trading_zone") or {}
+    legacy_zone_name = str(legacy_zone.get("zone") or "").strip()
+    canonical_zone_names = {"强势A区", "强势B区", "风险C区", "未形成明确交易区"}
+    if legacy_zone_name in canonical_zone_names:
+        # V2 extends the V1 decision and must not publish a contradictory
+        # trading-zone conclusion. Keep V2 geometry as supplemental research
+        # data while using the legacy state machine as the canonical label.
+        zones = {**raw_v2_zone, **legacy_zone}
+        zones["geometry"] = raw_v2_zone.get("geometry") or legacy_zone.get("geometry") or {}
+        zones["stage"] = (
+            legacy_zone.get("stage")
+            or legacy_zone.get("zone_stage")
+            or {
+                "强势A区": "A_ACTIVE",
+                "强势B区": "B_ACTIVE",
+                "风险C区": "C_WARNING",
+                "未形成明确交易区": "UNKNOWN",
+            }[legacy_zone_name]
+        )
+        canonical_zone_by_skill = {
+            "HQS_008": "强势A区",
+            "HQS_009": "强势B区",
+            "HQS_010": "风险C区",
+        }
+        zones["signals"] = [
+            {
+                **signal,
+                "status": "CONFIRMED" if canonical_zone_by_skill.get(signal.get("skill_id")) == legacy_zone_name else "NOT_FOUND",
+                "confidence": signal.get("confidence") or 82 if canonical_zone_by_skill.get(signal.get("skill_id")) == legacy_zone_name else None,
+                "evidence": [
+                    _evidence("统一采用V1交易区状态机结论", "canonical_zone", legacy_zone_name),
+                    *list(signal.get("evidence") or []),
+                ],
+            }
+            for signal in raw_v2_zone.get("signals") or []
+        ]
+        zone_comparison = {
+            "canonical_source": "V1统一交易区状态机",
+            "canonical_zone": legacy_zone_name,
+            "raw_v2_zone": raw_v2_zone.get("zone"),
+            "different": legacy_zone_name != raw_v2_zone.get("zone"),
+            "explanation": "V2保留自己的几何计算用于审计，但页面与后续买卖/风险逻辑统一采用V1主结论。",
+        }
+    else:
+        zones = raw_v2_zone
+        zone_comparison = {
+            "canonical_source": "V2交易区计算",
+            "canonical_zone": raw_v2_zone.get("zone"),
+            "raw_v2_zone": raw_v2_zone.get("zone"),
+            "different": False,
+            "explanation": "V1没有可用的标准交易区结论，暂由V2计算结果承担研究展示。",
+        }
     theme = _theme(context, features)
     patterns, pattern_detail = _pattern_data(features, main_force, zones, ma)
     stars, star_detail = _stars(features, zones, main_force, theme)
@@ -1229,6 +1281,7 @@ def build_v2(context: dict[str, Any], legacy: dict[str, Any] | None = None) -> d
         "volume_price": _volume_price(features),
         "moving_average": ma,
         "zones": zones,
+        "zone_comparison": zone_comparison,
         "three_degree": pattern_detail["three_degree"],
         "big_patterns": patterns,
         "stars": stars,
