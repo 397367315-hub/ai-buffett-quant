@@ -13,6 +13,7 @@ from models import (
     ConceptBoard,
     KnowledgeTerm,
     LearningCase,
+    MarketEmotionReplaySnapshot,
     PersonalPoolItem,
     PersonalSystemConfig,
 )
@@ -20,6 +21,7 @@ from services.data_collector import normalize_stock_code
 
 
 BASE_DIR = Path(__file__).resolve().parent
+EMOTION_REPLAY_FILE = "data/market_emotion_seed.json"
 LEGACY_BOARD_CODES = ("BK1187", "BK1188", "BK1189", "BK1190", "BK1191")
 PERSONAL_POOL_FILE = "seed_personal_pool.json"
 PERSONAL_DELETION_CONFIG_KEY = "personal_pool_deletions_v1"
@@ -47,6 +49,53 @@ def _load_object(filename: str) -> dict:
     except FileNotFoundError:
         print(f"{filename} not found")
         return {}
+
+
+def _load_list(filename: str) -> list[dict]:
+    try:
+        payload = json.loads((BASE_DIR / filename).read_text(encoding="utf-8"))
+        return payload if isinstance(payload, list) else []
+    except FileNotFoundError:
+        print(f"{filename} not found")
+        return []
+
+
+async def _seed_emotion_replay(session) -> int:
+    """Idempotently import compact user-supplied historical emotion rows."""
+    rows = _load_list(EMOTION_REPLAY_FILE)
+    inserted = 0
+    for payload in rows:
+        trade_date = _as_date(payload.get("trade_date"))
+        if trade_date is None:
+            continue
+        values = dict(payload)
+        values.pop("trade_date", None)
+        week = values.pop("week", None)
+        month = values.pop("month", None)
+        source = str(values.pop("source", "user_imported_csv"))[:80]
+        values.pop("is_realtime", None)
+        values["source_note"] = str(values.get("source_note") or "用户提供的历史情绪复盘CSV")[:300]
+        existing = await session.get(MarketEmotionReplaySnapshot, trade_date)
+        if existing is None:
+            session.add(MarketEmotionReplaySnapshot(
+                trade_date=trade_date,
+                week=week,
+                month=month,
+                source=source,
+                payload=values,
+            ))
+            inserted += 1
+        else:
+            # Refresh CSV-owned fields without discarding a same-day compact
+            # workspace cache collected after the previous application start.
+            existing.week = week or existing.week
+            existing.month = month or existing.month
+            existing_sources = [item for item in str(existing.source or "").split("+") if item]
+            if source not in existing_sources:
+                existing_sources.append(source)
+            existing.source = "+".join(existing_sources)[:80]
+            existing.payload = {**dict(existing.payload or {}), **values}
+    return inserted
 
 
 def _as_date(value: object):
@@ -250,12 +299,14 @@ async def seed() -> None:
             await _upsert_by(session, LearningCase, "title", payload)
         for board in boards:
             await _upsert_by(session, ConceptBoard, "code", board)
+        emotion_replay_inserted = await _seed_emotion_replay(session)
         personal_inserted, personal_valid = await _seed_personal_pool(session)
         await session.commit()
 
     print(
         f"种子数据已同步: {len(terms)}个术语, {len(cases)}个案例, "
         f"{len(boards)}个板块, 个人池新增{personal_inserted}项/校验{personal_valid}项"
+        f", 情绪复盘新增{emotion_replay_inserted}日"
     )
 
 

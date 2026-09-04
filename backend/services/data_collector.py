@@ -541,7 +541,10 @@ class EastMoneyDataCollector:
             "dpt": "wz.ztzt",
             "Pageindex": str(max(page - 1, 0)),
             "pagesize": str(page_size),
-            "sort": "fbt:asc" if direction == "up" else "fund:asc",
+            # The failed-limit pool has no meaningful seal-fund ranking. Its
+            # native zbc field is the number of board breaks, so use it to
+            # obtain the complete pool instead of an empty fund-sorted page.
+            "sort": "fbt:asc" if direction == "up" else "zbc:desc" if direction == "failed" else "fund:asc",
             "date": requested_date,
         }
         try:
@@ -554,6 +557,7 @@ class EastMoneyDataCollector:
             "stocks": [self._pool_item(item, direction) for item in (payload.get("pool") or [])],
             "total": as_int(payload.get("tc")),
             "trade_date": str(payload.get("qdate") or "") or None,
+            "source": "eastmoney_limit_pool",
         }
 
     async def fetch_limit_up_pool(

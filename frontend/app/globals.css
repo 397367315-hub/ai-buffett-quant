@@ -1925,3 +1925,46 @@ body {
 .workbench-nav-mobile a { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 4px; border: 1px solid rgba(255,255,255,.08); background: #151D27; padding: 8px 7px; color: #9AA4B2; font-size: 10px; text-decoration: none; }
 .workbench-nav-mobile a.is-active { border-color: rgba(76,141,255,.5); color: #F2F4F7; }
 @media (max-width: 760px) { .workbench-nav-inner { min-height: 38px; gap: 8px; padding: 0 9px; } .workbench-nav-links { display: none; } .workbench-nav-toggle { display: grid; place-items: center; margin-left: auto; } .workbench-nav-mobile-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+
+/* Unified emotion replay workspace. Wide evidence tables scroll locally on
+   small screens so they never widen the page or hide the date controls. */
+.replay-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.replay-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  color: #9aa4b2;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-table th {
+  background: #0d1117;
+  color: #7d8996;
+  font-size: 9px;
+  font-weight: 400;
+  padding: 8px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.replay-table td {
+  border-top: 1px solid #252c36;
+  padding: 8px 10px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.replay-table tbody tr:hover td { background: rgba(88, 166, 255, 0.035); }
+
+@media (max-width: 640px) {
+  .replay-table { min-width: 700px; }
+  .replay-table th, .replay-table td { padding: 7px 8px; }
+}

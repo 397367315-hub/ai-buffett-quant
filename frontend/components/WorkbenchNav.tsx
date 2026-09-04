@@ -16,6 +16,7 @@ const LINKS = [
   ['/quant', '量化策略'],
   ['/pro/flow-observer', '资金流观察'],
   ['/pro/topic-strength', '题材强弱'],
+  ['/pro/replay', '情绪复盘'],
   ['/pro/event-radar', '事件雷达'],
   ['/pro/auction', '竞价监控'],
   ['/pro/heatmap', '资金热力图'],

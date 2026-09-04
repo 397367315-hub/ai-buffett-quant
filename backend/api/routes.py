@@ -46,6 +46,7 @@ from services.decision_workbench_2026 import decision_workbench_2026_service
 from services.market_way_v4 import market_way_v4_service
 from services.block_trade_analysis import block_trade_analysis_service
 from services.stock_essence_decision import stock_essence_decision_service
+from services.replay_workspace import replay_workspace_service
 from quant.market_cache import load_quant_market_snapshot
 from market_data.numcat.market_provider import numcat_market_provider
 
@@ -1533,6 +1534,55 @@ async def get_market_sentiment(refresh: bool = Query(False)):
 
 
 # ── 市场环境与题材强弱 ──
+
+
+@router.get("/replay/workspace")
+async def get_replay_workspace(
+    target_date: Optional[str] = Query(None, alias="date"),
+    refresh: bool = Query(False),
+    history_days: int = Query(40, ge=10, le=120),
+):
+    """Return the unified, date-labelled market review workspace."""
+    parsed_date = None
+    if target_date:
+        try:
+            parsed_date = date.fromisoformat(target_date[:10])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必须是 YYYY-MM-DD") from exc
+    try:
+        data = await replay_workspace_service.get(
+            parsed_date,
+            refresh=refresh,
+            history_days=history_days,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
+
+
+@router.get("/replay/dates")
+async def get_replay_dates(limit: int = Query(180, ge=1, le=500)):
+    return {"code": 0, "data": await replay_workspace_service.dates(limit)}
+
+
+@router.post("/replay/analysis")
+async def analyze_replay_workspace(request: dict | None = None):
+    payload = request or {}
+    parsed_date = None
+    if payload.get("date"):
+        try:
+            parsed_date = date.fromisoformat(str(payload["date"])[:10])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="date 必须是 YYYY-MM-DD") from exc
+    try:
+        data = await replay_workspace_service.analyze(
+            parsed_date,
+            use_ai=bool(payload.get("use_ai", True)),
+            history_days=int(payload.get("history_days") or 40),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"code": 0, "data": data}
 
 
 @router.get("/topic-strength")

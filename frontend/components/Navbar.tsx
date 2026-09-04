@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, Bell, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge, Database } from 'lucide-react';
+import { Activity, BarChart3, Bell, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge, Database, History as HistoryIcon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -13,6 +13,7 @@ const proSubItems = [
   { href: '/pro/margin', label: '两融杠杆中心', icon: Gauge },
   { href: '/pro', label: '资金排名', icon: TrendingUp },
   { href: '/pro/sentiment', label: '市场情绪', icon: TrendingUp },
+  { href: '/pro/replay', label: '情绪复盘', icon: HistoryIcon },
   { href: '/pro/topic-strength', label: '题材强弱', icon: Flame },
   { href: '/pro/event-radar', label: 'AI事件雷达', icon: Bell },
   { href: '/pro/auction', label: '竞价监控', icon: Activity },
@@ -132,6 +133,9 @@ export default function Navbar() {
           </Link>
           <Link href="/roci" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
             <ShieldAlert size={16} /> 风险机会认知
+          </Link>
+          <Link href="/pro/replay" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
+            <HistoryIcon size={16} /> 情绪复盘工作台
           </Link>
           <Link href="/numcat" className="flex items-center gap-2 px-3 py-2 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
             <Database size={16} /> 猫爪数据中枢

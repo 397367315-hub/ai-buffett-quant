@@ -165,6 +165,24 @@ class MarketSentimentDaily(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class MarketEmotionReplaySnapshot(Base):
+    """Compact daily emotion evidence used by the unified replay workspace.
+
+    This table intentionally stores the normalized daily summary only.  It is
+    not a raw NumCat warehouse: large limit-pool, auction, or event responses
+    remain in the bounded gateway cache and are never persisted here.
+    """
+
+    __tablename__ = "market_emotion_replay_snapshots"
+
+    trade_date = Column(Date, primary_key=True)
+    week = Column(String(20))
+    month = Column(String(20))
+    source = Column(String(80), nullable=False, default="user_imported_csv")
+    payload = Column(JSON, nullable=False, default=dict)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class NorthFundFlowDaily(Base):
     __tablename__ = "north_fund_flow_daily"
 
