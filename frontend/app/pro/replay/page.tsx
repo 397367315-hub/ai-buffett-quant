@@ -12,12 +12,15 @@ import {
   BrainCircuit,
   CalendarDays,
   CheckCircle2,
+  ChevronRight,
   Clock3,
   Database,
   Flame,
   History,
+  LayoutDashboard,
   Layers3,
   Loader2,
+  Menu,
   RefreshCw,
   ShieldAlert,
   Sparkles,
@@ -84,6 +87,18 @@ interface AnalysisResult {
 
 type DetailTab = 'limit_up' | 'limit_down' | 'failed_limit' | 'yesterday_limit';
 type TopicTab = 'strong_sectors' | 'topic_rotation' | 'topic_auction' | 'fengkou' | 'hot_search' | 'reasons';
+type ReplayView = 'overview' | 'limit_detail' | 'ladder' | 'auction' | 'topics' | 'events' | 'history' | 'analysis';
+
+const REPLAY_NAV_ITEMS: Array<{ key: ReplayView; label: string; description: string; icon: LucideIcon }> = [
+  { key: 'overview', label: '总览', description: '市场事实与状态', icon: LayoutDashboard },
+  { key: 'limit_detail', label: '涨跌停 / 炸板', description: '股票级明细', icon: Flame },
+  { key: 'ladder', label: '连板天梯', description: '近期梯队矩阵', icon: Layers3 },
+  { key: 'auction', label: '竞价与封单', description: '9:20 / 9:25 快照', icon: Clock3 },
+  { key: 'topics', label: '板块与资金', description: '题材、轮动、风口', icon: BarChart3 },
+  { key: 'events', label: '异动雷达', description: '异动与公开事件', icon: ShieldAlert },
+  { key: 'history', label: '历史情绪', description: '趋势与交易日对比', icon: TrendingUp },
+  { key: 'analysis', label: 'AI 复盘', description: '事实解读与边界', icon: BrainCircuit },
+];
 
 const DETAIL_TABS: Array<{ key: DetailTab; label: string }> = [
   { key: 'limit_up', label: '涨停明细' },
@@ -203,6 +218,55 @@ function rowCode(row: AnyMap): string {
   return String(row.code || row.symbol || '').replace(/\.(SH|SZ|BJ)$/i, '').slice(0, 12);
 }
 
+function reasonStatusLabel(value: unknown): string {
+  const status = String(value || '').trim().toLowerCase();
+  if (['u', 'up', 'limit_up', '封板', '涨停'].includes(status)) return '触及涨停';
+  if (['d', 'down', 'open', 'break', '炸板', '打开'].includes(status)) return '炸板';
+  if (['reopen', '回封', '封回'].includes(status)) return '回封';
+  if (status) return String(value);
+  return '状态变化';
+}
+
+function humanReason(value: unknown): string {
+  if (value == null || value === '') return '--';
+  if (typeof value === 'object') {
+    const item = value as AnyMap;
+    const time = String(item.time || item.event_time || '').trim();
+    const detail = String(item.reason || item.detail || item.message || '').trim();
+    return [time, detail || reasonStatusLabel(item.type || item.status)].filter(Boolean).join(' ');
+  }
+  const text = String(value).trim();
+  if (!text) return '--';
+  const chunks = text.match(/\{[^{}]*\}/g);
+  if (chunks?.length) {
+    const parsed = chunks.map((chunk) => {
+      const time = chunk.match(/(?:time|event_time|t)\s*['\":=]+\s*['\"]?(\d{1,2}:\d{2}(?::\d{2})?)/i)?.[1] || '';
+      const type = chunk.match(/(?:type|status|state)\s*['\":=]+\s*['\"]?([^,'}\"]+)/i)?.[1] || '';
+      const detail = chunk.match(/(?:reason|detail|message|description)\s*['\":=]+\s*['\"]([^'\"}]*)/i)?.[1] || '';
+      return [time, detail || reasonStatusLabel(type)].filter(Boolean).join(' ');
+    }).filter(Boolean);
+    if (parsed.length) return parsed.join(' · ');
+  }
+  if (/^\s*[\[{]/.test(text)) {
+    const simplified = text
+      .replace(/[\[\]{}'\"]/g, '')
+      .replace(/\btime\s*:\s*/gi, '')
+      .replace(/\btype\s*:\s*/gi, '')
+      .replace(/\s*,\s*/g, ' · ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (simplified) return simplified;
+  }
+  return cleanText(text);
+}
+
+function timeRange(row: AnyMap): string {
+  const first = String(row.first_time || '').trim();
+  const last = String(row.last_time || '').trim();
+  if (first && last && first !== last) return `${first} / ${last}`;
+  return first || last || '--';
+}
+
 function sectionRows(section: ReplaySection | undefined): AnyMap[] {
   return Array.isArray(section?.rows) ? section?.rows || [] : [];
 }
@@ -215,6 +279,67 @@ function SectionMeta({ section, compact = false }: { section?: ReplaySection; co
       <Database size={10} className="shrink-0" />
       <span className="truncate">{sourceLabel(section.source)} · {status} · {section.data_date || '--'}</span>
     </span>
+  );
+}
+
+function ReplaySidebar({
+  activeView,
+  onSelect,
+  payload,
+  mobile = false,
+}: {
+  activeView: ReplayView;
+  onSelect: (view: ReplayView) => void;
+  payload?: ReplayPayload | null;
+  mobile?: boolean;
+}) {
+  const quality = payload?.quality || {};
+  return (
+    <aside className={`replay-sidebar ${mobile ? 'replay-sidebar-mobile' : ''}`} aria-label="情绪复盘模块导航">
+      <div className="replay-sidebar-heading">
+        <div className="replay-sidebar-mark"><History size={15} /></div>
+        <div className="min-w-0">
+          <div className="truncate text-xs font-semibold text-text">情绪复盘</div>
+          <div className="mt-0.5 truncate text-[9px] text-text-secondary">按模块查看证据</div>
+        </div>
+      </div>
+      <nav className="replay-sidebar-nav">
+        {REPLAY_NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          const active = item.key === activeView;
+          return (
+            <button
+              key={item.key}
+              type="button"
+              className={`replay-sidebar-item ${active ? 'is-active' : ''}`}
+              onClick={() => onSelect(item.key)}
+              aria-current={active ? 'page' : undefined}
+            >
+              <Icon size={14} />
+              <span className="min-w-0 flex-1 text-left">
+                <span className="block truncate">{item.label}</span>
+                <span className="replay-sidebar-description">{item.description}</span>
+              </span>
+              <ChevronRight size={12} className="replay-sidebar-chevron" />
+            </button>
+          );
+        })}
+      </nav>
+      <div className="replay-sidebar-status">
+        <div className="flex items-center justify-between gap-2">
+          <span>当前截面</span>
+          <span className="font-mono text-text">{payload?.trade_date || '--'}</span>
+        </div>
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span>数据覆盖</span>
+          <span className="font-mono text-accent">{numberText(quality.coverage_pct, 0)}%</span>
+        </div>
+        <div className="mt-2 flex items-center gap-1.5 text-[9px] text-text-secondary">
+          <span className={`replay-status-dot ${payload?.is_realtime ? 'is-live' : ''}`} />
+          {payload?.is_realtime ? '交易时段实时截面' : payload?.cache_hit ? '规范化缓存截面' : '收盘 / 历史截面'}
+        </div>
+      </div>
+    </aside>
   );
 }
 
@@ -353,16 +478,55 @@ function LimitDetailPanel({ sections, emotion }: { sections: Record<string, Repl
   return (
     <Panel title="涨跌停与炸板明细" icon={Flame} subtitle="聚合数量与股票级明细分开标识，避免把汇总当作明细" action={<span className="font-mono text-[10px] text-text-secondary">汇总 {countText(count)} 只</span>}>
       <div className="flex gap-1 overflow-x-auto border-b border-border px-3 py-2">{DETAIL_TABS.map((item) => <button key={item.key} type="button" onClick={() => setTab(item.key)} className={`shrink-0 rounded border px-2.5 py-1.5 text-[10px] ${tab === item.key ? 'border-accent/60 bg-accent/10 text-accent' : 'border-transparent text-text-secondary hover:border-border hover:text-text'}`}>{item.label}<span className="ml-1 font-mono">{countText(item.key === 'limit_up' ? emotion.limit_up_count : item.key === 'limit_down' ? emotion.limit_down_count : item.key === 'failed_limit' ? emotion.failed_limit_count : emotion.yesterday_limit_up_count)}</span></button>)}</div>
-      {rows.length ? <div className="replay-table-wrap"><table className="replay-table"><thead><tr><th>代码</th><th>股票</th><th>涨跌幅</th><th>连板</th><th>成交额</th><th>封单额</th><th>首次/最后</th><th>原因</th></tr></thead><tbody>{rows.slice(0, 80).map((row, index) => <tr key={`${rowCode(row)}-${index}`}><td className="font-mono text-text-secondary">{rowCode(row) || '--'}</td><td className="max-w-[150px] truncate text-text" title={displayRowName(row)}>{displayRowName(row)}</td><td className={tone(row.change_pct)}>{percentText(row.change_pct, 2)}</td><td className="font-mono text-warn">{countText(row.continuous_days)}</td><td className="font-mono">{moneyText(row.amount, false)}</td><td className="font-mono">{moneyText(row.seal_amount, false)}</td><td>{row.first_time || row.last_time || '--'}</td><td className="max-w-[240px] truncate" title={row.reason}>{row.reason || '--'}</td></tr>)}</tbody></table></div> : <EmptyDetail section={section} label={`${DETAIL_TABS.find((item) => item.key === tab)?.label || '明细'}未返回`} />}
+      {rows.length ? <div className="replay-table-wrap"><table className="replay-table"><thead><tr><th>代码</th><th>股票</th><th>涨跌幅</th><th>连板</th><th>成交额</th><th>封单额</th><th>首次 / 最后</th><th>状态 / 原因</th></tr></thead><tbody>{rows.slice(0, 80).map((row, index) => <tr key={`${rowCode(row)}-${index}`}><td className="font-mono text-text-secondary">{rowCode(row) || '--'}</td><td className="max-w-[150px] truncate text-text" title={displayRowName(row)}>{displayRowName(row)}</td><td className={tone(row.change_pct)}>{percentText(row.change_pct, 2)}</td><td className="font-mono text-warn">{countText(row.continuous_days)}</td><td className="font-mono">{moneyText(row.amount, false)}</td><td className="font-mono">{moneyText(row.seal_amount, false)}</td><td className="font-mono text-[9px]">{timeRange(row)}</td><td className="max-w-[260px] truncate" title={humanReason(row.reason)}>{humanReason(row.reason)}</td></tr>)}</tbody></table></div> : <EmptyDetail section={section} label={`${DETAIL_TABS.find((item) => item.key === tab)?.label || '明细'}未返回`} />}
     </Panel>
   );
 }
 
-function StreakLadder({ section }: { section?: ReplaySection }) {
+function ladderValueTone(value: unknown): string {
+  const text = String(value ?? '').trim();
+  if (!text || text === '--') return 'text-text-secondary';
+  if (text.includes('板') || text.includes('首板')) return 'text-warn';
+  if (text.startsWith('-')) return 'text-down';
+  if (text.startsWith('+')) return 'text-up';
+  return 'text-text';
+}
+
+function ladderDateLabel(value: string): string {
+  const text = dateText(value);
+  return text === '--' ? text : text.replace(/^(\d{4})-/, '$1/').replace(/-/g, '/');
+}
+
+function StreakLadder({ section, historySection, limitSection }: { section?: ReplaySection; historySection?: ReplaySection; limitSection?: ReplaySection }) {
   const rows = sectionRows(section);
+  const matrixRows = sectionRows(historySection);
+  const dates = Array.isArray(historySection?.summary?.dates) ? historySection?.summary?.dates.map((item) => String(item)) : [];
+  const hasMatrix = matrixRows.length > 0 && dates.length > 0;
   return (
-    <Panel title="连板天梯" icon={Layers3} subtitle="按连板高度观察接力结构" action={<SectionMeta section={section} compact />}>
-      {rows.length ? <div className="divide-y divide-border">{rows.map((row, index) => <div key={`${row.height}-${index}`} className="grid min-w-0 grid-cols-[48px_48px_minmax(0,1fr)_90px] items-center gap-2 px-3 py-2.5 text-[10px] sm:grid-cols-[58px_58px_minmax(0,1fr)_110px] sm:px-4"><span className="font-mono text-base text-warn">{row.height === '4+' ? '4+' : `${row.height || '--'}板`}</span><span className="font-mono text-text">{countText(row.count)}只</span><span className="min-w-0 truncate text-text-secondary" title={Array.isArray(row.stocks) ? row.stocks.join('、') : ''}>{Array.isArray(row.stocks) && row.stocks.length ? row.stocks.slice(0, 5).join('、') : '仅有高度汇总，未返回股票明细'}</span><span className="text-right font-mono text-text-secondary">{moneyText(row.total_seal_amount ?? row.total_amount, false)}</span></div>)}</div> : <EmptyDetail section={section} label="连板天梯未返回" />}
+    <Panel title="连板天梯" icon={Layers3} subtitle="按截图式近期区间查看题材、股票与每日接力变化" action={<SectionMeta section={historySection || section} compact />}>
+      {hasMatrix ? <>
+        <div className="replay-ladder-summary">
+          <span>{countText(historySection?.summary?.ladder_count)} 个题材梯队</span>
+          <span>{countText(historySection?.summary?.stock_count)} 只股票</span>
+          <span className="replay-ladder-note">日期区间：最近 {dates.length} 个交易日</span>
+        </div>
+        <div className="replay-ladder-scroll">
+          <table className="replay-ladder-table">
+            <thead><tr><th>首日题材</th><th>股票</th>{dates.map((item) => <th key={item}>{ladderDateLabel(item)}</th>)}<th>成交额</th><th>封单额</th></tr></thead>
+            <tbody>{matrixRows.map((row, index) => {
+              const values = row.values && typeof row.values === 'object' ? row.values as AnyMap : {};
+              return <tr key={`${rowCode(row)}-${index}`}>
+                <td className="replay-ladder-theme" title={String(row.sector || row.theme || '--')}>{String(row.sector || row.theme || '--')}</td>
+                <td className="replay-ladder-stock"><span className="block truncate text-text" title={displayRowName(row)}>{displayRowName(row)}</span><span className="block font-mono text-[9px] text-text-secondary">{rowCode(row) || '--'}</span></td>
+                {dates.map((day) => <td key={day} className={`replay-ladder-cell font-mono ${ladderValueTone(values[day])}`} title={`${day} · ${values[day] || '无本地日线'}`}>{String(values[day] || '--')}</td>)}
+                <td className="replay-ladder-money font-mono">{moneyText(row.amount, false)}</td>
+                <td className="replay-ladder-money font-mono">{moneyText(row.seal_amount, false)}</td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>
+        <div className="replay-ladder-foot"><span>板数使用当日涨停池的验证连板数据；历史单日涨跌来自本地日线缓存，未覆盖日期显示 --。</span><span>红色上涨 / 绿色下跌，符合 A 股显示约定。</span></div>
+      </> : rows.length ? <div className="divide-y divide-border">{rows.map((row, index) => <div key={`${row.height}-${index}`} className="grid min-w-0 grid-cols-[48px_48px_minmax(0,1fr)_90px] items-center gap-2 px-3 py-2.5 text-[10px] sm:grid-cols-[58px_58px_minmax(0,1fr)_110px] sm:px-4"><span className="font-mono text-base text-warn">{row.height === '4+' ? '4+' : `${row.height || '--'}板`}</span><span className="font-mono text-text">{countText(row.count)}只</span><span className="min-w-0 truncate text-text-secondary" title={Array.isArray(row.stocks) ? row.stocks.join('、') : ''}>{Array.isArray(row.stocks) && row.stocks.length ? row.stocks.slice(0, 5).join('、') : '仅有高度汇总，未返回股票明细'}</span><span className="text-right font-mono text-text-secondary">{moneyText(row.total_seal_amount ?? row.total_amount, false)}</span></div>)}</div> : <EmptyDetail section={section || limitSection} label="连板天梯未返回" />}
     </Panel>
   );
 }
@@ -402,13 +566,13 @@ function HistoryChart({ rows, selectedDate }: { rows: AnyMap[]; selectedDate?: s
   if (!ordered.length) return <div className="grid min-h-40 place-items-center text-xs text-text-secondary">暂无连续历史样本</div>;
   return (
     <div className="overflow-x-auto px-3 pb-3 pt-4 sm:px-4">
-      <div className="flex min-w-[620px] items-end gap-1.5" style={{ height: 190 }}>
+      <div className="replay-history-chart flex items-end gap-1.5" style={{ height: 190 }}>
         {ordered.map((row, index) => {
           const date = String(row.date || row.trade_date || '');
           const moneyEffect = Math.max(2, Math.min(100, numberValue(row.money_effect_score) || 0));
           const risk = Math.max(2, Math.min(100, numberValue(row.risk_release_score) || 0));
           const active = date === selectedDate;
-          return <div key={`${date}-${index}`} className={`flex h-full min-w-0 flex-1 flex-col items-center justify-end gap-1 rounded-sm px-0.5 ${active ? 'bg-accent/10' : ''}`} title={`${date}\n赚钱效应 ${numberText(row.money_effect_score)} · 风险释放 ${numberText(row.risk_release_score)}`}><div className="flex h-[145px] w-full items-end justify-center gap-0.5"><span className="block w-[42%] rounded-t-sm bg-up/75" style={{ height: `${moneyEffect}%` }} /><span className="block w-[42%] rounded-t-sm bg-down/75" style={{ height: `${risk}%` }} /></div><span className="w-full truncate text-center font-mono text-[8px] text-text-secondary">{date.slice(5)}</span></div>;
+          return <div key={`${date}-${index}`} className={`replay-history-column flex h-full flex-col items-center justify-end gap-1 rounded-sm px-0.5 ${active ? 'bg-accent/10' : ''}`} title={`${date}\n赚钱效应 ${numberText(row.money_effect_score)} · 风险释放 ${numberText(row.risk_release_score)}`}><div className="flex h-[145px] w-full items-end justify-center gap-0.5"><span className="block w-[42%] rounded-t-sm bg-up/75" style={{ height: `${moneyEffect}%` }} /><span className="block w-[42%] rounded-t-sm bg-down/75" style={{ height: `${risk}%` }} /></div><span className="w-full text-center font-mono text-[8px] text-text-secondary">{date.slice(5) || '--'}</span></div>;
         })}
       </div>
       <div className="mt-3 flex items-center gap-4 text-[9px] text-text-secondary"><span className="inline-flex items-center gap-1"><i className="h-2 w-2 bg-up" />赚钱效应</span><span className="inline-flex items-center gap-1"><i className="h-2 w-2 bg-down" />风险释放</span><span className="ml-auto">颜色遵循A股涨跌显示约定</span></div>
@@ -442,6 +606,8 @@ export default function ReplayPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [error, setError] = useState('');
+  const [activeView, setActiveView] = useState<ReplayView>('overview');
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const loadWorkspace = useCallback(async (date?: string, refresh = false) => {
     if (refresh) setRefreshing(true); else setLoading(true);
@@ -516,14 +682,54 @@ export default function ReplayPage() {
     }
   };
 
+  const selectView = (view: ReplayView) => {
+    setActiveView(view);
+    setMobileNavOpen(false);
+  };
+
+  const activeContent = (() => {
+    switch (activeView) {
+      case 'limit_detail':
+        return <LimitDetailPanel sections={sections} emotion={emotion} />;
+      case 'ladder':
+        return <StreakLadder section={sections.streak_ladder} historySection={sections.streak_history} limitSection={sections.limit_up} />;
+      case 'auction':
+        return <AuctionPanel section={sections.auction_limit || sections.auction_grab} />;
+      case 'topics':
+        return <TopicPanel sections={sections} />;
+      case 'events':
+        return <div className="grid min-w-0 gap-4 xl:grid-cols-2"><EventPanel section={sections.anomaly} title="异动雷达" icon={Activity} /><EventPanel section={sections.radar} title="事件与监管观察" icon={ShieldAlert} /></div>;
+      case 'history':
+        return <Panel title="历史情绪曲线" icon={TrendingUp} subtitle={`${payload?.history?.data_start || '--'} 至 ${payload?.history?.data_end || '--'} · ${payload?.history?.count || 0} 个交易日`} action={<span className="text-[9px] text-text-secondary">透明规则派生分数</span>} id="history"><HistoryChart rows={historyRows} selectedDate={payload?.trade_date} /><div className="border-t border-border"><LadderHistory rows={historyRows} /></div></Panel>;
+      case 'analysis':
+        return <AnalysisPanel analysis={analysis} loading={analysisLoading} onAnalyze={() => void runAnalysis()} />;
+      case 'overview':
+      default:
+        return <>
+          <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(360px,.9fr)]">
+            <MarketHeadline emotion={emotion} section={sections.market_summary} />
+            <AuctionPanel section={sections.auction_limit || sections.auction_grab} />
+          </div>
+          <div className="mt-4 grid min-w-0 gap-4 md:grid-cols-3">
+            <Panel title="市场接力质量" icon={ArrowUp} subtitle="连板与封板效率"><div className="grid grid-cols-2 gap-px bg-border"><Metric label="一进二成功率" value={percentText(emotion.promotion_rate_1_to_2, 1)} hint={`昨日涨停 ${countText(emotion.yesterday_limit_up_count)}只`} className="text-warn" /><Metric label="连板晋级率" value={percentText(emotion.promotion_rate, 1)} hint={`二板以上 ${percentText(emotion.promotion_rate_2_plus, 1)}`} className="text-warn" /><Metric label="涨停委买家数" value={`${countText(emotion.limit_up_order_count)} 家`} hint={`一字板 ${countText(emotion.one_price_limit_up_count)}只`} /><Metric label="大幅回撤" value={`${countText(emotion.deep_retrace_count)} 只`} hint="情绪负反馈观察" className="text-down" /></div></Panel>
+            <Panel title="成交与量能预估" icon={Wallet} subtitle="实际成交额与盘中预测"><div className="grid grid-cols-2 gap-px bg-border"><Metric label="实际成交额" value={moneyText(emotion.market_amount, false)} className="text-text" /><Metric label="预测成交额" value={moneyText(emotion.market_amount_forecast, false)} hint={`预计环比 ${percentText(emotion.market_amount_forecast_change_pct, 1)}`} className="text-text" /><Metric label="预测差值" value={moneyText(emotion.market_amount_forecast_change)} className={tone(emotion.market_amount_forecast_change)} /><Metric label="成交额环比" value={moneyText(emotion.market_amount_change)} className={tone(emotion.market_amount_change)} /></div></Panel>
+            <Panel title="数据治理状态" icon={Database} subtitle="来源和存储边界"><div className="space-y-2 px-3 py-3 text-[10px] leading-4 text-text-secondary sm:px-4"><div className="flex justify-between gap-3"><span>规范化版本</span><b className="font-mono text-text">{payload?.quality?.version || '--'}</b></div><div className="flex justify-between gap-3"><span>猫爪已配置</span><b className={payload?.quality?.provider_configured ? 'text-up' : 'text-warn'}>{payload?.quality?.provider_configured ? '是' : '否，使用缓存/CSV'}</b></div><div className="flex justify-between gap-3"><span>原始响应入库</span><b className="text-up">否</b></div><div className="border-t border-border pt-2">{cleanText(payload?.quality?.storage_policy || '仅保存有限的日级规范化统计与排行，不保存猫爪原始响应。')}</div></div></Panel>
+          </div>
+        </>;
+    }
+  })();
+
   if (loading && !payload) return <AppLoading text="正在读取历史情绪快照与复盘模块" />;
 
   return (
-    <main className="min-h-screen bg-bg text-text">
-      <header className="border-b border-border bg-card">
-        <div className="mx-auto flex max-w-[1580px] flex-wrap items-center justify-between gap-3 px-3 py-4 sm:px-5">
-          <div className="min-w-0"><div className="flex items-center gap-2"><History size={20} className="shrink-0 text-accent" /><h1 className="truncate text-lg font-semibold sm:text-xl">情绪复盘工作台</h1><span className="rounded border border-accent/35 px-1.5 py-0.5 font-mono text-[9px] text-accent">REPLAY</span></div><p className="mt-1 max-w-2xl text-[11px] leading-5 text-text-secondary">把每日市场宽度、竞价、涨跌停、连板、板块资金和历史情绪放在同一个交易日截面复盘。</p></div>
-          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+    <main className="replay-shell min-h-screen bg-bg text-text">
+      <header className="replay-header border-b border-border bg-card">
+        <div className="replay-header-inner">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2"><History size={20} className="shrink-0 text-accent" /><h1 className="truncate text-lg font-semibold sm:text-xl">情绪复盘工作台</h1><span className="rounded border border-accent/35 px-1.5 py-0.5 font-mono text-[9px] text-accent">REPLAY</span></div>
+            <p className="mt-1 max-w-2xl text-[11px] leading-5 text-text-secondary">按交易日拆分查看市场宽度、竞价、涨跌停、连板、板块资金与 AI 复盘证据。</p>
+          </div>
+          <div className="replay-date-controls">
             <label className="flex min-w-0 flex-1 items-center gap-1.5 text-[10px] text-text-secondary sm:flex-none"><CalendarDays size={13} className="shrink-0" /><span className="sr-only">选择交易日</span><select value={selectedDate} onChange={(event) => chooseDate(event.target.value)} className="h-9 min-w-0 flex-1 rounded border border-border bg-bg px-2 text-xs text-text outline-none focus:border-accent sm:w-[150px]"><option value="">选择交易日</option>{dates.map((item) => <option key={item.date} value={item.date}>{item.date} · {item.coverage ?? 0}/4</option>)}</select></label>
             <button type="button" onClick={() => stepDate('older')} disabled={dateIndex < 0 || dateIndex >= dates.length - 1 || loading} className="inline-flex h-9 w-9 items-center justify-center rounded border border-border text-text-secondary hover:border-accent hover:text-accent disabled:opacity-40" title="更早一个交易日" aria-label="更早一个交易日"><ArrowLeft size={14} /></button>
             <button type="button" onClick={() => stepDate('newer')} disabled={dateIndex <= 0 || loading} className="inline-flex h-9 w-9 items-center justify-center rounded border border-border text-text-secondary hover:border-accent hover:text-accent disabled:opacity-40" title="更新一个交易日" aria-label="更新一个交易日"><ArrowRight size={14} /></button>
@@ -532,38 +738,20 @@ export default function ReplayPage() {
         </div>
       </header>
 
-      {error && <div className="mx-auto flex max-w-[1580px] items-start gap-2 border-b border-down/30 bg-down/5 px-3 py-2.5 text-xs text-down sm:px-5"><AlertTriangle size={14} className="mt-0.5 shrink-0" /><span className="min-w-0 flex-1">{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭提示"><X size={14} /></button></div>}
+      {error && <div className="replay-error mx-auto flex max-w-[1580px] items-start gap-2 border-b border-down/30 bg-down/5 px-3 py-2.5 text-xs text-down sm:px-5"><AlertTriangle size={14} className="mt-0.5 shrink-0" /><span className="min-w-0 flex-1">{error}</span><button type="button" onClick={() => setError('')} aria-label="关闭提示"><X size={14} /></button></div>}
 
-      {!payload ? <div className="mx-auto max-w-[1580px] px-3 py-10 text-center text-sm text-text-secondary sm:px-5">当前没有可核验的复盘截面</div> : <div className="mx-auto max-w-[1580px] px-3 py-4 sm:px-5 sm:py-5">
-        <SourceNotice payload={payload} />
-
-        <div className="mt-4 grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(360px,.9fr)]">
-          <MarketHeadline emotion={emotion} section={sections.market_summary} />
-          <AuctionPanel section={sections.auction_limit || sections.auction_grab} />
+      {!payload ? <div className="mx-auto max-w-[1580px] px-3 py-10 text-center text-sm text-text-secondary sm:px-5">当前没有可核验的复盘截面</div> : <div className="replay-workspace mx-auto max-w-[1580px]">
+        <div className="replay-mobile-toolbar">
+          <button type="button" onClick={() => setMobileNavOpen(true)} className="replay-mobile-nav-button"><Menu size={15} />模块导航<span className="ml-auto text-text">{REPLAY_NAV_ITEMS.find((item) => item.key === activeView)?.label}</span></button>
         </div>
-
-        <div className="mt-4 grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(340px,.8fr)]">
-          <LimitDetailPanel sections={sections} emotion={emotion} />
-          <StreakLadder section={sections.streak_ladder} />
-        </div>
-
-        <div className="mt-4 grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,.75fr)]">
-          <TopicPanel sections={sections} />
-          <div className="grid min-w-0 gap-4"><EventPanel section={sections.anomaly} title="异动雷达" icon={Activity} /><EventPanel section={sections.radar} title="事件与监管观察" icon={ShieldAlert} /></div>
-        </div>
-
-        <div className="mt-4 grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,.65fr)]">
-          <Panel title="历史情绪曲线" icon={TrendingUp} subtitle={`${payload.history?.data_start || '--'} 至 ${payload.history?.data_end || '--'} · ${payload.history?.count || 0} 个交易日`} action={<span className="text-[9px] text-text-secondary">透明规则派生分数</span>} id="history"><HistoryChart rows={historyRows} selectedDate={payload.trade_date} /><div className="border-t border-border"><LadderHistory rows={historyRows} /></div></Panel>
-          <AnalysisPanel analysis={analysis} loading={analysisLoading} onAnalyze={() => void runAnalysis()} />
-        </div>
-
-        <div className="mt-4 grid min-w-0 gap-4 md:grid-cols-3">
-          <Panel title="市场接力质量" icon={ArrowUp} subtitle="连板与封板效率"><div className="grid grid-cols-2 gap-px bg-border"><Metric label="一进二成功率" value={percentText(emotion.promotion_rate_1_to_2, 1)} hint={`昨日涨停 ${countText(emotion.yesterday_limit_up_count)}只`} className="text-warn" /><Metric label="连板晋级率" value={percentText(emotion.promotion_rate, 1)} hint={`二板以上 ${percentText(emotion.promotion_rate_2_plus, 1)}`} className="text-warn" /><Metric label="涨停委买家数" value={`${countText(emotion.limit_up_order_count)} 家`} hint={`一字板 ${countText(emotion.one_price_limit_up_count)}只`} /><Metric label="大幅回撤" value={`${countText(emotion.deep_retrace_count)} 只`} hint="情绪负反馈观察" className="text-down" /></div></Panel>
-          <Panel title="成交与量能预估" icon={Wallet} subtitle="实际成交额与盘中预测"><div className="grid grid-cols-2 gap-px bg-border"><Metric label="实际成交额" value={moneyText(emotion.market_amount, false)} className="text-text" /><Metric label="预测成交额" value={moneyText(emotion.market_amount_forecast, false)} hint={`预计环比 ${percentText(emotion.market_amount_forecast_change_pct, 1)}`} className="text-text" /><Metric label="预测差值" value={moneyText(emotion.market_amount_forecast_change)} className={tone(emotion.market_amount_forecast_change)} /><Metric label="成交额环比" value={moneyText(emotion.market_amount_change)} className={tone(emotion.market_amount_change)} /></div></Panel>
-          <Panel title="数据治理状态" icon={Database} subtitle="来源和存储边界"><div className="space-y-2 px-3 py-3 text-[10px] leading-4 text-text-secondary sm:px-4"><div className="flex justify-between gap-3"><span>规范化版本</span><b className="font-mono text-text">{payload.quality?.version || '--'}</b></div><div className="flex justify-between gap-3"><span>猫爪已配置</span><b className={payload.quality?.provider_configured ? 'text-up' : 'text-warn'}>{payload.quality?.provider_configured ? '是' : '否，使用缓存/CSV'}</b></div><div className="flex justify-between gap-3"><span>原始响应入库</span><b className="text-up">否</b></div><div className="border-t border-border pt-2">{cleanText(payload.quality?.storage_policy || '仅保存有限的日级规范化统计与排行，不保存猫爪原始响应。')}</div></div></Panel>
-        </div>
-
-        <footer className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-[9px] leading-4 text-text-secondary"><span>复盘截面：{payload.trade_date || '--'} · 更新 {timeText(payload.updated_at)} · 请求日期 {payload.requested_date || payload.trade_date || '--'}</span><span>{payload.history?.formula_note || '历史分数仅用于结构比较，不代表未来收益。'}</span></footer>
+        <ReplaySidebar activeView={activeView} onSelect={selectView} payload={payload} />
+        {mobileNavOpen && <div className="replay-mobile-overlay" role="presentation" onClick={() => setMobileNavOpen(false)}><div role="dialog" aria-modal="true" aria-label="复盘模块导航" onClick={(event) => event.stopPropagation()}><div className="replay-mobile-overlay-head"><span>复盘模块</span><button type="button" onClick={() => setMobileNavOpen(false)} aria-label="关闭模块导航"><X size={16} /></button></div><ReplaySidebar activeView={activeView} onSelect={selectView} payload={payload} mobile /></div></div>}
+        <section className="replay-main-content">
+          <SourceNotice payload={payload} />
+          <div className="replay-view-heading"><div><div className="text-sm font-semibold text-text">{REPLAY_NAV_ITEMS.find((item) => item.key === activeView)?.label}</div><div className="mt-1 text-[10px] text-text-secondary">{REPLAY_NAV_ITEMS.find((item) => item.key === activeView)?.description} · 数据日 {payload.trade_date || '--'}</div></div>{loading && <span className="inline-flex items-center gap-1 text-[10px] text-warn"><Loader2 size={12} className="animate-spin" />正在更新</span>}</div>
+          <div className="mt-4 min-w-0">{activeContent}</div>
+          <footer className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-border px-1 pt-3 text-[9px] leading-4 text-text-secondary"><span>复盘截面：{payload.trade_date || '--'} · 更新 {timeText(payload.updated_at)} · 请求日期 {payload.requested_date || payload.trade_date || '--'}</span><span>{payload.history?.formula_note || '历史分数仅用于结构比较，不代表未来收益。'}</span></footer>
+        </section>
       </div>}
     </main>
   );

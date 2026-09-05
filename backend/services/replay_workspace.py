@@ -152,8 +152,10 @@ def _section(
     cache_hit: bool = False,
     quality: str = "verified",
     error: str | None = None,
+    row_limit: int | None = None,
 ) -> dict[str, Any]:
-    bounded = [_sanitize_row(row) for row in rows[:SECTION_ROW_LIMIT] if isinstance(row, dict)]
+    bounded_rows = rows[:max(1, int(row_limit))] if row_limit is not None else rows[:SECTION_ROW_LIMIT]
+    bounded = [_sanitize_row(row) for row in bounded_rows if isinstance(row, dict)]
     clean_summary = _sanitize_row(summary or {})
     available = bool(bounded or any(value is not None for value in clean_summary.values()))
     return {
@@ -561,6 +563,134 @@ class ReplayWorkspaceService:
             output.append({"height": "4+", "count": above_four, "stocks": [], "source": "daily_emotion_aggregate"})
         return sorted(output, key=lambda item: str(item["height"]), reverse=True)
 
+    async def _streak_history(
+        self,
+        target: date,
+        limit_rows: list[dict[str, Any]],
+        *,
+        lookback: int = 10,
+    ) -> dict[str, Any]:
+        """Build the screenshot-style ladder matrix from existing daily bars.
+
+        Only stocks present in the verified/current limit-up pool are included.
+        Historical cells are deliberately labelled as daily-bar observations;
+        the selected day's board height continues to come from the limit-pool
+        response when it is available.  The matrix is response-only and is not
+        persisted, so it does not grow the database.
+        """
+        candidates: list[dict[str, Any]] = []
+        seen_codes: set[str] = set()
+        for row in limit_rows:
+            code = _symbol(row)
+            if not code or code in seen_codes:
+                continue
+            seen_codes.add(code)
+            candidates.append(row)
+            if len(candidates) >= 120:
+                break
+        if not candidates:
+            return {"dates": [], "rows": [], "source": "stock_daily_bars_derived"}
+
+        code_values = list(seen_codes)
+        async with async_session() as session:
+            date_rows = (await session.execute(
+                select(StockDailyBar.trade_date, func.count(StockDailyBar.id))
+                .where(StockDailyBar.trade_date <= target)
+                .group_by(StockDailyBar.trade_date)
+                .having(func.count(StockDailyBar.id) >= 1000)
+                .order_by(desc(StockDailyBar.trade_date))
+                .limit(max(lookback, 2))
+            )).all()
+            snapshot_dates = list((await session.execute(
+                select(MarketEmotionReplaySnapshot.trade_date)
+                .where(MarketEmotionReplaySnapshot.trade_date <= target)
+                .order_by(desc(MarketEmotionReplaySnapshot.trade_date))
+                .limit(max(lookback, 2))
+            )).scalars().all())
+            sentiment_dates = list((await session.execute(
+                select(MarketSentimentDaily.trade_date)
+                .where(MarketSentimentDaily.trade_date <= target)
+                .order_by(desc(MarketSentimentDaily.trade_date))
+                .limit(max(lookback, 2))
+            )).scalars().all())
+            dates = [item[0] for item in date_rows if item[0] is not None]
+            dates.extend(snapshot_dates)
+            dates.extend(sentiment_dates)
+            if target not in dates:
+                dates.append(target)
+            dates = sorted(set(dates), reverse=True)[:max(lookback, 2)]
+            bars = list((await session.execute(
+                select(StockDailyBar).where(
+                    StockDailyBar.stock_code.in_(code_values),
+                    StockDailyBar.trade_date.in_(dates),
+                )
+            )).scalars().all()) if dates else []
+
+        ordered_dates = sorted(dates)
+        bar_map = {(str(item.stock_code), item.trade_date): item for item in bars}
+
+        def limit_step(code: str, name: str) -> float:
+            upper_name = name.upper()
+            if upper_name.startswith("ST") or upper_name.startswith("*ST"):
+                return 5.0
+            if code.startswith(("300", "301", "688", "689")):
+                return 20.0
+            if code.startswith(("8", "4", "92")):
+                return 30.0
+            return 10.0
+
+        def is_limit_up(code: str, name: str, change: float | None) -> bool:
+            if change is None:
+                return False
+            # Daily bars can carry a small rounding difference around the
+            # limit. Keep the tolerance conservative so ordinary advances do
+            # not become fake board events.
+            return change >= limit_step(code, name) - 0.35
+
+        rows: list[dict[str, Any]] = []
+        for candidate in candidates:
+            code = str(_symbol(candidate))
+            name = str(candidate.get("name") or code)
+            values: dict[str, str] = {}
+            streak = 0
+            for day in ordered_dates:
+                bar = bar_map.get((code, day))
+                change = _number(getattr(bar, "change_pct", None)) if bar else None
+                if is_limit_up(code, name, change):
+                    streak += 1
+                    value = "首板" if streak == 1 else f"{streak}板"
+                else:
+                    streak = 0
+                    value = f"{change:+.2f}%" if change is not None else "--"
+                if day == target:
+                    verified_height = _integer(candidate.get("continuous_days"))
+                    if verified_height is not None and verified_height > 0:
+                        value = "首板" if verified_height == 1 else f"{verified_height}板"
+                values[day.isoformat()] = value
+            rows.append({
+                "code": code,
+                "name": name,
+                "sector": str(candidate.get("sector") or candidate.get("theme_name") or "")[:120],
+                "amount": _number(candidate.get("amount")),
+                "seal_amount": _number(candidate.get("seal_amount")),
+                "continuous_days": _integer(candidate.get("continuous_days")),
+                "values": values,
+                "source": "stock_daily_bars_derived+limit_pool_verified",
+            })
+        # Keep the ladder readable like the reference view: higher current
+        # boards first, then group nearby names by topic.  The source order of
+        # a vendor pool is not a stable presentation order.
+        rows.sort(key=lambda item: (
+            -(_integer(item.get("continuous_days")) or 0),
+            str(item.get("sector") or "未分类"),
+            str(item.get("name") or item.get("code") or ""),
+        ))
+        return {
+            "dates": [item.isoformat() for item in ordered_dates],
+            "rows": rows,
+            "source": "stock_daily_bars_derived+limit_pool_verified",
+        }
+
     @staticmethod
     def _topic_rankings(database_rows: list[dict[str, Any]], provider_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         merged: dict[str, dict[str, Any]] = {str(row.get("code")): dict(row) for row in database_rows if row.get("code")}
@@ -954,7 +1084,15 @@ class ReplayWorkspaceService:
                     "source": row.get("source"),
                 })
 
-        ladder = self._ladder(limit_up_rows, emotion)
+        cached_limit_section = self._cached_section(compact_cache, "limit_up") or {}
+        ladder_limit_rows = limit_up_rows or list(cached_limit_section.get("rows") or [])
+        ladder = self._ladder(ladder_limit_rows, emotion)
+        ladder_history_raw, ladder_history_error = await self._safe(
+            "streak_history",
+            self._streak_history(target, ladder_limit_rows, lookback=10),
+            {"dates": [], "rows": [], "source": "stock_daily_bars_derived"},
+            8.0,
+        )
         market_summary = {
             **{field: emotion.get(field) for field in EMOTION_FIELDS},
             **{field: emotion.get(field) for field in (
@@ -994,7 +1132,21 @@ class ReplayWorkspaceService:
             "limit_down": _section(limit_down_rows, source=str(down_payload.get("source") or "daily_emotion_aggregate") if isinstance(down_payload, dict) else "daily_emotion_aggregate", data_date=target_text, summary={"count": emotion.get("limit_down_count")}, realtime=realtime, error=down_error),
             "failed_limit": _section(failed_rows, source=str(failed_payload.get("source") or "daily_emotion_aggregate") if isinstance(failed_payload, dict) else "daily_emotion_aggregate", data_date=target_text, summary={"count": emotion.get("failed_limit_count"), "rate": emotion.get("failed_limit_rate")}, realtime=realtime, error=failed_error),
             "limit_reasons": _section(reason_rows, source=_source_join(("numcat_theme_reason" if reason_rows else None, up_payload.get("source") if isinstance(up_payload, dict) else None)), data_date=target_text, realtime=realtime, error=reason_xgb_error or reason_jygs_error),
-            "streak_ladder": _section(ladder, source=_source_join(item.get("source") for item in ladder) if limit_up_rows else aggregate_source, data_date=target_text, summary={"max_height": emotion.get("max_streak_height")}, realtime=realtime, quality="verified_detail" if limit_up_rows else "verified_aggregate"),
+            "streak_ladder": _section(ladder, source=_source_join(item.get("source") for item in ladder) if ladder_limit_rows else aggregate_source, data_date=target_text, summary={"max_height": emotion.get("max_streak_height")}, realtime=realtime, quality="verified_detail" if ladder_limit_rows else "verified_aggregate"),
+            "streak_history": _section(
+                list(ladder_history_raw.get("rows") or []) if isinstance(ladder_history_raw, dict) else [],
+                source=str(ladder_history_raw.get("source") or "stock_daily_bars_derived") if isinstance(ladder_history_raw, dict) else "stock_daily_bars_derived",
+                data_date=target_text,
+                summary={
+                    "dates": list(ladder_history_raw.get("dates") or []) if isinstance(ladder_history_raw, dict) else [],
+                    "ladder_count": len({str(item.get("sector") or "未分类") for item in (ladder_history_raw.get("rows") or [])}) if isinstance(ladder_history_raw, dict) else 0,
+                    "stock_count": len(ladder_history_raw.get("rows") or []) if isinstance(ladder_history_raw, dict) else 0,
+                },
+                realtime=False,
+                quality="current_verified_historical_derived",
+                error=ladder_history_error,
+                row_limit=160,
+            ),
             "anomaly": _section(anomaly_rows, source="numcat_anomaly_forecast", data_date=target_text, realtime=realtime, error=anomaly_error),
             "radar": _section(radar_rows, source=_source_join(("numcat_point_monitor", "numcat_limit_event_history")), data_date=target_text, realtime=realtime, error=radar_error or limit_events_error),
             "topics": _section(topics, source=_source_join(("database_fund_flow" if db.get("concept") or db.get("industry") else None, "numcat_selected_theme" if themes_for_date else None)), data_date=target_text, realtime=realtime, error=theme_error),
