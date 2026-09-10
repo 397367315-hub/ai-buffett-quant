@@ -4,6 +4,7 @@ from apscheduler.events import (
     EVENT_JOB_MISSED,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from datetime import date, datetime, time, timedelta
 from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
@@ -20,6 +21,11 @@ SCHEDULER_JOB_DEFAULTS = {
     "max_instances": 1,
     "misfire_grace_time": 300,
 }
+
+
+def _cron_trigger(**fields: Any) -> CronTrigger:
+    """Create every wall-clock schedule in the market's canonical timezone."""
+    return CronTrigger(timezone=SCHEDULER_TIMEZONE, **fields)
 
 # Render Web services can restart or sleep around a market window.  Keep the
 # scheduler honest about what happened in the current process and use the
@@ -953,7 +959,6 @@ def _wrap_critical_job(job_id: str, handler: Callable[[], Awaitable[Any]]) -> Ca
 
 async def start_scheduler(data_collector=None, db_session=None):
     global _scheduler_listener_bound_to, _scheduler_started_at
-    from apscheduler.triggers.cron import CronTrigger
     from services.data_sync import data_sync
 
     _scheduler_started_at = _now()
@@ -999,7 +1004,7 @@ async def start_scheduler(data_collector=None, db_session=None):
 
     scheduler.add_job(
         critical_handlers["daily_collection"],
-        CronTrigger(hour=15, minute=20, day_of_week="mon-fri"),
+        _cron_trigger(hour=15, minute=20, day_of_week="mon-fri"),
         id="daily_collection",
         name="每日盘后数据采集",
         replace_existing=True,
@@ -1020,7 +1025,7 @@ async def start_scheduler(data_collector=None, db_session=None):
     )
     scheduler.add_job(
         critical_handlers["opening_market_snapshot"],
-        CronTrigger(hour=9, minute=40, day_of_week="mon-fri"),
+        _cron_trigger(hour=9, minute=40, day_of_week="mon-fri"),
         id="opening_market_snapshot",
         name="开盘后全市场股票数与行情快照",
         replace_existing=True,
@@ -1030,7 +1035,7 @@ async def start_scheduler(data_collector=None, db_session=None):
     )
     scheduler.add_job(
         critical_handlers["midday_collection"],
-        CronTrigger(hour=11, minute=35, day_of_week="mon-fri"),
+        _cron_trigger(hour=11, minute=35, day_of_week="mon-fri"),
         id="midday_collection",
         name="午间行情快照采集",
         replace_existing=True,
@@ -1040,89 +1045,89 @@ async def start_scheduler(data_collector=None, db_session=None):
     )
     scheduler.add_job(
         critical_handlers["midday_ai_research"],
-        CronTrigger(hour=11, minute=42, day_of_week="mon-fri"),
+        _cron_trigger(hour=11, minute=42, day_of_week="mon-fri"),
         id="midday_ai_research", name="午间AI战术研究", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=900,
     )
     scheduler.add_job(
         track_midday_research,
-        CronTrigger(hour=13, minute=30, day_of_week="mon-fri"),
+        _cron_trigger(hour=13, minute=30, day_of_week="mon-fri"),
         args=["13:30"],
         id="midday_track_1330", name="午间候选13:30固定样本跟踪", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         track_midday_research,
-        CronTrigger(hour=14, minute=0, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=0, day_of_week="mon-fri"),
         args=["14:00"],
         id="midday_track_1400", name="午间候选14:00固定样本跟踪", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         track_midday_research,
-        CronTrigger(hour=14, minute=31, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=31, day_of_week="mon-fri"),
         args=["14:30"],
         id="midday_track_1430", name="午间候选14:30固定样本跟踪", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         track_midday_research,
-        CronTrigger(hour=14, minute=58, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=58, day_of_week="mon-fri"),
         args=["14:55"],
         id="midday_track_1455", name="午间候选14:55正式筛选对照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         critical_handlers["midday_close_validation"],
-        CronTrigger(hour=15, minute=50, day_of_week="mon-fri"),
+        _cron_trigger(hour=15, minute=50, day_of_week="mon-fri"),
         id="midday_close_validation", name="午间研究盘后验证与AI学习", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         capture_decision_workbench_window,
-        CronTrigger(hour=10, minute=40, day_of_week="mon-fri"),
+        _cron_trigger(hour=10, minute=40, day_of_week="mon-fri"),
         args=["morning_1040"],
         id="decision_2026_morning_freeze", name="2026工作台10:40状态冻结", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
     scheduler.add_job(
         capture_decision_workbench_window,
-        CronTrigger(hour=11, minute=44, day_of_week="mon-fri"),
+        _cron_trigger(hour=11, minute=44, day_of_week="mon-fri"),
         args=["midday_1142"],
         id="decision_2026_midday_freeze", name="2026工作台午间研究快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=600,
     )
     scheduler.add_job(
         capture_decision_workbench_window,
-        CronTrigger(hour=13, minute=32, day_of_week="mon-fri"),
+        _cron_trigger(hour=13, minute=32, day_of_week="mon-fri"),
         args=["hypothesis_1330"],
         id="decision_2026_hypothesis_1330", name="2026工作台13:30反证快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
     scheduler.add_job(
         capture_decision_workbench_window,
-        CronTrigger(hour=14, minute=2, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=2, day_of_week="mon-fri"),
         args=["hypothesis_1400"],
         id="decision_2026_hypothesis_1400", name="2026工作台14:00反证快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
     scheduler.add_job(
         capture_decision_workbench_window,
-        CronTrigger(hour=14, minute=40, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=40, day_of_week="mon-fri"),
         args=["tail_1440"],
         id="decision_2026_tail_1440", name="2026工作台14:40尾盘决策快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         capture_decision_workbench_window,
-        CronTrigger(hour=14, minute=57, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=57, day_of_week="mon-fri"),
         args=["tail_1455"],
         id="decision_2026_tail_1455", name="2026工作台14:55执行确认快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         close_and_validate_decision_workbench,
-        CronTrigger(hour=15, minute=55, day_of_week="mon-fri"),
+        _cron_trigger(hour=15, minute=55, day_of_week="mon-fri"),
         id="decision_2026_close_validation", name="2026工作台盘后错误归因", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
@@ -1132,7 +1137,7 @@ async def start_scheduler(data_collector=None, db_session=None):
     ):
         scheduler.add_job(
             refresh_forecast_v5,
-            CronTrigger(hour=9 if minute == 5 else 10, minute=minute, day_of_week="mon-fri"),
+            _cron_trigger(hour=9 if minute == 5 else 10, minute=minute, day_of_week="mon-fri"),
             id=job_id, name=label, replace_existing=True,
             coalesce=True, max_instances=1, misfire_grace_time=600,
         )
@@ -1144,7 +1149,7 @@ async def start_scheduler(data_collector=None, db_session=None):
     ):
         scheduler.add_job(
             refresh_forecast_v5,
-            CronTrigger(hour=hour, minute=minute, day_of_week="mon-fri"),
+            _cron_trigger(hour=hour, minute=minute, day_of_week="mon-fri"),
             id=job_id, name=label, replace_existing=True,
             coalesce=True, max_instances=1, misfire_grace_time=900,
         )
@@ -1172,7 +1177,7 @@ async def start_scheduler(data_collector=None, db_session=None):
     )
     scheduler.add_job(
         refresh_fqe_audit_data,
-        CronTrigger(hour=16, minute=10, day_of_week="mon-fri"),
+        _cron_trigger(hour=16, minute=10, day_of_week="mon-fri"),
         id="fqe_audit_data_close",
         name="FQE上市历史、PE分位与市场证据盘后更新",
         replace_existing=True,
@@ -1197,86 +1202,86 @@ async def start_scheduler(data_collector=None, db_session=None):
 
     scheduler.add_job(
         quant_signal_scan,
-        CronTrigger(hour=9, minute=32, day_of_week="mon-fri"),
+        _cron_trigger(hour=9, minute=32, day_of_week="mon-fri"),
         id="quant_signal_morning", name="量化信号早盘扫描", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
 
     scheduler.add_job(
         refresh_ai_robot_short,
-        CronTrigger(hour=15, minute=45, day_of_week="mon-fri"),
+        _cron_trigger(hour=15, minute=45, day_of_week="mon-fri"),
         id="ai_robot_short_daily", name="AI机器人短期池每日盘后刷新", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         refresh_ai_robot_long,
-        CronTrigger(hour=16, minute=20, day_of_week="mon-fri"),
+        _cron_trigger(hour=16, minute=20, day_of_week="mon-fri"),
         id="ai_robot_long_daily", name="AI机器人长期池每日盘后刷新", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         check_ai_robot_anomalies,
-        CronTrigger(hour=9, minute=15, day_of_week="mon-fri"),
+        _cron_trigger(hour=9, minute=15, day_of_week="mon-fri"),
         id="ai_robot_anomaly_check", name="AI机器人池盘前异常检查", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=900,
     )
     scheduler.add_job(
         snapshot_ai_robot_performance,
-        CronTrigger(hour=16, minute=50, day_of_week="mon-fri"),
+        _cron_trigger(hour=16, minute=50, day_of_week="mon-fri"),
         id="ai_robot_performance_close", name="AI机器人池每日盈亏与复盘", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=900,
     )
     scheduler.add_job(
         refresh_dragon_board_cache,
-        CronTrigger(hour=15, minute=35, day_of_week="mon-fri"),
+        _cron_trigger(hour=15, minute=35, day_of_week="mon-fri"),
         id="dragon_board_close_cache", name="龙虎榜盘后缓存", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         refresh_margin_leverage_cache,
-        CronTrigger(hour=18, minute=30, day_of_week="mon-fri"),
+        _cron_trigger(hour=18, minute=30, day_of_week="mon-fri"),
         id="margin_leverage_first_disclosure", name="两融杠杆首次披露同步", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
     scheduler.add_job(
         refresh_margin_leverage_cache,
-        CronTrigger(hour=20, minute=30, day_of_week="mon-fri"),
+        _cron_trigger(hour=20, minute=30, day_of_week="mon-fri"),
         id="margin_leverage_final_disclosure", name="两融杠杆晚间补充同步", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
     scheduler.add_job(
         refresh_strong_stock_v21_bridge,
-        CronTrigger(hour=15, minute=45, day_of_week="mon-fri"),
+        _cron_trigger(hour=15, minute=45, day_of_week="mon-fri"),
         id="strong_stock_v21_bridge_close", name="强势股V2.1盘后桥接与机会快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         refresh_personal_report_calendar,
-        CronTrigger(hour=8, minute=20, day_of_week="mon-fri"),
+        _cron_trigger(hour=8, minute=20, day_of_week="mon-fri"),
         id="personal_report_calendar", name="个人池财报日历刷新", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         capture_financial_pit_snapshot,
-        CronTrigger(hour=16, minute=35, day_of_week="mon-fri"),
+        _cron_trigger(hour=16, minute=35, day_of_week="mon-fri"),
         id="financial_pit_close", name="公告日财务PIT增量快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
     scheduler.add_job(
         refresh_market_way_policy_source,
-        CronTrigger(hour="8,12", minute=5, day_of_week="mon-fri"),
+        _cron_trigger(hour="8,12", minute=5, day_of_week="mon-fri"),
         id="market_way_policy_source", name="V4官方政策证据更新", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=1800,
     )
     scheduler.add_job(
         refresh_market_way_data_sources,
-        CronTrigger(hour=16, minute=45, day_of_week="mon-fri"),
+        _cron_trigger(hour=16, minute=45, day_of_week="mon-fri"),
         id="market_way_data_sources", name="V4产业财务与市场数据闭环", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=3600,
     )
     scheduler.add_job(
         critical_handlers["market_auction_pit"],
-        CronTrigger(hour=9, minute=25, day_of_week="mon-fri"),
+        _cron_trigger(hour=9, minute=25, day_of_week="mon-fri"),
         id="market_auction_pit", name="全市场09:25竞价PIT快照", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=60,
     )
@@ -1285,73 +1290,73 @@ async def start_scheduler(data_collector=None, db_session=None):
     # keeps those fields null rather than inferring them.
     scheduler.add_job(
         critical_handlers["market_auction_pit_timeline"],
-        CronTrigger(hour=9, minute="15-25", day_of_week="mon-fri"),
+        _cron_trigger(hour=9, minute="15-25", day_of_week="mon-fri"),
         id="market_auction_pit_timeline", name="V5.1竞价时间序列补采", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=60,
     )
     scheduler.add_job(
         refresh_v51_dashboard,
-        CronTrigger(hour="9,10,11,13,14,15", minute="0,30", day_of_week="mon-fri"),
+        _cron_trigger(hour="9,10,11,13,14,15", minute="0,30", day_of_week="mon-fri"),
         id="v51_microstructure_warm", name="V5.1微结构证据预热", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         refresh_event_radar,
-        CronTrigger(hour="8,9,10,11,12,13,14,15,16", minute="5,35", day_of_week="mon-fri"),
+        _cron_trigger(hour="8,9,10,11,12,13,14,15,16", minute="5,35", day_of_week="mon-fri"),
         id="event_radar_refresh", name="免费数据事件雷达刷新", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
     scheduler.add_job(
         refresh_topic_intraday_evidence,
-        CronTrigger(hour="9,10,14", minute="35,55", day_of_week="mon-fri"),
+        _cron_trigger(hour="9,10,14", minute="35,55", day_of_week="mon-fri"),
         id="topic_intraday_evidence", name="题材分时均价与主动资金证据", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         quant_signal_scan,
-        CronTrigger(hour=13, minute=2, day_of_week="mon-fri"),
+        _cron_trigger(hour=13, minute=2, day_of_week="mon-fri"),
         id="quant_signal_afternoon", name="量化信号午后扫描", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
     scheduler.add_job(
         critical_handlers["overnight_preliminary_scan"],
-        CronTrigger(hour=14, minute=30, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=30, day_of_week="mon-fri"),
         id="overnight_preliminary_scan", name="一夜持股14:30预扫描", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         refresh_market_decision_execution_gate,
-        CronTrigger(hour=14, minute=53, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=53, day_of_week="mon-fri"),
         id="market_execution_gate_tail", name="14:55前市场执行闸门预热", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=120,
     )
     scheduler.add_job(
         critical_handlers["overnight_entry_scan"],
-        CronTrigger(hour=14, minute=55, day_of_week="mon-fri"),
+        _cron_trigger(hour=14, minute=55, day_of_week="mon-fri"),
         id="overnight_entry_scan", name="一夜持股14:55入场复核", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         refresh_market_decision_execution_gate,
-        CronTrigger(hour=9, minute=23, day_of_week="mon-fri"),
+        _cron_trigger(hour=9, minute=23, day_of_week="mon-fri"),
         id="market_execution_gate_auction", name="09:25前市场执行闸门预热", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=60,
     )
     scheduler.add_job(
         run_overnight_auction_watch,
-        CronTrigger(hour=9, minute="24,25,26,27", day_of_week="mon-fri"),
+        _cron_trigger(hour=9, minute="24,25,26,27", day_of_week="mon-fri"),
         id="overnight_auction_watch", name="一夜持股09:25 AI竞价盯盘", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=60,
     )
     scheduler.add_job(
         monitor_overnight_exits,
-        CronTrigger(hour=9, minute="31,40,50", day_of_week="mon-fri"),
+        _cron_trigger(hour=9, minute="31,40,50", day_of_week="mon-fri"),
         id="overnight_exit_monitor", name="一夜持股早盘退出监控", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=180,
     )
     scheduler.add_job(
         force_overnight_exits,
-        CronTrigger(hour=10, minute=0, day_of_week="mon-fri"),
+        _cron_trigger(hour=10, minute=0, day_of_week="mon-fri"),
         id="overnight_force_exit", name="一夜持股10:00强制退出", replace_existing=True,
         coalesce=True, max_instances=1, misfire_grace_time=300,
     )
@@ -1369,7 +1374,7 @@ async def start_scheduler(data_collector=None, db_session=None):
     )
     scheduler.add_job(
         run_data_retention,
-        CronTrigger(hour=3, minute=20),
+        _cron_trigger(hour=3, minute=20),
         id="bounded_data_retention",
         name="高频与派生快照留存清理",
         replace_existing=True,

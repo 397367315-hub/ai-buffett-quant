@@ -3,10 +3,11 @@ import os
 import tempfile
 import unittest
 from contextlib import ExitStack
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
+from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -82,6 +83,40 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(recovery_call.kwargs["coalesce"])
         self.assertEqual(recovery_call.kwargs["max_instances"], 1)
         self.assertEqual(recovery_call.kwargs["misfire_grace_time"], 60)
+
+    async def test_all_registered_cron_jobs_use_shanghai_timezone(self):
+        fake_scheduler = MagicMock()
+        fake_scheduler.running = True
+
+        with patch.object(scheduler_module, "scheduler", fake_scheduler):
+            await scheduler_module.start_scheduler()
+
+        cron_triggers = [
+            call.args[1]
+            for call in fake_scheduler.add_job.call_args_list
+            if len(call.args) > 1 and isinstance(call.args[1], CronTrigger)
+        ]
+        self.assertGreater(len(cron_triggers), 0)
+        self.assertTrue(
+            all(trigger.timezone.key == "Asia/Shanghai" for trigger in cron_triggers)
+        )
+
+    def test_shanghai_cron_keeps_local_wall_clock_on_utc_host(self):
+        trigger = scheduler_module._cron_trigger(
+            hour=8,
+            minute=5,
+            day_of_week="mon-fri",
+        )
+        utc_now = datetime(2026, 9, 9, 23, 0, tzinfo=timezone.utc)
+
+        next_fire = trigger.get_next_fire_time(None, utc_now)
+
+        self.assertIsNotNone(next_fire)
+        self.assertEqual(next_fire.isoformat(), "2026-09-10T08:05:00+08:00")
+        self.assertEqual(
+            next_fire.astimezone(timezone.utc).isoformat(),
+            "2026-09-10T00:05:00+00:00",
+        )
 
     async def test_startup_audit_compensates_only_today_and_is_idempotent(self):
         scheduler_module._job_state.clear()
