@@ -50,7 +50,7 @@ from services.data_collector import (
     shanghai_now,
 )
 from services.macro_policy_news import macro_policy_news_collector
-from services.pit_market_data import pit_market_data_service
+from services.pit_market_data import auction_quality, pit_market_data_service
 
 
 def _value(value: Any) -> float | None:
@@ -326,6 +326,27 @@ class V51MicrostructureService:
             minutes = await self._load_minutes(code, target)
             auction_rows = await self._load_auction(code, target)
             auction = normalize_auction_snapshots(auction_rows, previous_close=previous_close, data_cutoff_time=cutoff_time)
+            auction_times = {
+                (_parse_datetime(item.get("snapshot_time") or item.get("quote_at")) or datetime.min).strftime("%H:%M")
+                for item in auction_rows
+                if item.get("snapshot_time") or item.get("quote_at")
+            }
+            stock_auction_quality = auction_quality(
+                universe_count=1,
+                observed_stocks=1 if auction_rows else 0,
+                timeline_stocks=1 if auction_rows else 0,
+                timepoints=auction_times,
+            )
+            auction["quality"] = {
+                **(auction.get("quality") or {}),
+                **stock_auction_quality,
+            }
+            auction["auction_state"] = (
+                auction.get("auction_state")
+                if stock_auction_quality["execution_allowed"]
+                else "WAIT_FOR_CONFIRMATION"
+            )
+            auction["quality"]["warning"] = stock_auction_quality["warning"] or auction["quality"].get("warning")
             sector = str(quote.get("sector") or "") or None
             sector_ctx = await self._sector_context(sector)
             sector_return = _value(sector_ctx.get("change_pct"))
@@ -365,7 +386,12 @@ class V51MicrostructureService:
                 "integration": {
                     "skill_10_reflexivity": "可由现有Skill 10继续读取同一日线与流动性证据",
                     "overnight_auction": "仅提供竞价观察，不替代原有竞价确认策略",
-                    "action": "NO_TRADE" if (supply.get("state") == "SUPPLY_NOT_REDUCED" or regulatory.get("state") == "HIGH") else "RESEARCH_ONLY",
+                    "action": "NO_TRADE" if (
+                        not (auction.get("quality") or {}).get("execution_allowed", False)
+                        or supply.get("state") == "SUPPLY_NOT_REDUCED"
+                        or regulatory.get("state") == "HIGH"
+                    ) else "RESEARCH_ONLY",
+                    "execution_allowed": bool((auction.get("quality") or {}).get("execution_allowed")),
                 },
                 "quality": {
                     "daily_sessions": len(bars),
@@ -373,7 +399,7 @@ class V51MicrostructureService:
                     "auction_snapshots": len(auction_rows),
                     "auction_model_status": (auction.get("quality") or {}).get("status"),
                     "warnings": [
-                        "竞价序列不足时不输出竞价预测。" if len(auction_rows) < 2 else None,
+                        "竞价序列不足时不输出竞价预测。" if not (auction.get("quality") or {}).get("execution_allowed") else None,
                         "K线语义只提供原子特征，必须等待后续确认。",
                         "公开分钟源只代表可获取窗口，不等同于完整历史。" if minutes else "分钟验证数据不可用。",
                     ],
@@ -448,7 +474,17 @@ class V51MicrostructureService:
     async def auction_dashboard(self, *, refresh: bool = False) -> dict[str, Any]:
         target = await self._latest_trade_date()
         if target is None:
-            return {"status": "NO_DATA", "model_version": AUCTION_MODEL_VERSION, "quality": {"coverage_pct": 0}}
+            return {
+                "status": "BLOCKED",
+                "model_version": AUCTION_MODEL_VERSION,
+                "quality": {
+                    "status": "BLOCKED",
+                    "coverage_pct": 0,
+                    "execution_allowed": False,
+                    "model_enabled": False,
+                    "warning": "没有可核验的交易日行情，禁止使用昨日结果代替今日竞价",
+                },
+            }
         async with async_session() as session:
             total = (await session.execute(
                 select(func.count(func.distinct(StockUniverseSnapshot.stock_code))).where(
@@ -465,6 +501,11 @@ class V51MicrostructureService:
                     AuctionSnapshotV51.trade_date == target,
                 )
             )).scalar_one() or 0
+            timeline_rows = (await session.execute(
+                select(AuctionSnapshotV51.snapshot_time).where(
+                    AuctionSnapshotV51.trade_date == target,
+                ).distinct()
+            )).scalars().all()
             latest = list((await session.execute(select(StockAuctionSnapshot).where(StockAuctionSnapshot.trade_date == target).order_by(StockAuctionSnapshot.high_open_pct.desc().nullslast()).limit(12))).scalars().all())
         rows = [{
             "snapshot_time": item.quote_at,
@@ -479,19 +520,52 @@ class V51MicrostructureService:
         # the endpoint was opened after the market closed.
         cutoff_time = datetime.combine(target, clock_time(15, 0))
         features = normalize_auction_snapshots(rows, data_cutoff_time=cutoff_time)
+        timepoints = {
+            (_parse_datetime(item) or datetime.min).strftime("%H:%M")
+            for item in timeline_rows
+            if item is not None
+        }
+        quality = auction_quality(
+            universe_count=int(total),
+            observed_stocks=int(observed),
+            timeline_stocks=int(timeline_count),
+            timepoints=timepoints,
+        )
+        current_date = shanghai_now().date()
+        # This endpoint is the live dashboard and has no historical-date
+        # parameter. Any completed prior session must therefore be marked
+        # stale on a trading day instead of being shown as today's auction.
+        if target != current_date and shanghai_now().weekday() < 5:
+            quality = {
+                **quality,
+                "status": "STALE",
+                "execution_allowed": False,
+                "model_enabled": False,
+                "warning": "当前交易日尚未形成竞价快照，已禁止用历史交易日代替今日",
+            }
+        features["quality"] = {**(features.get("quality") or {}), **quality}
+        features["auction_state"] = (
+            features.get("auction_state")
+            if quality["execution_allowed"]
+            else "WAIT_FOR_CONFIRMATION"
+        )
         return {
+            "status": quality["status"],
             "trade_date": target.isoformat(),
+            "current_date": current_date.isoformat(),
+            "data_date_is_current": target == current_date,
             "model_version": AUCTION_MODEL_VERSION,
             "observed_stocks": observed,
             "time_series_snapshots": timeline_count,
+            "time_series_rows": len(timeline_rows),
+            "time_points": quality["time_points"],
             "universe_count": total,
             "coverage_pct": round(observed / max(1, total) * 100, 2),
             "timeline_coverage_pct": round(timeline_count / max(1, total) * 100, 2),
             "latest_observations": [{"code": item.stock_code, "name": item.stock_name, "high_open_pct": item.high_open_pct, "source": item.source, "is_realtime": item.is_realtime} for item in latest],
             "sample_features": features,
             "quality": {
-                "status": "SINGLE_SNAPSHOT_ONLY" if observed and timeline_count == 0 else "OBSERVED",
-                "warning": "当前部署已保存09:24-09:27单点竞价；完整09:15-09:25序列从接入后逐步累积。" if timeline_count == 0 else None,
+                **quality,
                 "no_fake_backtest": True,
             },
         }

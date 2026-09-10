@@ -10,6 +10,27 @@ const TRANSIENT_NETWORK_ERRORS = new Set([
 const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
 const READ_RETRY_DELAYS_MS = [400, 900];
 
+export type ApiErrorKind =
+  | 'unauthorized'
+  | 'timeout'
+  | 'backend_unreachable'
+  | 'response_error'
+  | 'request_error';
+
+export class ApiError extends Error {
+  readonly kind: ApiErrorKind;
+  readonly status?: number;
+  readonly code?: string | number;
+
+  constructor(message: string, kind: ApiErrorKind, status?: number, code?: string | number) {
+    super(message);
+    this.name = 'ApiError';
+    this.kind = kind;
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function errorMessage(caught: unknown): string {
   return caught instanceof Error ? caught.message : String(caught || '');
 }
@@ -45,6 +66,7 @@ async function waitForRetry(delayMs: number, signal?: AbortSignal | null): Promi
 
 /** Keep browser-specific fetch errors out of user-facing module messages. */
 export function friendlyApiError(caught: unknown, fallback = '请求失败，请稍后重试'): string {
+  if (caught instanceof ApiError) return caught.message || fallback;
   const message = errorMessage(caught);
   if (!message || TRANSIENT_NETWORK_ERRORS.has(message)) {
     return '后端连接暂时中断，请稍后重试。';
@@ -53,6 +75,9 @@ export function friendlyApiError(caught: unknown, fallback = '请求失败，请
 }
 
 export function isTransientApiError(caught: unknown): boolean {
+  if (caught instanceof ApiError) {
+    return caught.kind === 'backend_unreachable' || caught.kind === 'timeout';
+  }
   const message = errorMessage(caught);
   return TRANSIENT_NETWORK_ERRORS.has(message) || /连接暂时中断|网络|超时/i.test(message);
 }
@@ -94,10 +119,10 @@ export async function apiFetch<T>(path: string, options?: ApiFetchOptions): Prom
           signal: requestController.signal,
         });
       } catch (caught) {
-        if (timedOut) throw new Error(`请求超时（${Math.ceil(timeoutMs / 1000)}秒），请稍后重试`);
+        if (timedOut) throw new ApiError(`请求超时（${Math.ceil(timeoutMs / 1000)}秒），请稍后重试`, 'timeout');
         if (isAbortError(caught, requestOptions.signal)) throw caught;
         if (!canRetry || !isRetryableNetworkError(caught) || attempt >= READ_RETRY_DELAYS_MS.length) {
-          throw new Error(friendlyApiError(caught));
+          throw new ApiError(friendlyApiError(caught), 'backend_unreachable');
         }
         await waitForRetry(READ_RETRY_DELAYS_MS[attempt], requestController.signal);
         continue;
@@ -108,14 +133,22 @@ export async function apiFetch<T>(path: string, options?: ApiFetchOptions): Prom
       await res.body?.cancel().catch(() => undefined);
       await waitForRetry(READ_RETRY_DELAYS_MS[attempt], requestController.signal);
     }
-    if (!res) throw new Error('后端连接暂时中断，请稍后重试。');
+    if (!res) throw new ApiError('后端连接暂时中断，请稍后重试。', 'backend_unreachable');
     let payload: any = null;
+    let responseWasJson = true;
     try {
       payload = await res.json();
     } catch {
-      // Non-JSON proxy failures still receive the HTTP status below.
+      responseWasJson = false;
     }
     if (!res.ok) {
+      const kind: ApiErrorKind = res.status === 401
+        ? 'unauthorized'
+        : res.status === 408 || res.status === 504
+          ? 'timeout'
+          : res.status >= 500
+            ? 'backend_unreachable'
+            : 'response_error';
       if (res.status === 401) {
         clearAuthSession();
         if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
@@ -127,8 +160,14 @@ export async function apiFetch<T>(path: string, options?: ApiFetchOptions): Prom
         : Array.isArray(payload?.detail)
           ? payload.detail.map((item: any) => item?.msg).filter(Boolean).join('；')
           : payload?.message;
-      throw new Error(detail || `请求失败：${res.status} ${res.statusText}`);
+      throw new ApiError(
+        detail || (kind === 'backend_unreachable' ? '后端暂时不可用，请稍后重试' : `请求失败：${res.status} ${res.statusText}`),
+        kind,
+        res.status,
+        payload?.code,
+      );
     }
+    if (!responseWasJson) throw new ApiError('后端响应格式异常，请稍后重试', 'response_error', res.status);
     return payload as T;
   } finally {
     window.clearTimeout(timeoutHandle);

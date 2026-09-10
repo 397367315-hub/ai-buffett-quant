@@ -308,6 +308,7 @@ interface DecisionSnapshot {
   snapshot_hash: string;
   is_realtime: boolean;
   validation_status: string;
+  validation_result?: { abstention_review?: { status?: string; label?: string } } | null;
   captured_at: string | null;
   evidence: string[];
 }
@@ -1363,7 +1364,7 @@ export default function MarketDecisionWorkbenchPage() {
             <div className="overflow-x-auto">
               <table className="w-full min-w-[760px] text-xs">
                 <thead className="border-b border-border bg-[#0D1117] text-[10px] text-text-secondary"><tr><th className="px-4 py-2.5 text-left">日期</th><th className="px-3 text-left">窗口</th><th className="px-3 text-left">证据</th><th className="px-3 text-left">验证</th><th className="px-4 text-right">哈希</th></tr></thead>
-                <tbody className="divide-y divide-border/70">{decision.snapshot_registry.latest.map((item) => <tr key={item.id}><td className="px-4 py-3 font-mono text-text">{item.decision_date}</td><td className="px-3 py-3 text-text">{item.phase_label}<div className="mt-1 font-mono text-[10px] text-text-secondary">{localTime(item.captured_at)}</div></td><td className="max-w-[360px] px-3 py-3 text-[10px] leading-4 text-text-secondary">{item.evidence.join('；')}</td><td className={`px-3 py-3 font-mono text-[10px] ${item.validation_status === 'ERROR' ? 'text-down' : item.validation_status === 'CONFIRMED' ? 'text-up' : 'text-warn'}`}>{item.validation_status}</td><td className="px-4 py-3 text-right font-mono text-[10px] text-text-secondary">{item.snapshot_hash.slice(0, 10)}</td></tr>)}</tbody>
+                <tbody className="divide-y divide-border/70">{decision.snapshot_registry.latest.map((item) => { const review = item.validation_result?.abstention_review; const statusLabel = item.validation_status === 'ERROR' ? '发现偏差' : item.validation_status === 'CONFIRMED' ? '已验证' : '待验证'; return <tr key={item.id}><td className="px-4 py-3 font-mono text-text">{item.decision_date}</td><td className="px-3 py-3 text-text">{item.phase_label}<div className="mt-1 font-mono text-[10px] text-text-secondary">{localTime(item.captured_at)}</div></td><td className="max-w-[360px] px-3 py-3 text-[10px] leading-4 text-text-secondary">{item.evidence.join('；')}</td><td className={`px-3 py-3 text-[10px] ${item.validation_status === 'ERROR' ? 'text-down' : item.validation_status === 'CONFIRMED' ? 'text-up' : 'text-warn'}`}><div className="font-mono">{statusLabel}</div>{review?.label && <div className="mt-1 max-w-[220px] font-sans leading-4 text-text-secondary">{review.label}</div>}</td><td className="px-4 py-3 text-right font-mono text-[10px] text-text-secondary">{item.snapshot_hash.slice(0, 10)}</td></tr>; })}</tbody>
               </table>
             </div>
           ) : <div className="px-4 py-8 text-center text-xs text-text-secondary">尚无窗口快照，定时任务会在交易窗口自动冻结</div>}

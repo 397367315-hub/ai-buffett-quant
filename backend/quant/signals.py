@@ -44,6 +44,18 @@ def _parse_time(value: str | None) -> datetime | None:
         return None
 
 
+def _eligible_for_scheduled_scan(strategy: dict) -> bool:
+    """Only approved, active daily strategies may enter scheduler scans.
+
+    A missing governance block is treated as grandfathered legacy data so old
+    cached strategies continue to run until a substantive edit re-approves
+    them through the new governance flow.
+    """
+    governance = strategy.get("governance")
+    approved = True if not isinstance(governance, dict) else bool(governance.get("approved"))
+    return bool(strategy.get("active")) and approved and strategy.get("scan_schedule", "daily") == "daily"
+
+
 class QuantSignalService:
     def __init__(self):
         self._run_lock = asyncio.Lock()
@@ -54,12 +66,18 @@ class QuantSignalService:
         force: bool = False,
         scheduled_only: bool = False,
     ) -> dict:
-        if strategy_id and get_strategy(strategy_id) is None:
-            raise KeyError("策略不存在")
+        if strategy_id:
+            selected = get_strategy(strategy_id)
+            if selected is None:
+                raise KeyError("策略不存在")
+            if scheduled_only and not _eligible_for_scheduled_scan(selected):
+                raise ValueError("该策略尚未获得定时扫描批准，或当前已停用")
         if not strategy_id:
             eligible = [
                 item for item in list_strategies()
-                if item.get("active") and (not scheduled_only or item.get("scan_schedule", "daily") == "daily")
+                if item.get("active") and (
+                    not scheduled_only or _eligible_for_scheduled_scan(item)
+                )
             ]
             if not eligible:
                 message = "没有可扫描的盘中定时策略" if scheduled_only else "没有可扫描的启用策略"
@@ -211,12 +229,16 @@ class QuantSignalService:
         strategies = strategies_override if strategies_override is not None else (
             [get_strategy(strategy_id)] if strategy_id else [
                 item for item in list_strategies()
-                if item.get("active") and (not scheduled_only or item.get("scan_schedule", "daily") == "daily")
+                if item.get("active") and (
+                    not scheduled_only or _eligible_for_scheduled_scan(item)
+                )
             ]
         )
         strategies = [item for item in strategies if item]
+        if scheduled_only:
+            strategies = [item for item in strategies if _eligible_for_scheduled_scan(item)]
         if not strategies:
-            raise ValueError("没有可扫描的启用策略")
+            raise ValueError("没有获得批准且处于启用状态的定时扫描策略")
         snapshot, stale, warning = await self._market_snapshot(force)
         contexts = [normalize_snapshot_stock(item) for item in snapshot.get("stocks") or []]
         await self._annotate_board_codes(contexts, strategies)

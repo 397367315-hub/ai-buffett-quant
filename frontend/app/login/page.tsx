@@ -26,13 +26,13 @@ export default function LoginPage() {
     setLoading(true);
     await new Promise(resolve => setTimeout(resolve, 400));
 
-    const success = await login(username, password);
+    const result = await login(username, password);
     setLoading(false);
 
-    if (success) {
+    if (result.ok) {
       router.push('/market');
     } else {
-      setError('账号或密码错误，请重试');
+      setError(result.message);
     }
   };
 

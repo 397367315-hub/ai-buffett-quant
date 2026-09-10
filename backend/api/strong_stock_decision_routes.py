@@ -6,21 +6,26 @@ from datetime import date
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from strong_stock_decision.service import strong_stock_decision_service
+from services.admin_auth import require_admin_for_mutation
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/v1/strong-stock-decision",
     tags=["强势股交易决策"],
+    dependencies=[Depends(require_admin_for_mutation)],
 )
 
 # V2 is mounted separately from the V1-compatible router.  The same router is
 # included under both paths in ``main.py`` so existing /api/v1 clients and the
 # documented /api clients can use the new contract.
-v2_router = APIRouter(tags=["强势股交易决策 V2"])
+v2_router = APIRouter(
+    tags=["强势股交易决策 V2"],
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 
 def _date(value: str | None, field: str) -> date | None:

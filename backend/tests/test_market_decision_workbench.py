@@ -167,6 +167,9 @@ class MarketDecisionWorkbenchTests(unittest.TestCase):
         candidate = result["candidates"][0]
         self.assertEqual(candidate["volume_ratio"], 1.45)
         self.assertIn("stock_daily_bars_5d_average", candidate["source"])
+        self.assertEqual(candidate["confidence_pct"], candidate["data_coverage_pct"])
+        self.assertEqual(candidate["confidence_type"], "data_coverage_compatibility_alias")
+        self.assertIsNone(candidate["model_probability_pct"])
 
     def test_daily_recommendations_fall_back_to_cached_price_and_change(self):
         snapshot = {

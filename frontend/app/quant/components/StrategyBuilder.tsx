@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Check, CopyPlus, Eye, Plus, Save, Trash2 } from 'lucide-react';
+import { AlertTriangle, Check, CheckCircle2, CopyPlus, Eye, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
 import type { PositionConfig, RuleGroup, RuleMeta, RuleOperator, SectorOption, Strategy, StrategyDraft, StrategyRule } from '../types';
 
 const operatorLabels: Record<RuleOperator, string> = {
@@ -20,7 +20,7 @@ interface PreviewResult {
 
 export const emptyStrategyDraft = (): StrategyDraft => ({
   name: '新建量化策略',
-  active: true,
+  active: false,
   scan_schedule: 'daily',
   filter: { logic: 'AND', rules: [] },
   entry: { logic: 'AND', rules: [] },
@@ -39,6 +39,7 @@ function toDraft(strategy?: Strategy | StrategyDraft | null): StrategyDraft {
     horizon: _horizon,
     target_win_rate: _targetWinRate,
     validation_note: _validationNote,
+    governance: _governance,
     ...rest
   } = strategy as Strategy;
   return JSON.parse(JSON.stringify(rest)) as StrategyDraft;
@@ -162,7 +163,7 @@ function RuleGroupEditor({ title, group, rules, sectors, onChange, allowEmpty = 
   );
 }
 
-export default function StrategyBuilder({ strategy, templates, rules, sectors, onSave, onPreview, onBacktest, saving }: {
+export default function StrategyBuilder({ strategy, templates, rules, sectors, onSave, onPreview, onBacktest, onApprove, onRevoke, governanceBusy, saving }: {
   strategy: Strategy | null;
   templates: Array<StrategyDraft & { id?: string; description?: string }>;
   rules: RuleMeta[];
@@ -170,11 +171,24 @@ export default function StrategyBuilder({ strategy, templates, rules, sectors, o
   onSave: (draft: StrategyDraft, strategyId?: string) => Promise<void>;
   onPreview: (draft: StrategyDraft) => Promise<PreviewResult>;
   onBacktest: (strategyId: string) => void;
+  onApprove: (strategy: Strategy) => Promise<void>;
+  onRevoke: (strategy: Strategy) => Promise<void>;
+  governanceBusy: boolean;
   saving: boolean;
 }) {
   const [draft, setDraft] = useState<StrategyDraft>(() => toDraft(strategy));
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  const persistedDraft = useMemo(() => toDraft(strategy), [strategy]);
+  const hasUnsavedChanges = Boolean(strategy && JSON.stringify(draft) !== JSON.stringify(persistedDraft));
+  const approved = Boolean(strategy?.governance?.approved);
+  const governanceSummary = strategy
+    ? approved
+      ? strategy.scan_schedule === 'manual'
+        ? '当前已批准用于手动扫描，不进入定时调度。'
+        : '当前允许进入盘中定时扫描。'
+      : '当前只能用于实时预览和回测研究，不能仅靠勾选启用进入扫描。'
+    : '';
 
   useEffect(() => { setDraft(toDraft(strategy)); setPreview(null); }, [strategy]);
   const setGroup = (key: 'filter' | 'entry', value: RuleGroup) => setDraft((current) => ({ ...current, [key]: value }));
@@ -190,21 +204,30 @@ export default function StrategyBuilder({ strategy, templates, rules, sectors, o
         <div className="flex items-center gap-2">
           <button type="button" onClick={async () => { setPreviewing(true); try { setPreview(await onPreview(draft)); } finally { setPreviewing(false); } }} disabled={!valid || previewing} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-border text-text-secondary rounded-md hover:border-accent hover:text-text disabled:opacity-50"><Eye size={14} />{previewing ? '预览中' : '实时预览'}</button>
           <button type="button" onClick={() => onSave(draft, strategy?.id)} disabled={!valid || saving} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs bg-accent text-white rounded-md hover:brightness-110 disabled:opacity-50"><Save size={14} />{saving ? '保存中' : '保存策略'}</button>
-          {strategy && <button type="button" onClick={() => onBacktest(strategy.id)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-up/50 text-up rounded-md hover:bg-[#26A69A22]"><Check size={14} />回测</button>}
+          {strategy && <button type="button" onClick={() => onBacktest(strategy.id)} disabled={hasUnsavedChanges} title={hasUnsavedChanges ? '请先保存当前修改，再对已持久化规则回测' : '回测当前已保存规则'} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs border border-up/50 text-up rounded-md hover:bg-[#26A69A22] disabled:cursor-not-allowed disabled:opacity-50"><Check size={14} />{hasUnsavedChanges ? '先保存再回测' : '回测'}</button>}
         </div>
       </div>
+
+      {strategy && <section className={`border rounded-md px-3 py-3 ${strategy.governance?.status === 'APPROVED' || strategy.governance?.status === 'LEGACY_GRANDFATHERED' ? 'border-up/40 bg-[#26A69A12]' : strategy.governance?.status === 'MODIFIED_PENDING_REVIEW' ? 'border-warn/40 bg-[#D2992212]' : 'border-border bg-bg/40'}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0"><div className="flex items-center gap-2 text-sm font-semibold text-text">{approved ? <CheckCircle2 size={15} className="text-up" /> : <AlertTriangle size={15} className="text-warn" />}治理状态：{strategy.governance?.status === 'APPROVED' ? '已批准' : strategy.governance?.status === 'LEGACY_GRANDFATHERED' ? '存量兼容' : strategy.governance?.status === 'MODIFIED_PENDING_REVIEW' ? '修改后待复核' : '草稿'}</div><p className="mt-1 text-xs leading-5 text-text-secondary">{governanceSummary} 不会连接券商，也不会自动下单。{hasUnsavedChanges ? ' 当前有未保存修改，治理操作与回测已暂停。' : ''}</p></div>
+          <div className="flex flex-wrap gap-2">{approved ? <button type="button" onClick={() => void onRevoke(strategy)} disabled={governanceBusy || hasUnsavedChanges} title={hasUnsavedChanges ? '请先保存或恢复当前修改' : undefined} className="inline-flex items-center gap-1.5 rounded-md border border-warn/50 px-2.5 py-1.5 text-xs text-warn hover:bg-[#D2992222] disabled:cursor-not-allowed disabled:opacity-50"><RotateCcw size={13} />{governanceBusy ? '处理中' : hasUnsavedChanges ? '请先保存修改' : '撤销批准'}</button> : <button type="button" onClick={() => void onApprove(strategy)} disabled={governanceBusy || hasUnsavedChanges} title={hasUnsavedChanges ? '请先保存当前修改，再批准已持久化规则' : undefined} className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-xs text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"><CheckCircle2 size={13} />{governanceBusy ? '处理中' : hasUnsavedChanges ? '请先保存修改' : strategy.scan_schedule === 'manual' ? '批准手动策略' : '批准定时扫描'}</button>}</div>
+        </div>
+        {strategy.governance?.last_auditable_backtest && <div className="mt-3 border-t border-border pt-2 text-[10px] leading-4 text-text-secondary">最近可审计回测：{strategy.governance.last_auditable_backtest.period?.from || '--'} 至 {strategy.governance.last_auditable_backtest.period?.to || '--'} · 收益 {strategy.governance.last_auditable_backtest.total_return ?? '--'}% · 胜率 {strategy.governance.last_auditable_backtest.win_rate ?? '--'}% · {strategy.governance.last_auditable_backtest.data_quality?.grade || '严格审计'}</div>}
+        {strategy.governance?.revocation_note && <div className="mt-2 text-[10px] text-warn">复核原因：{strategy.governance.revocation_note}</div>}
+      </section>}
 
       {strategy?.builtin && strategy.validation_note && <div className="border border-warn/40 bg-[#D2992222] rounded-md px-3 py-2 text-xs leading-5 text-warn">{strategy.validation_note}</div>}
 
       {templates.length > 0 && <div className="flex flex-wrap gap-2">
-        {templates.map((template) => <button type="button" key={template.id || template.name} onClick={() => { setDraft(toDraft(template)); setPreview(null); }} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md text-xs text-text-secondary hover:border-accent hover:text-text" title={template.description}><CopyPlus size={13} />{template.name}</button>)}
+        {templates.map((template) => <button type="button" key={template.id || template.name} onClick={() => { setDraft({ ...toDraft(template), active: false }); setPreview(null); }} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-border rounded-md text-xs text-text-secondary hover:border-accent hover:text-text" title={template.description}><CopyPlus size={13} />{template.name}</button>)}
       </div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.55fr)_minmax(260px,.65fr)] gap-4">
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-3 border border-border rounded-md p-3">
             <label className="min-w-0"><span className="block text-xs text-text-secondary mb-1">策略名称</span><input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} maxLength={80} className="w-full bg-bg border border-border rounded-md px-2.5 py-2 text-sm text-text focus:outline-none focus:border-accent" /></label>
-            <label className="text-xs text-text-secondary flex items-end gap-2 pb-2 cursor-pointer"><input type="checkbox" checked={draft.active} onChange={(event) => setDraft({ ...draft, active: event.target.checked })} className="accent-[#58A6FF]" />启用扫描</label>
+            <label className="text-xs text-text-secondary flex items-end gap-2 pb-2 cursor-pointer"><input type="checkbox" checked={draft.active} onChange={(event) => setDraft({ ...draft, active: event.target.checked })} className="accent-[#58A6FF]" />启用标记（仍需批准）</label>
             <label className="text-xs text-text-secondary"><span className="block mb-1">扫描方式</span><select value={draft.scan_schedule} onChange={(event) => setDraft({ ...draft, scan_schedule: event.target.value as 'daily' | 'manual' })} className="bg-bg border border-border rounded-md px-2 py-1.5 text-xs text-text"><option value="daily">盘中定时</option><option value="manual">仅手动</option></select></label>
           </div>
           <RuleGroupEditor title="选股条件" group={draft.filter} rules={rules} sectors={sectors} onChange={(value) => setGroup('filter', value)} />

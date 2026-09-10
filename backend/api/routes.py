@@ -3,8 +3,8 @@ import asyncio
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Query, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select, func, desc, asc, text
 
 from services.data_collector import (
@@ -16,7 +16,7 @@ from services.data_collector import (
     normalize_stock_code,
     shanghai_now,
 )
-from services.admin_auth import create_admin_token
+from services.admin_auth import create_admin_token, require_admin_for_mutation
 from config import settings
 from services.ai_service import ai_service
 from services.ai_assistant import MAX_HISTORY_MESSAGES, ai_assistant_service
@@ -51,7 +51,10 @@ from services.replay_workspace import replay_workspace_service
 from quant.market_cache import load_quant_market_snapshot
 from market_data.numcat.market_provider import numcat_market_provider
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 FLOW_SORT_FIELDS = {
     "main_net_inflow": "f62",
@@ -608,13 +611,22 @@ async def auth_login(request: dict):
     if username == settings.admin_username and password == settings.admin_password:
         return {
             "code": 0,
+            "message": "登录成功",
             "data": {
                 "token": create_admin_token(username),
                 "username": username,
                 "role": "admin",
             },
         }
-    return {"code": 401, "message": "账号或密码错误"}
+    return JSONResponse(
+        status_code=401,
+        content={
+            "code": 401,
+            "error": "INVALID_CREDENTIALS",
+            "message": "账号或密码错误",
+        },
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 # ── 资金流向接口 ──

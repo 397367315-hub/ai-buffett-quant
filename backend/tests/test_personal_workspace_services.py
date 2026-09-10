@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from api import routes
 from database import Base
-from models import PersonalSystemConfig
+from models import PersonalInvestmentLog, PersonalSystemConfig
 from services.macro_dashboard import (
     MacroDashboardService,
     collector as macro_collector,
@@ -144,6 +144,39 @@ class PersonalWorkspaceDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(config["loss_add_block_pct"], -8)
             with self.assertRaises(ValueError):
                 await service.update_account_config({"loss_add_block_pct": 1})
+
+    async def test_attribution_reports_recorded_execution_discipline(self):
+        now = datetime(2026, 9, 10, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        async with self.session_factory() as session:
+            session.add_all([
+                PersonalInvestmentLog(
+                    action="buy", code="600000", name="浦发银行", price=10, shares=100,
+                    reason="按计划试仓", pre_check={"market": "checked"}, violations=[],
+                    reflection="执行符合计划", created_at=now.replace(tzinfo=None),
+                ),
+                PersonalInvestmentLog(
+                    action="review", code="600000", name="浦发银行", reason="盘后复核",
+                    pre_check={}, violations=["追高后临时放宽止损"], reflection=None,
+                    created_at=now.replace(tzinfo=None),
+                ),
+            ])
+            await session.commit()
+
+        service = PersonalAnalyticsService()
+        with (
+            patch("services.personal_analytics.async_session", self.session_factory),
+            patch("services.personal_analytics.shanghai_now", return_value=now),
+            patch("services.personal_analytics.personal_portfolio_service.overview", new_callable=AsyncMock, return_value={"items": [], "quote": {}}),
+            patch("services.personal_analytics.collector.fetch_shanghai_index_history", new_callable=AsyncMock, return_value=[]),
+        ):
+            result = await service.attribution("year")
+
+        discipline = result["discipline"]
+        self.assertEqual(discipline["decision_count"], 2)
+        self.assertEqual(discipline["precheck_pct"], 50.0)
+        self.assertEqual(discipline["reflection_pct"], 50.0)
+        self.assertEqual(discipline["compliance_pct"], 50.0)
+        self.assertEqual(discipline["top_violations"], [{"label": "追高后临时放宽止损", "count": 1}])
 
     async def test_stock_selection_keeps_verified_sector_directory_after_24_hours(self):
         sectors = [{

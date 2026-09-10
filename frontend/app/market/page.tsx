@@ -25,6 +25,7 @@ import {
   Layers3,
   LineChart,
   Loader2,
+  Menu,
   Radio,
   RefreshCw,
   ScanSearch,
@@ -47,6 +48,12 @@ interface ForecastHorizon {
   state: string;
   probabilities: { upside: NullableNumber; main: NullableNumber; downside: NullableNumber };
   confidence_pct: NullableNumber;
+  data_coverage_pct?: NullableNumber;
+  fresh_coverage_pct?: NullableNumber;
+  probability_qualified?: boolean;
+  forecast_mode?: string;
+  tendency_strength?: string;
+  dominant_path?: 'upside' | 'main' | 'downside' | string;
   key_factors?: string[];
   benefited_sectors?: string[];
   pressured_sectors?: string[];
@@ -125,6 +132,14 @@ interface ForecastSnapshot {
     missing_factors: Array<{ factor_id: string; name: string; source: string; action: string }>;
     stale_factors: Array<{ factor_id: string; name: string }>;
     confidence_ceiling_pct: NullableNumber;
+    data_high_confidence_allowed?: boolean;
+    execution_allowed?: boolean;
+    prediction_mode?: string;
+    calibration_qualified?: boolean;
+    truth_status?: string;
+    truth_status_label?: string;
+    trading_permission_label?: string;
+    block_reasons?: string[];
     sources?: string[];
   };
   timeline: ForecastHorizon[];
@@ -139,6 +154,8 @@ interface ForecastSnapshot {
   sector_forecasts: ForecastSector[];
   alpha_seeds: AlphaSeed[];
   behavior: BehaviorSnapshot;
+  workbench_summary?: MarketSupplement;
+  today_action_center?: TodayActionCenterData;
   historical_analogs?: Array<{
     case_id: string;
     label: string;
@@ -225,8 +242,45 @@ const TRADING_STAGE_LABELS: Record<string, string> = {
   NEGATIVE_REFLEXIVITY_ACCELERATION: '负向反身性加速',
 };
 
+const STATUS_LABELS: Record<string, string> = {
+  CURRENT: '当前阶段',
+  PASSED: '已完成',
+  PENDING: '待执行',
+  ALLOW: '允许执行',
+  BLOCK: '禁止执行',
+  NO_TRADE: '不交易',
+  RESEARCH_ONLY: '研究模式',
+  UNKNOWN: '待核验',
+  UNAVAILABLE: '暂不可用',
+  DISCOVERED: '已发现',
+  FADING: '走弱',
+  ON: '运行中',
+  OFF: '未运行',
+  ACTIVE: '已启用',
+  SHADOW: '观察运行',
+  EXPERIMENTAL: '实验中',
+  VALIDATED: '已验证',
+  NOT_TESTED: '尚未验证',
+  OBSERVED: '已观测',
+  MIXED: '混合状态',
+  HIGH: '高',
+  MEDIUM: '中',
+  LOW: '低',
+  pre_market: '盘前许可核验',
+  auction: '09:25竞价确认',
+  midday: '午间战术研究',
+  tail: '14:55执行筛选',
+  post_close: '盘后验证复盘',
+  mixed: '混合状态',
+};
+
+function readableStatus(value?: string | null): string {
+  if (!value) return '待核验';
+  return STATUS_LABELS[value] || STATUS_LABELS[value.toUpperCase()] || value;
+}
+
 function readableTradingStage(code?: string, label?: string): string {
-  return label || TRADING_STAGE_LABELS[code || ''] || (code ? `阶段：${code}` : '观察');
+  return label || TRADING_STAGE_LABELS[code || ''] || (code ? readableStatus(code) : '观察');
 }
 
 interface MarketSupplement {
@@ -239,6 +293,31 @@ interface MarketSupplement {
   decision_2026?: { trading_permission?: { label: string; code: string; max_total_position_pct: number; reasons: string[] }; why_not_buy?: { reasons: string[] }; opportunity_density?: { score: NullableNumber; label: string; independent_alpha_count: number } };
   audit?: { stale_components: string[]; missing_fields: string[]; data_sources: string[]; score_version: string; same_day_rule: string };
   quick_links?: Array<{ label: string; href: string }>;
+}
+
+interface TodayActionStage {
+  id: string;
+  label: string;
+  time?: string;
+  window_status?: string;
+  result?: string;
+  href?: string;
+  candidate_count?: number | null;
+}
+
+interface TodayActionCenterData {
+  trade_date?: string;
+  generated_at?: string;
+  current_stage?: string;
+  current_task?: string;
+  permission?: {
+    code?: string;
+    label?: string;
+    max_total_position_pct?: NullableNumber;
+    reasons?: string[];
+  };
+  stages?: TodayActionStage[];
+  rule?: string;
 }
 
 interface MarketOverview {
@@ -524,6 +603,17 @@ function Sparkline({ values, color = '#4C8DFF', label = '数据轨迹' }: { valu
 }
 
 function ProbabilityDonut({ item }: { item: ForecastHorizon }) {
+  if (!item.probability_qualified) {
+    return (
+      <div className="v5-probability-chart" role="img" aria-label={`${shortHorizonLabel(item)}尚未完成概率校准`}>
+        <div className="v5-probability-donut">
+          <svg viewBox="0 0 44 44" aria-hidden="true"><circle className="v5-probability-track" cx="22" cy="22" r="15.5" /></svg>
+          <strong className="text-[8px]">待校准</strong>
+        </div>
+        <div className="v5-probability-legend"><span><i style={{ backgroundColor: '#667085' }} />当前只输出方向研究，不作为成功概率</span></div>
+      </div>
+    );
+  }
   const parts = [
     { key: 'upside', label: '上行', value: item.probabilities?.upside, color: '#EF5350' },
     { key: 'main', label: '主情景', value: item.probabilities?.main, color: '#5A9BFF' },
@@ -586,6 +676,8 @@ function directionFor(item: ForecastHorizon): { glyph: string; color: Tone } {
   const downside = item.probabilities?.downside;
   if (finite(downside) && finite(upside) && downside > upside + 5) return { glyph: '↓', color: 'down' };
   if (finite(upside) && finite(downside) && upside > downside + 5) return { glyph: '↗', color: 'up' };
+  if (item.dominant_path === 'downside') return { glyph: '↓', color: 'down' };
+  if (item.dominant_path === 'upside') return { glyph: '↗', color: 'up' };
   return { glyph: '→', color: 'warn' };
 }
 
@@ -627,18 +719,83 @@ function EmptyState({ text = '暂无可核验数据' }: { text?: string }) {
   return <div className="py-8 text-center text-xs text-text-secondary">{text}</div>;
 }
 
+const FALLBACK_ACTION_STAGES: TodayActionStage[] = [
+  { id: 'pre_market', label: '盘前许可核验', time: '开盘前', window_status: 'CURRENT', result: '核验真值、新鲜度、隔夜事件和持仓风险', href: '/market/v4' },
+  { id: 'auction', label: '09:25竞价确认', time: '09:15-09:25', window_status: 'PENDING', result: '承接前一交易日14:55候选，等待真实竞价序列', href: '/pro/auction' },
+  { id: 'midday', label: '午间战术研究', time: '11:42', window_status: 'PENDING', result: '检查上午强弱、主要矛盾与板块内部结构', href: '/research/midday' },
+  { id: 'tail', label: '14:55执行筛选', time: '14:55', window_status: 'PENDING', result: '只跟踪满足规则的候选，条件不完整就放弃', href: '/quant' },
+  { id: 'post_close', label: '盘后验证复盘', time: '收盘后', window_status: 'PENDING', result: '核对判断、模拟执行、盈亏与放弃原因', href: '/pro/research' },
+];
+
+function fallbackActionCenter(forecast: ForecastSnapshot, supplement: MarketSupplement | null): TodayActionCenterData {
+  const permission = supplement?.decision_2026?.trading_permission;
+  const health = forecast.data_health;
+  const permissionCode = String(permission?.code || 'UNKNOWN').toUpperCase();
+  const blocked = health.truth_status === 'FAIL' || health.execution_allowed === false || permissionCode === 'BLOCK' || permissionCode === 'NO_TRADE';
+  const researchOnly = !blocked && health.calibration_qualified === false;
+  const code = blocked ? 'BLOCK' : researchOnly ? 'RESEARCH_ONLY' : permissionCode || 'UNKNOWN';
+  const phase = forecast.phase === 'auction_0925' ? 'auction' : forecast.phase === 'midday' || forecast.phase === 'morning_1040' || forecast.phase === 'midday_1130' ? 'midday' : forecast.phase === 'afternoon_1330' || forecast.phase === 'close_1500' ? 'tail' : forecast.phase === 'post_close' ? 'post_close' : 'pre_market';
+  const order = ['pre_market', 'auction', 'midday', 'tail', 'post_close'];
+  const currentIndex = order.indexOf(phase);
+  const stages = FALLBACK_ACTION_STAGES.map((stage) => ({ ...stage, window_status: order.indexOf(stage.id) === currentIndex ? 'CURRENT' : order.indexOf(stage.id) < currentIndex ? 'PASSED' : 'PENDING' }));
+  const reasons = Array.from(new Set([...(health.block_reasons || []), ...(permission?.reasons || [])])).slice(0, 5);
+  return {
+    trade_date: forecast.forecast_date,
+    generated_at: forecast.generated_at,
+    current_stage: phase,
+    current_task: phase === 'pre_market' ? '先核验真值、新鲜度、隔夜事件和持仓风险，不急于找股票。' : phase === 'auction' ? '竞价序列或覆盖不足时只观察，不确认隔夜策略。' : phase === 'midday' ? '完成上午市场尸检，判断主要矛盾是否发生变化。' : phase === 'tail' ? '只跟踪满足规则的候选；条件不完整就放弃，不临时放宽。' : '复盘系统判断与实际结果，记录执行偏差和下一次改进。',
+    permission: {
+      code,
+      label: blocked ? '数据资格不足，禁止执行' : researchOnly ? '可研究，预测概率尚未校准' : permission?.label || '许可通过',
+      max_total_position_pct: blocked || researchOnly ? 0 : permission?.max_total_position_pct,
+      reasons,
+    },
+    stages,
+    rule: '按当日时序执行；09:25竞价承接前一交易日14:55候选，任何候选都不能绕过数据质量闸门。',
+  };
+}
+
+function TodayActionCenter({ forecast, supplement }: { forecast: ForecastSnapshot; supplement: MarketSupplement | null }) {
+  const action = forecast.today_action_center || fallbackActionCenter(forecast, supplement);
+  const permission = action.permission || {};
+  const code = String(permission.code || 'UNKNOWN').toUpperCase();
+  const permissionTone = code === 'ALLOW' ? 'text-up' : code === 'BLOCK' || code === 'NO_TRADE' ? 'text-down' : 'text-warn';
+  const reasons = permission.reasons || [];
+  const stages = action.stages?.length ? action.stages : FALLBACK_ACTION_STAGES;
+  return (
+    <section id="action-center" className="v5-panel mb-2 min-w-0">
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0"><div className="flex items-center gap-2"><Target size={15} className="shrink-0 text-accent" /><h2 className="text-sm font-semibold text-text">今日行动中心</h2></div><p className="mt-1 text-[10px] leading-4 text-text-secondary">先统一许可，再按当前阶段执行；系统只提供研究与风控边界，不替代你的下单决定。</p></div>
+        <div className="flex max-w-full flex-wrap items-center gap-2 text-[10px]"><span className="text-text-secondary">交易许可</span><span className={`rounded border border-border px-2 py-1 font-medium ${permissionTone}`}>{permission.label || readableStatus(code)}</span>{finite(permission.max_total_position_pct) && <span className="font-mono text-text-secondary">仓位上限 {permission.max_total_position_pct}%</span>}</div>
+      </div>
+      <div className="grid min-w-0 gap-0 md:grid-cols-[minmax(0,1.05fr)_minmax(0,1.25fr)]">
+        <div className="min-w-0 border-b border-border p-4 md:border-b-0 md:border-r">
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
+            <div className="min-w-0"><span className="text-[10px] text-text-secondary">当前阶段</span><strong className="mt-1 block truncate text-sm text-text" title={readableStatus(action.current_stage)}>{readableStatus(action.current_stage)}</strong></div>
+            <div className="min-w-0"><span className="text-[10px] text-text-secondary">当前任务</span><p className="mt-1 break-words text-[11px] leading-5 text-text">{action.current_task || '等待系统生成当前任务'}</p></div>
+          </div>
+          <div className="mt-4 border-t border-border pt-3"><div className="text-[10px] text-text-secondary">为什么现在{code === 'ALLOW' ? '可做' : '不可直接做'}</div>{reasons.length ? <ul className="mt-2 space-y-1.5 text-[10px] leading-4 text-text-secondary">{reasons.slice(0, 4).map((reason) => <li key={reason} className="flex gap-2"><span className={permissionTone}>·</span><span className="break-words">{reason}</span></li>)}</ul> : <p className="mt-2 text-[10px] leading-4 text-text-secondary">当前没有新增阻断理由，仍需按阶段条件完成确认。</p>}</div>
+        </div>
+        <div className="min-w-0 p-4"><div className="mb-2 flex items-center justify-between gap-2"><span className="text-[10px] text-text-secondary">五阶段流程</span><span className="truncate text-[9px] text-text-muted">{action.rule || '阶段状态以当前数据快照为准'}</span></div><div className="grid min-w-0 gap-2 sm:grid-cols-5">{stages.map((stage) => { const status = String(stage.window_status || 'UNKNOWN').toUpperCase(); const content = <><span className="font-mono text-[9px] text-text-muted">{stage.time || '--'}</span><strong className="mt-1 block break-words text-[10px] leading-4 text-text">{stage.label || readableStatus(stage.id)}</strong><span className={`mt-1 block text-[9px] ${status === 'CURRENT' ? 'text-accent' : status === 'PASSED' ? 'text-up' : 'text-text-secondary'}`}>{readableStatus(status)}</span></>; return stage.href ? <Link key={stage.id} href={stage.href} className="min-w-0 rounded border border-border bg-black/10 p-2 transition hover:border-accent/50">{content}</Link> : <div key={stage.id} className="min-w-0 rounded border border-border bg-black/10 p-2">{content}</div>; })}</div></div>
+      </div>
+    </section>
+  );
+}
+
 function ForecastTimeline({
   forecast,
   onRefresh,
   skillFilters,
   onSkillFilterChange,
   skillFilterBusy,
+  skillsLoading,
 }: {
   forecast: ForecastSnapshot;
   onRefresh: () => void;
   skillFilters: SkillFilterState;
   onSkillFilterChange: (next: SkillFilterState) => void;
   skillFilterBusy: boolean;
+  skillsLoading: boolean;
 }) {
   const timeline = (forecast.timeline || []).slice(0, 4);
   return (
@@ -651,9 +808,9 @@ function ForecastTimeline({
             {(() => {
               const direction = directionFor(item);
               return <>
-                <div className="flex items-center justify-between gap-2"><span className="text-[11px] text-text-secondary">{shortHorizonLabel(item)}</span><span className={`font-mono text-[10px] ${toneClass(item.state)}`}>{percent(item.confidence_pct)} 置信</span></div>
+                <div className="flex items-center justify-between gap-2"><span className="text-[11px] text-text-secondary">{shortHorizonLabel(item)}</span><span className={`font-mono text-[10px] ${toneClass(item.state)}`}>{item.probability_qualified ? `${percent(item.confidence_pct)} 置信` : '研究级 · 待校准'}</span></div>
                 <div className={`mt-2 min-h-[34px] text-[15px] font-semibold ${toneClass(item.state)}`} title={item.state || '核验中'}><span>{horizonStateLabel(item.state)}</span></div>
-                <div className={`v5-horizon-signal v5-horizon-signal-${direction.color}`}><strong>{percent(finite(item.probabilities.main) ? item.probabilities.main : item.confidence_pct)}</strong><span className={`v5-direction v5-direction-${direction.color}`} aria-hidden="true">{direction.glyph}</span></div>
+                <div className={`v5-horizon-signal v5-horizon-signal-${direction.color}`}><strong>{item.probability_qualified ? percent(finite(item.probabilities.main) ? item.probabilities.main : item.confidence_pct) : (item.tendency_strength || '研究倾向')}</strong><span className={`v5-direction v5-direction-${direction.color}`} aria-hidden="true">{direction.glyph}</span></div>
                 <ProbabilityDonut item={item} />
                 <div className="v5-horizon-reasons">{(item.key_factors || []).slice(0, 3).map((factor) => <div key={factor} className="truncate">{factorLabel(factor)}</div>)}</div>
               </>;
@@ -669,6 +826,7 @@ function ForecastTimeline({
       </div>
       <SkillRuntimeStrip
         skills={forecast.trading_skills}
+        loading={skillsLoading}
         filters={skillFilters}
         onFilterChange={onSkillFilterChange}
         busy={skillFilterBusy}
@@ -679,16 +837,18 @@ function ForecastTimeline({
 
 function SkillRuntimeStrip({
   skills,
+  loading,
   filters,
   onFilterChange,
   busy,
 }: {
   skills?: ForecastSnapshot['trading_skills'];
+  loading: boolean;
   filters: SkillFilterState;
   onFilterChange: (next: SkillFilterState) => void;
   busy: boolean;
 }) {
-  if (!skills) return null;
+  if (!skills) return loading ? <div className="border-t border-border px-4 py-3 text-[10px] text-text-secondary"><Loader2 size={12} className="mr-1 inline animate-spin text-accent" />交易技能异步扫描中，主预测内容已可用。</div> : null;
   const permission = skills.market_permission;
   const candidates = skills.candidates || [];
   const update = (key: keyof SkillFilterState) => onFilterChange({ ...filters, [key]: !filters[key] });
@@ -705,7 +865,7 @@ function SkillRuntimeStrip({
       {busy && <Loader2 size={12} className="animate-spin text-accent" aria-label="正在重新扫描" />}
     </div>
     <div className="v5-skill-runtime-body">
-      <div className="v5-skill-list">{(skills.active_skills || []).slice(0, 10).map((item) => <span key={item.skill_id} className={`v5-skill-chip ${item.runtime === 'ON' ? 'is-on' : 'is-off'}`} title={`${item.skill_name} · ${item.lifecycle_state} · ${item.validation_status}`}><i />{item.skill_name}</span>)}{!(skills.active_skills || []).length && <span className="text-[10px] text-text-secondary">暂无满足许可的运行技能</span>}</div>
+      <div className="v5-skill-list">{(skills.active_skills || []).slice(0, 10).map((item) => <span key={item.skill_id} className={`v5-skill-chip ${item.runtime === 'ON' ? 'is-on' : 'is-off'}`} title={`${item.skill_name} · ${readableStatus(item.lifecycle_state)} · ${readableStatus(item.validation_status)}`}><i />{item.skill_name}</span>)}{!(skills.active_skills || []).length && <span className="text-[10px] text-text-secondary">暂无满足许可的运行技能</span>}</div>
       <div className="v5-skill-candidates">{candidates.slice(0, 3).map((item) => { const stage = item.candidate_label || readableTradingStage(item.best_stage, item.best_stage_label); return <div key={item.code} className="v5-skill-candidate"><span className="font-mono text-[10px] text-text">{item.code}</span><span className="min-w-0 truncate text-[10px] text-text-secondary">{item.name}</span><span className="min-w-0 truncate text-[9px] text-accent" title={`${stage}${item.diagnosis_level ? ` · ${item.diagnosis_level}` : ''}`}>{stage}</span></div>; })}{!candidates.length && <span className="text-[10px] text-text-secondary">当前没有通过市场/板块许可的候选，系统保持观察。</span>}</div>
     </div>
     <div className="v5-skill-runtime-foot">已扫描 {skills.scanned_count ?? '--'} 只 · 反身性候选 {skills.reflexivity?.candidate_count ?? '--'} / 风险 {skills.reflexivity?.risk_count ?? '--'} · 数据截止 {skills.data_cutoff_time ? localTime(skills.data_cutoff_time) : '--'} · 技能只提供研究候选，不连接下单</div>
@@ -856,8 +1016,8 @@ function RadarEventPanel() {
     <SectionHeader icon={Radio} title="AI实时事件雷达" subtitle="发现、验源、题材映射与市场确认" action={<button type="button" className="v5-mini-refresh" onClick={() => void load(true)} disabled={loading} title="刷新事件雷达">{loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}刷新</button>} />
     <div className="v5-radar-summary"><span><i className="v5-radar-live-dot" />免费源优先</span><span>未证实传闻最高 C 级</span><span>事件不等于买入信号</span></div>
     {error && <div className="px-4 py-2 text-[10px] text-warn">{error}</div>}
-    {events.length ? <div className="divide-y divide-border">{events.slice(0, 6).map((event) => <button type="button" key={event.event_id} className="v5-radar-event" onClick={() => void open(event)}><span className={`v5-radar-level level-${String(event.alert_level || 'C').toLowerCase()}`}>{event.alert_level || 'C'}</span><span className="min-w-0 flex-1 text-left"><strong className="block truncate text-[11px] text-text">{event.canonical_title}</strong><span className="mt-1 block truncate text-[9px] text-text-secondary">{event.source || '公开源'} · 市场确认 {numberText(event.market_confirmation_score)} · {event.status || '发现'}</span></span><span className="shrink-0 font-mono text-[10px] text-accent">{numberText(event.event_score)}</span></button>)}</div> : <EmptyState text={loading ? '正在汇总公开事件源' : '当前没有可核验事件'} />}
-    {selected && <div className="v5-radar-detail"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="text-xs font-medium text-text">{selected.canonical_title}</div><div className="mt-1 text-[10px] text-text-secondary">{selected.source || '--'} · {selected.event_type || '--'} · {selected.status || '--'}</div></div><button type="button" className="v5-icon-button" onClick={() => { setSelected(null); setInterpretation(''); }} aria-label="关闭事件详情" title="关闭"><X size={13} /></button></div><div className="mt-3 flex flex-wrap gap-1.5">{(selected.topics || []).slice(0, 4).map((topic) => <span className="v5-tag" key={topic.name}>{topic.name}</span>)}{(selected.stocks || []).slice(0, 4).map((stock) => <span className="v5-tag" key={stock.code}>{stock.name || stock.code} · {stock.evidence_tag === 'FACT' ? '事实关联' : '推断关联'}</span>)}</div><p className="mt-3 text-[11px] leading-5 text-text-secondary">{selected.summary || '暂无摘要'}</p><button type="button" className="v5-text-button mt-2" onClick={() => void explain()} disabled={detailLoading}>{detailLoading ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}AI解读</button>{interpretation && <p className="v5-radar-interpretation">{interpretation}</p>}<div className="mt-3 text-[9px] leading-4 text-warn">关联股仅按已登记事实或行业字段标注；缺少主营证据时不会升级为核心受益。</div></div>}
+    {events.length ? <div className="divide-y divide-border">{events.slice(0, 6).map((event) => <button type="button" key={event.event_id} className="v5-radar-event" onClick={() => void open(event)}><span className={`v5-radar-level level-${String(event.alert_level || 'C').toLowerCase()}`}>{event.alert_level || 'C'}</span><span className="min-w-0 flex-1 text-left"><strong className="block truncate text-[11px] text-text">{event.canonical_title}</strong><span className="mt-1 block truncate text-[9px] text-text-secondary">{event.source || '公开源'} · 市场确认 {numberText(event.market_confirmation_score)} · {readableStatus(event.status)}</span></span><span className="shrink-0 font-mono text-[10px] text-accent">{numberText(event.event_score)}</span></button>)}</div> : <EmptyState text={loading ? '正在汇总公开事件源' : '当前没有可核验事件'} />}
+    {selected && <div className="v5-radar-detail"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="text-xs font-medium text-text">{selected.canonical_title}</div><div className="mt-1 text-[10px] text-text-secondary">{selected.source || '--'} · {selected.event_type || '--'} · {readableStatus(selected.status)}</div></div><button type="button" className="v5-icon-button" onClick={() => { setSelected(null); setInterpretation(''); }} aria-label="关闭事件详情" title="关闭"><X size={13} /></button></div><div className="mt-3 flex flex-wrap gap-1.5">{(selected.topics || []).slice(0, 4).map((topic) => <span className="v5-tag" key={topic.name}>{topic.name}</span>)}{(selected.stocks || []).slice(0, 4).map((stock) => <span className="v5-tag" key={stock.code}>{stock.name || stock.code} · {stock.evidence_tag === 'FACT' ? '事实关联' : '推断关联'}</span>)}</div><p className="mt-3 text-[11px] leading-5 text-text-secondary">{selected.summary || '暂无摘要'}</p><button type="button" className="v5-text-button mt-2" onClick={() => void explain()} disabled={detailLoading}>{detailLoading ? <Loader2 size={12} className="animate-spin" /> : <BrainCircuit size={12} />}AI解读</button>{interpretation && <p className="v5-radar-interpretation">{interpretation}</p>}<div className="mt-3 text-[9px] leading-4 text-warn">关联股仅按已登记事实或行业字段标注；缺少主营证据时不会升级为核心受益。</div></div>}
   </section>;
 }
 
@@ -878,7 +1038,7 @@ function V51EvidencePanel() {
   const auction = data?.auction;
   const reward = data?.reward_punishment;
   const sectors = data?.leadership?.sectors || [];
-  return <section className="v5-panel v5-v51-panel"><SectionHeader icon={Layers3} title="V5.1证据层" subtitle="竞价、预期差、供给测试与市场奖惩" />{loading && !data ? <EmptyState text="正在读取V5.1证据" /> : <><div className="v5-v51-metrics"><div><span>竞价覆盖</span><strong>{percent(auction?.coverage_pct)}</strong><small>{auction?.quality?.status || '暂无快照'}</small></div><div><span>竞价序列</span><strong>{percent(auction?.timeline_coverage_pct)}</strong><small>{auction?.time_series_snapshots ?? '--'} 条时间点</small></div><div><span>奖惩状态</span><strong className={toneClass(reward?.state)}>{reward?.state || '核验中'}</strong><small>宽度 {percent(reward?.breadth_pct)}</small></div></div><div className="border-t border-border px-4 py-3"><div className="text-[10px] text-text-secondary">板块领导力观察</div><div className="mt-2 flex flex-wrap gap-2">{sectors.slice(0, 5).map((item) => <span className="v5-tag" key={item.name}>{item.name} {numberText(item.leadership_score)}</span>)}{!sectors.length && <span className="text-[10px] text-text-secondary">暂无板块成分证据</span>}</div></div>{auction?.quality?.warning && <div className="border-t border-border px-4 py-2.5 text-[9px] leading-4 text-warn">{auction.quality.warning}</div>}</>}</section>;
+  return <section className="v5-panel v5-v51-panel"><SectionHeader icon={Layers3} title="V5.1证据层" subtitle="竞价、预期差、供给测试与市场奖惩" />{loading && !data ? <EmptyState text="正在读取V5.1证据" /> : <><div className="v5-v51-metrics"><div><span>竞价覆盖</span><strong>{percent(auction?.coverage_pct)}</strong><small>{readableStatus(auction?.quality?.status)}</small></div><div><span>竞价序列</span><strong>{percent(auction?.timeline_coverage_pct)}</strong><small>{auction?.time_series_snapshots ?? '--'} 条时间点</small></div><div><span>奖惩状态</span><strong className={toneClass(reward?.state)}>{readableStatus(reward?.state)}</strong><small>宽度 {percent(reward?.breadth_pct)}</small></div></div><div className="border-t border-border px-4 py-3"><div className="text-[10px] text-text-secondary">板块领导力观察</div><div className="mt-2 flex flex-wrap gap-2">{sectors.slice(0, 5).map((item) => <span className="v5-tag" key={item.name}>{item.name} {numberText(item.leadership_score)}</span>)}{!sectors.length && <span className="text-[10px] text-text-secondary">暂无板块成分证据</span>}</div></div>{auction?.quality?.warning && <div className="border-t border-border px-4 py-2.5 text-[9px] leading-4 text-warn">{auction.quality.warning}</div>}</>}</section>;
 }
 
 function SectorResonance({ sectors, supplement }: { sectors: ForecastSector[]; supplement: MarketSupplement | null }) {
@@ -927,8 +1087,8 @@ function BehaviorPanel({ behavior }: { behavior: BehaviorSnapshot }) {
     <section id="behavior" className="v5-panel">
       <SectionHeader icon={CircleDot} title="行为博弈与人性偏差" subtitle="内部分析层：识别人群行为，不推断不可验证的操控者意图" />
       <div className="grid grid-cols-2 border-b border-border"><div className="p-4"><div className="text-[10px] text-text-secondary">市场心理阶段</div><div className={`mt-2 text-sm font-semibold ${toneClass(behavior.market_psychology_state)}`}>{behavior.market_psychology_state || '核验中'}</div><div className="mt-1 text-[10px] text-text-secondary">迁移：{behavior.psychology_transition || '状态待核验'}</div></div><div className="border-l border-border p-4"><div className="text-[10px] text-text-secondary">行为失衡度</div><div className="mt-2 font-mono text-2xl text-text">{numberText(behavior.behavior_imbalance_score)}<span className="ml-1 text-xs text-text-secondary">/100</span></div><div className="mt-1 text-[10px] text-text-secondary">{behavior.behavior_imbalance_level || '核验中'}</div></div></div>
-      <div className="grid grid-cols-2 divide-x divide-y divide-border">{[['追涨行为', behavior.fomo_state], ['恐慌踩踏', behavior.panic_state], ['高位一致性', behavior.crowding_state], ['假突破风险', behavior.false_breakout_risk]].map(([label, value]) => <div key={label} className="p-3"><div className="text-[10px] text-text-secondary">{label}</div><div className={`mt-1 text-xs font-medium ${toneClass(String(value))}`}>{value || '核验中'}</div></div>)}</div>
-      {signals.length > 0 && <div className="border-t border-border px-4 py-3"><div className="mb-2 text-[10px] text-text-secondary">主要偏差信号</div><div className="flex flex-wrap gap-2">{signals.slice(0, 4).map((item) => <StatusPill key={item.id} value={item.state}>{item.label} · {item.state}</StatusPill>)}</div></div>}
+      <div className="grid grid-cols-2 divide-x divide-y divide-border">{[['追涨行为', behavior.fomo_state], ['恐慌踩踏', behavior.panic_state], ['高位一致性', behavior.crowding_state], ['假突破风险', behavior.false_breakout_risk]].map(([label, value]) => <div key={label} className="min-w-0 p-3"><div className="text-[10px] text-text-secondary">{label}</div><div className={`mt-1 break-words text-xs font-medium ${toneClass(String(value))}`}>{readableStatus(String(value || ''))}</div></div>)}</div>
+      {signals.length > 0 && <div className="border-t border-border px-4 py-3"><div className="mb-2 text-[10px] text-text-secondary">主要偏差信号</div><div className="flex flex-wrap gap-2">{signals.slice(0, 4).map((item) => <StatusPill key={item.id} value={item.state}>{item.label} · {readableStatus(item.state)}</StatusPill>)}</div></div>}
     </section>
   );
 }
@@ -947,11 +1107,14 @@ function HistoricalAnalogs({ forecast, onLoad, loading }: { forecast: ForecastSn
 }
 
 function StrategyAdvice({ forecast, supplement }: { forecast: ForecastSnapshot; supplement: MarketSupplement | null }) {
-  const permission = supplement?.decision_2026?.trading_permission;
-  const position = permission?.max_total_position_pct ?? supplement?.strategy_selector?.max_total_position_pct;
-  const action = permission?.label || forecast.risk_preference.label || '等待验证';
+  const actionCenter = forecast.today_action_center || fallbackActionCenter(forecast, supplement);
+  const permission = actionCenter.permission || {};
+  const permissionCode = String(permission.code || 'UNKNOWN').toUpperCase();
+  const nonExecutable = permissionCode === 'BLOCK' || permissionCode === 'NO_TRADE' || permissionCode === 'RESEARCH_ONLY';
+  const position = nonExecutable ? 0 : permission.max_total_position_pct;
+  const action = permission.label || forecast.risk_preference.label || '等待验证';
   const sectors = (forecast.sector_forecasts || []).filter((item) => tone(item.state) === 'up').slice(0, 3).map((item) => item.name);
-  return <section className="v5-panel v5-advice-panel"><SectionHeader icon={SlidersHorizontal} title="今日策略建议" subtitle="14:55执行参考 · 最终决策由用户掌握" /><div className="v5-advice-content"><div><span>仓位建议</span><strong className={toneClass(action)}>{finite(position) ? `控制在 ${position}% 内` : '等待数据确认'}</strong></div><div><span>风格建议</span><strong>{action}</strong></div><div><span>重点观察</span><div className="flex flex-wrap gap-1.5">{sectors.length ? sectors.map((item) => <span key={item} className="v5-tag">{item}</span>) : <span className="text-xs text-text-secondary">等待板块确认</span>}</div></div></div><div className="border-t border-border px-3 py-2 text-[9px] leading-4 text-warn">不输出“必涨、稳赚、强烈买入”；当前置信上限 {percent(forecast.data_health.confidence_ceiling_pct)}。</div></section>;
+  return <section className="v5-panel v5-advice-panel"><SectionHeader icon={SlidersHorizontal} title="今日策略建议" subtitle="服从今日行动中心的统一交易许可" /><div className="v5-advice-content"><div><span>仓位建议</span><strong className={toneClass(action)}>{finite(position) ? `控制在 ${position}% 内` : '等待数据确认'}</strong></div><div><span>风格建议</span><strong className={permissionCode === 'BLOCK' || permissionCode === 'NO_TRADE' ? 'text-down' : nonExecutable ? 'text-warn' : undefined}>{action}</strong></div><div><span>重点观察</span><div className="flex flex-wrap gap-1.5">{sectors.length ? sectors.map((item) => <span key={item} className="v5-tag">{item}</span>) : <span className="text-xs text-text-secondary">等待板块确认</span>}</div></div></div><div className="border-t border-border px-3 py-2 text-[9px] leading-4 text-warn">不输出“必涨、稳赚、强烈买入”；当前置信上限 {percent(forecast.data_health.confidence_ceiling_pct)}。</div></section>;
 }
 
 export default function MarketDecisionWorkbenchPage() {
@@ -969,7 +1132,33 @@ export default function MarketDecisionWorkbenchPage() {
   const [judgmentBusy, setJudgmentBusy] = useState(false);
   const [skillFilters, setSkillFilters] = useState<SkillFilterState>({ exclude_star_market: true, exclude_gem: true });
   const [skillFilterBusy, setSkillFilterBusy] = useState(false);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const skillFiltersRef = useRef<SkillFilterState>({ exclude_star_market: true, exclude_gem: true });
+  const skillsRequestRef = useRef(false);
+
+  const loadSkills = useCallback(async (force = false, next = skillFiltersRef.current): Promise<boolean> => {
+    if (skillsRequestRef.current) return false;
+    skillsRequestRef.current = true;
+    setSkillsLoading(true);
+    try {
+      const params = new URLSearchParams({
+        exclude_star_market: String(next.exclude_star_market),
+        exclude_gem: String(next.exclude_gem),
+      });
+      if (force) params.set('refresh', 'true');
+      const response = await apiFetch<{ code: number; data: ForecastSnapshot['trading_skills'] }>(`/trading-skills/dashboard?${params.toString()}`, { cache: 'no-store', timeoutMs: 45000 });
+      if (response.code !== 0 || !response.data) throw new Error('交易技能扫描返回无效数据');
+      setForecast((current) => current ? { ...current, trading_skills: response.data } : current);
+      return true;
+    } catch (caught) {
+      setNotice(friendlyApiError(caught, '交易技能异步扫描失败，主预测仍可使用'));
+      return false;
+    } finally {
+      skillsRequestRef.current = false;
+      setSkillsLoading(false);
+    }
+  }, []);
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true); else setLoading(true);
@@ -980,35 +1169,28 @@ export default function MarketDecisionWorkbenchPage() {
     if (force) forecastParams.set('refresh', 'true');
     forecastParams.set('exclude_star_market', String(skillFiltersRef.current.exclude_star_market));
     forecastParams.set('exclude_gem', String(skillFiltersRef.current.exclude_gem));
+    forecastParams.set('include_skills', 'false');
     const forecastPath = `/forecast/dashboard?${forecastParams.toString()}`;
-    const supplementPath = `/market/workbench${force ? '?refresh=true' : ''}`;
     const overviewPath = `/market/overview${force ? '?refresh=true' : ''}`;
+    let mainForecastLoaded = false;
     try {
-      const [forecastResult, supplementResult, overviewResult] = await Promise.allSettled([
+      const [forecastResult, overviewResult] = await Promise.allSettled([
         apiFetch<{ code: number; data: ForecastSnapshot }>(forecastPath, { cache: 'no-store', timeoutMs: 45000 }),
-        apiFetch<{ code: number; data: MarketSupplement }>(supplementPath, { cache: 'no-store', timeoutMs: 30000 }),
         apiFetch<{ code: number; data: MarketOverview }>(overviewPath, { cache: 'no-store', timeoutMs: 25000 }),
       ]);
       if (forecastResult.status === 'fulfilled' && forecastResult.value.code === 0 && forecastResult.value.data) {
-        setForecast(forecastResult.value.data);
-        const returnedFilters = forecastResult.value.data.trading_skills?.filters;
-        if (returnedFilters) {
-          const nextFilters = {
-            exclude_star_market: returnedFilters.exclude_star_market !== false,
-            exclude_gem: returnedFilters.exclude_gem !== false,
-          };
-          skillFiltersRef.current = nextFilters;
-          setSkillFilters(nextFilters);
+        const forecastData = forecastResult.value.data;
+        mainForecastLoaded = true;
+        setForecast(forecastData);
+        if (forecastData.workbench_summary) {
+          setSupplement(forecastData.workbench_summary);
+          window.localStorage.setItem(SUPPLEMENT_CACHE_KEY, JSON.stringify(forecastData.workbench_summary));
+        } else {
+          try { setSupplement(JSON.parse(window.localStorage.getItem(SUPPLEMENT_CACHE_KEY) || 'null') as MarketSupplement | null); } catch { setSupplement(null); }
         }
-        window.localStorage.setItem(FORECAST_CACHE_KEY, JSON.stringify(forecastResult.value.data));
+        window.localStorage.setItem(FORECAST_CACHE_KEY, JSON.stringify(forecastData));
       } else {
         throw forecastResult.status === 'rejected' ? forecastResult.reason : new Error('前瞻预测返回无效数据');
-      }
-      if (supplementResult.status === 'fulfilled' && supplementResult.value.code === 0 && supplementResult.value.data) {
-        setSupplement(supplementResult.value.data);
-        window.localStorage.setItem(SUPPLEMENT_CACHE_KEY, JSON.stringify(supplementResult.value.data));
-      } else {
-        try { setSupplement(JSON.parse(window.localStorage.getItem(SUPPLEMENT_CACHE_KEY) || 'null') as MarketSupplement | null); } catch { setSupplement(null); }
       }
       if (overviewResult.status === 'fulfilled' && overviewResult.value.code === 0 && overviewResult.value.data) {
         setOverview(overviewResult.value.data);
@@ -1025,41 +1207,36 @@ export default function MarketDecisionWorkbenchPage() {
         const cachedOverview = JSON.parse(window.localStorage.getItem(OVERVIEW_CACHE_KEY) || 'null') as MarketOverview | null;
         if (cached) {
           setForecast(cached);
-          setSupplement(cachedSupplement);
+          setSupplement(cached.workbench_summary || cachedSupplement);
           setOverview(cachedOverview);
+          mainForecastLoaded = true;
           setNotice('后端连接暂时中断，当前显示浏览器最近一次成功的 V5 快照。');
         } else throw caught;
       } catch (cacheError) {
         setError(friendlyApiError(cacheError, 'V5 预测中枢加载失败'));
       }
     } finally {
+      if (mainForecastLoaded) void loadSkills(force, skillFiltersRef.current);
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [loadSkills]);
 
   const refreshSkillScope = useCallback(async (next: SkillFilterState) => {
-    if (skillFilterBusy) return;
+    if (skillFilterBusy || skillsRequestRef.current) return;
     skillFiltersRef.current = next;
     setSkillFilters(next);
     setSkillFilterBusy(true);
     setError('');
     try {
-      const params = new URLSearchParams({
-        refresh: 'true',
-        exclude_star_market: String(next.exclude_star_market),
-        exclude_gem: String(next.exclude_gem),
-      });
-      const response = await apiFetch<{ code: number; data: ForecastSnapshot['trading_skills'] }>(`/trading-skills/dashboard?${params.toString()}`, { cache: 'no-store', timeoutMs: 45000 });
-      if (response.code !== 0 || !response.data) throw new Error('板块筛选扫描返回无效数据');
-      setForecast((current) => current ? { ...current, trading_skills: response.data } : current);
-      setNotice(`已按当前可交易范围重新扫描：${next.exclude_star_market ? '排除科创板' : '包含科创板'}，${next.exclude_gem ? '排除创业板' : '包含创业板'}`);
+      const ok = await loadSkills(true, next);
+      if (ok) setNotice(`已按当前可交易范围重新扫描：${next.exclude_star_market ? '排除科创板' : '包含科创板'}，${next.exclude_gem ? '排除创业板' : '包含创业板'}`);
     } catch (caught) {
       setNotice(friendlyApiError(caught, '板块筛选扫描失败，已保留上一份结果'));
     } finally {
       setSkillFilterBusy(false);
     }
-  }, [skillFilterBusy]);
+  }, [loadSkills, skillFilterBusy]);
 
   useEffect(() => { void load(false); const timer = window.setInterval(() => void load(false), 60_000); return () => window.clearInterval(timer); }, [load]);
   useEffect(() => { if (!loading && !refreshing) return undefined; const timer = window.setInterval(() => setProgress((current) => Math.min(92, current + Math.max(1, Math.ceil((92 - current) / 8)))), 350); return () => window.clearInterval(timer); }, [loading, refreshing]);
@@ -1091,7 +1268,9 @@ export default function MarketDecisionWorkbenchPage() {
   if (!forecast) return null;
 
   const health = forecast.data_health;
-  const factors = (forecast.factors?.all || []).filter((item) => item.observed).slice(0, 8);
+  const allFactors = forecast.factors?.all || [];
+  const observedFactorCount = allFactors.filter((item) => item.observed).length;
+  const factors = allFactors.filter((item) => item.observed).slice(0, 8);
   const confidence = health.confidence_ceiling_pct ?? health.completeness_pct ?? 0;
   return (
     <main id="top" className="v5-page">
@@ -1100,12 +1279,13 @@ export default function MarketDecisionWorkbenchPage() {
           <span className="v5-aperture-mark"><Aperture size={25} strokeWidth={1.25} /></span>
           <span className="min-w-0"><strong>AI多因子共振预测中枢 <b>V5.1</b></strong><small>进因势位时止 · 洞察先机 · 驭势而行</small></span>
         </Link>
-            <nav className="v5-global-nav" aria-label="预测工作台功能导航">
+            <nav className="v5-global-nav max-[820px]:!hidden" aria-label="预测工作台功能导航">
               <a className="active" href="#forecast">预测引擎</a><a href="#factors">因子监控</a><a href="#sectors">板块轮动</a><a href="#alpha">Alpha雷达</a><a href="#history">历史回溯</a><a href="#strategy">策略执行</a><a href="#system-status">系统状态</a>
               <span className="v5-nav-divider" aria-hidden="true" />
               <Link className="v5-global-utility" href="/market/v4">V4工作台</Link><Link className="v5-global-utility" href="/pro/research">研究中心</Link><Link className="v5-global-utility" href="/pro/event-radar">事件雷达</Link><Link className="v5-global-utility" href="/pro/auction">竞价监控</Link><Link className="v5-global-utility" href="/numcat">数据中枢</Link><Link className="v5-global-utility" href="/quant">量化策略</Link>
             </nav>
-        <div className="v5-global-meta"><span className="v5-header-time">{localTime(forecast.generated_at)}</span><span className={`v5-trading-state ${supplement?.meta?.is_realtime ? 'live' : ''}`}><i />{supplement?.meta?.is_realtime ? '交易中' : '缓存快照'}</span><button type="button" className="v5-header-icon" title="刷新工作台" aria-label="刷新工作台" onClick={() => void load(true)} disabled={refreshing}>{refreshing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}</button><UserCircle size={22} className="v5-user-mark" aria-hidden="true" /></div>
+        <div className="v5-global-meta"><span className="v5-header-time">{localTime(forecast.generated_at)}</span><span className={`v5-trading-state ${supplement?.meta?.is_realtime ? 'live' : ''}`}><i />{supplement?.meta?.is_realtime ? '交易中' : '缓存快照'}</span><button type="button" className="v5-header-icon max-[820px]:!inline-grid min-[821px]:!hidden" title="打开功能导航" aria-label="打开功能导航" onClick={() => setMobileNavOpen((open) => !open)}><Menu size={15} /></button><button type="button" className="v5-header-icon" title="刷新工作台" aria-label="刷新工作台" onClick={() => void load(true)} disabled={refreshing}>{refreshing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}</button><UserCircle size={22} className="v5-user-mark" aria-hidden="true" /></div>
+        {mobileNavOpen && <div className="absolute left-2 right-2 top-[56px] z-50 max-h-[calc(100dvh-64px)] overflow-y-auto rounded-md border border-border bg-[#101821] p-2 shadow-xl max-[820px]:block min-[821px]:hidden"><div className="grid gap-1 sm:grid-cols-2">{navItems.map(([label, href, Icon]) => <a key={href} href={href} onClick={() => setMobileNavOpen(false)} className="flex min-w-0 items-center gap-2 rounded px-3 py-2 text-[11px] text-text-secondary hover:bg-[#172535] hover:text-text"><Icon size={13} className="shrink-0 text-accent" /><span className="truncate">{label}</span></a>)}<span className="my-1 border-t border-border sm:col-span-2" />{[['V4工作台', '/market/v4'], ['研究中心', '/pro/research'], ['事件雷达', '/pro/event-radar'], ['竞价监控', '/pro/auction'], ['数据中枢', '/numcat'], ['量化策略', '/quant']].map(([label, href]) => <Link key={href} href={href} onClick={() => setMobileNavOpen(false)} className="rounded px-3 py-2 text-[11px] text-text-secondary hover:bg-[#172535] hover:text-text">{label}</Link>)}</div></div>}
         {refreshing && <div className="v5-refresh-progress" role="progressbar" aria-label="刷新工作台进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div>}
       </header>
       <div className="v5-layout">
@@ -1118,20 +1298,21 @@ export default function MarketDecisionWorkbenchPage() {
           {(notice || error) && <div className={`v5-notice ${error ? 'error' : ''}`}><span>{error || notice}</span><button type="button" onClick={() => { setNotice(''); setError(''); }} aria-label="关闭提示"><X size={13} /></button></div>}
 
           <div className="v5-content">
-            <div className="v5-dashboard-grid"><div className="min-w-0"><ForecastTimeline forecast={forecast} onRefresh={() => void load(true)} skillFilters={skillFilters} onSkillFilterChange={(next) => void refreshSkillScope(next)} skillFilterBusy={skillFilterBusy} /></div><MarketStatePanel supplement={supplement} overview={overview} /><div id="events" className="min-w-0"><EventMonitor forecast={forecast} supplement={supplement} /></div></div>
+            <TodayActionCenter forecast={forecast} supplement={supplement} />
+            <div className="v5-dashboard-grid"><div className="min-w-0"><ForecastTimeline forecast={forecast} onRefresh={() => void load(true)} skillFilters={skillFilters} onSkillFilterChange={(next) => void refreshSkillScope(next)} skillFilterBusy={skillFilterBusy} skillsLoading={skillsLoading} /></div><MarketStatePanel supplement={supplement} overview={overview} /><div id="events" className="min-w-0"><EventMonitor forecast={forecast} supplement={supplement} /></div></div>
 
             <div className="v5-research-grid"><div id="sectors"><SectorResonance sectors={forecast.sector_forecasts || []} supplement={supplement} /></div><div id="alpha"><AlphaRadar seeds={forecast.alpha_seeds || []} /></div><div><CapitalFlow forecast={forecast} supplement={supplement} overview={overview} /></div><BehaviorPanel behavior={forecast.behavior} /></div>
 
             <div id="radar" className="v5-evidence-grid"><V51EvidencePanel /><RadarEventPanel /></div>
 
-            <div className="v5-bottom-grid"><div><TurningPoints forecast={forecast} /></div><HistoricalAnalogs forecast={forecast} onLoad={() => void loadHistory()} loading={historyLoading} /><section className="v5-panel"><SectionHeader icon={Gauge} title="预测置信度与风险提示" subtitle="置信度受数据完整度上限约束" /><div className="p-4"><div className="flex items-end justify-between"><span className="text-3xl font-semibold text-text">{percent(confidence)}</span><StatusPill value={health.level}>{health.level || '核验中'}</StatusPill></div><ThinBar value={confidence} color={confidence >= 70 ? 'up' : 'warn'} /><div className="mt-4 space-y-2 text-[10px] leading-4 text-text-secondary">{(health.stale_factors || []).slice(0, 2).map((item) => <div key={item.factor_id} className="flex gap-2"><span className="text-warn">·</span>{item.name}沿用缓存，边际信息可能滞后</div>)}{(health.missing_factors || []).slice(0, 1).map((item) => <div key={item.factor_id} className="flex gap-2"><span className="text-warn">·</span>{item.name}当前缺少可核验来源：{item.source}</div>)}{!health.stale_factors?.length && !health.missing_factors?.length && <div>当前没有新增数据边界提示。</div>}</div></div></section><div id="strategy"><StrategyAdvice forecast={forecast} supplement={supplement} /></div></div>
+            <div className="v5-bottom-grid"><div><TurningPoints forecast={forecast} /></div><HistoricalAnalogs forecast={forecast} onLoad={() => void loadHistory()} loading={historyLoading} /><section className="v5-panel"><SectionHeader icon={Gauge} title="数据与模型资格" subtitle="真值、新鲜度与校准共同决定是否可执行" /><div className="p-4"><div className="flex items-end justify-between gap-3"><div><span className="block text-[10px] text-text-secondary">数据可信上限</span><span className="text-3xl font-semibold text-text">{percent(confidence)}</span></div><StatusPill value={health.level}>{health.level || '核验中'}</StatusPill></div><ThinBar value={confidence} color={health.execution_allowed ? 'up' : 'warn'} /><div className="mt-4 space-y-2 text-[10px] leading-4 text-text-secondary"><div><span className="text-text-secondary">真值：</span>{health.truth_status_label || '状态不可用'} · <span className="text-text-secondary">模型：</span>{health.calibration_qualified ? '概率校准通过' : '样本外校准未通过，只输出研究倾向'}</div>{(health.block_reasons || []).slice(0, 3).map((item) => <div key={item} className="flex gap-2"><span className="text-warn">·</span>{item}</div>)}{!(health.block_reasons || []).length && <div>当前没有新增数据边界提示。</div>}</div></div></section><div id="strategy"><StrategyAdvice forecast={forecast} supplement={supplement} /></div></div>
 
-            <div id="factors" className="v5-panel"><SectionHeader icon={LineChart} title="因子监控与共振变化" subtitle="领先因子 → 传播因子 → 确认因子，按新鲜度和可靠度进入预测" action={<span className="text-[10px] text-text-secondary">观测 {factors.length} / {forecast.factors?.all?.length || 0}</span>} /><div className="v5-factor-grid">{factors.map((item) => <div key={item.id} className="v5-factor"><div className="flex items-start justify-between gap-2"><span className="line-clamp-2 text-xs text-text">{item.name}</span><span className={`shrink-0 text-[10px] ${item.observed ? 'text-up' : 'text-warn'}`}>{item.observed ? '已观测' : '核验中'}</span></div><div className="mt-3 flex items-end justify-between"><span className="font-mono text-lg text-text">{numberText(item.value)}</span><span className={`font-mono text-[10px] ${toneClass(item.delta)}`}>{signedPercent(item.delta)}</span></div><ThinBar value={item.value} color={tone(item.state) === 'down' ? 'down' : tone(item.state) === 'up' ? 'up' : 'accent'} /><div className="mt-2 truncate text-[10px] text-text-secondary">{item.layer} · {item.source}</div></div>)}{!factors.length && <EmptyState text="暂无满足新鲜度门槛的因子" />}</div></div>
+            <div id="factors" className="v5-panel"><SectionHeader icon={LineChart} title="因子监控与共振变化" subtitle="领先因子 → 传播因子 → 确认因子，按新鲜度和可靠度进入预测" action={<span className="shrink-0 text-[10px] text-text-secondary">观测 {observedFactorCount} / {allFactors.length} <span className="ml-1 text-text-muted">仅展示前8项</span></span>} /><div className="v5-factor-grid">{factors.map((item) => <div key={item.id} className="v5-factor"><div className="flex items-start justify-between gap-2"><span className="line-clamp-2 text-xs text-text">{item.name}</span><span className={`shrink-0 text-[10px] ${item.observed ? 'text-up' : 'text-warn'}`}>{item.observed ? '已观测' : '核验中'}</span></div><div className="mt-3 flex items-end justify-between"><span className="font-mono text-lg text-text">{numberText(item.value)}</span><span className={`font-mono text-[10px] ${toneClass(item.delta)}`}>{signedPercent(item.delta)}</span></div><ThinBar value={item.value} color={tone(item.state) === 'down' ? 'down' : tone(item.state) === 'up' ? 'up' : 'accent'} /><div className="mt-2 truncate text-[10px] text-text-secondary">{item.layer} · {item.source}</div></div>)}{!factors.length && <EmptyState text="暂无满足新鲜度门槛的因子" />}</div></div>
 
             <section className="v5-panel"><SectionHeader icon={Wallet} title="AI与用户双轨判断" subtitle="保存你的判断，盘后与实际市场状态对照" /><div className="grid gap-3 p-4 sm:grid-cols-[160px_minmax(0,1fr)_auto] sm:items-end"><label className="text-[10px] text-text-secondary">我的判断<select value={judgmentAction} onChange={(event) => setJudgmentAction(event.target.value)} className="v5-select mt-1"><option value="BULLISH">偏多</option><option value="NEUTRAL">中性</option><option value="BEARISH">偏空</option><option value="WAIT">等待</option><option value="NO_TRADE">不交易</option></select></label><label className="text-[10px] text-text-secondary">依据与反证<textarea value={judgmentNote} onChange={(event) => setJudgmentNote(event.target.value)} rows={2} placeholder="记录与你的判断有关的事实、反证或观察条件" className="v5-textarea mt-1" /></label><button type="button" onClick={() => void saveJudgment()} disabled={judgmentBusy} className="v5-button">{judgmentBusy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}保存判断</button></div></section>
 
             {health.missing_factors.length > 0 && <section className="v5-data-boundary"><div className="flex items-center gap-2 font-medium text-warn"><Database size={13} />数据边界与补采队列</div><div className="mt-2 text-[10px] leading-4 text-text-secondary">{health.missing_factors.slice(0, 5).map((item) => `${item.name}：${item.source}`).join(' · ')}。缺口不会填充默认值，预测置信度已按规则封顶。</div></section>}
-            <footer id="system-status" className="v5-footer"><span>V5.1 · {forecast.version} · {forecast.data_health.high_confidence_allowed ? '高置信度通道可用' : '高置信度通道受限'}</span><span>实时行情仅在交易时段更新，非交易时段使用最近完整快照</span><div className="flex gap-3"><Link href="/pro/research">研究中心</Link><Link href="/pro/personal">个人股票池</Link><Link href="/quant">量化策略</Link></div></footer>
+            <footer id="system-status" className="v5-footer"><span>V5.1 · {forecast.version} · {forecast.data_health.high_confidence_allowed ? '高置信度通道可用' : `${forecast.data_health.truth_status_label || '证据受限'} · 研究模式`}</span><span>实时行情仅在交易时段更新；未校准模型不显示成功概率</span><div className="flex gap-3"><Link href="/pro/research">研究中心</Link><Link href="/pro/personal">个人股票池</Link><Link href="/quant">量化策略</Link></div></footer>
           </div>
         </div>
       </div>

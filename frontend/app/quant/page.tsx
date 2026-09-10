@@ -27,6 +27,26 @@ const tabs: Array<{ id: TabId; label: string; icon: typeof ClipboardList }> = [
   { id: 'paper', label: '模拟盘', icon: WalletCards },
 ];
 
+function governanceLabel(strategy: Strategy): string {
+  const status = strategy.governance?.status;
+  if (status === 'APPROVED') return '已批准';
+  if (status === 'MODIFIED_PENDING_REVIEW') return '修改后待复核';
+  if (status === 'LEGACY_GRANDFATHERED') return '存量兼容';
+  return '草稿';
+}
+
+function governanceClass(strategy: Strategy): string {
+  const status = strategy.governance?.status;
+  if (status === 'APPROVED' || status === 'LEGACY_GRANDFATHERED') return 'text-up';
+  if (status === 'MODIFIED_PENDING_REVIEW') return 'text-warn';
+  return 'text-text-secondary';
+}
+
+function scanStatusLabel(strategy: Strategy): string {
+  if (!strategy.active) return '已停用';
+  return strategy.scan_schedule === 'manual' ? '仅手动扫描' : '定时扫描中';
+}
+
 export default function QuantPage() {
   const [tab, setTab] = useState<TabId>('strategies');
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -42,6 +62,7 @@ export default function QuantPage() {
   const [paperDraft, setPaperDraft] = useState<TradeSignal | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [governanceBusy, setGovernanceBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadSignals = useCallback(async () => {
@@ -113,6 +134,30 @@ export default function QuantPage() {
     }
   };
 
+  const approveStrategy = async (strategy: Strategy) => {
+    const approvalScope = strategy.scan_schedule === 'manual' ? '手动扫描' : '定时扫描';
+    const note = window.prompt(`请输入人工确认说明。批准前必须有严格可审计回测；批准后仅允许${approvalScope}，不会连接券商或自动下单。`, strategy.governance?.approval_note || '已核对策略规则、回测审计与风险边界。');
+    if (!note?.trim()) return;
+    setGovernanceBusy(strategy.id); setError(null);
+    try {
+      const response = await apiFetch<{ data: Strategy }>(`/quant/strategy/${strategy.id}/approve`, { method: 'POST', body: JSON.stringify({ note }) });
+      setStrategies((current) => current.map((item) => item.id === strategy.id ? response.data : item));
+      setEditingId(strategy.id);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '策略批准失败'); }
+    finally { setGovernanceBusy(null); }
+  };
+
+  const revokeApproval = async (strategy: Strategy) => {
+    if (!window.confirm(`确认撤销“${strategy.name}”的定时扫描批准吗？撤销后策略会停用，但仍可预览和回测。`)) return;
+    setGovernanceBusy(strategy.id); setError(null);
+    try {
+      const response = await apiFetch<{ data: Strategy }>(`/quant/strategy/${strategy.id}/revoke`, { method: 'POST', body: JSON.stringify({}) });
+      setStrategies((current) => current.map((item) => item.id === strategy.id ? response.data : item));
+      setEditingId(strategy.id);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : '撤销批准失败'); }
+    finally { setGovernanceBusy(null); }
+  };
+
   const previewStrategy = async (draft: StrategyDraft) => {
     const response = await apiFetch<{
       data: {
@@ -152,7 +197,7 @@ export default function QuantPage() {
     <div className="border border-border rounded-md overflow-x-auto mb-4"><div className="flex w-full min-w-[350px]">{tabs.map((item) => { const Icon = item.icon; return <button type="button" key={item.id} onClick={() => setTab(item.id)} className={`flex-1 inline-flex items-center justify-center gap-1 px-2 sm:px-4 py-2.5 text-xs sm:text-sm whitespace-nowrap border-r border-border last:border-r-0 ${tab === item.id ? 'bg-[#1F6FEB22] text-accent font-semibold' : 'text-text-secondary hover:bg-[#161B22] hover:text-text'}`}><Icon size={15} />{item.label}</button>; })}</div></div>
     {error && <div className="mb-4 border border-down/50 bg-[#EF535022] rounded-md p-3 text-xs text-down flex gap-2"><AlertTriangle size={15} className="shrink-0" />{error}</div>}
 
-    {tab === 'strategies' && <div className="grid grid-cols-1 xl:grid-cols-[250px_minmax(0,1fr)] gap-4"><aside className="border border-border rounded-md overflow-hidden h-fit"><div className="flex items-center justify-between px-3 py-2 border-b border-border"><span className="text-sm font-semibold text-text">我的策略</span><button type="button" onClick={() => { setEditingId(null); setBuilderNonce((value) => value + 1); }} className="h-7 w-7 inline-flex items-center justify-center rounded-md text-accent hover:bg-[#1F6FEB22]" title="新建策略" aria-label="新建策略"><Plus size={16} /></button></div><div className="p-2 space-y-1">{strategies.map((strategy) => <div key={strategy.id} className={`group flex items-center gap-2 p-2 rounded-md ${editingId === strategy.id ? 'bg-[#1F6FEB22]' : 'hover:bg-[#161B22]'}`}><button type="button" onClick={() => setEditingId(strategy.id)} className="min-w-0 flex-1 text-left"><div className="text-xs font-medium text-text truncate">{strategy.name}</div><div className="mt-1 flex items-center gap-1.5 text-[11px] text-text-secondary"><span className={`w-1.5 h-1.5 rounded-full ${strategy.active ? 'bg-up' : 'bg-text-secondary'}`} />{strategy.builtin ? '内置 · ' : ''}{strategy.active ? '启用中' : '已停用'} · {strategy.entry.rules.length} 条买入规则</div></button>{!strategy.builtin && <button type="button" onClick={() => deleteStrategy(strategy)} className="h-6 w-6 hidden group-hover:inline-flex items-center justify-center text-text-secondary hover:text-down rounded-md" title="删除策略" aria-label="删除策略"><Trash2 size={13} /></button>}</div>)}{!strategies.length && <div className="p-4 text-center text-xs text-text-secondary">尚未保存策略。可从右侧模板开始。</div>}</div></aside><section className="border border-border rounded-md p-3 md:p-4"><StrategyBuilder key={currentStrategy?.id || `new-${builderNonce}`} strategy={currentStrategy} templates={templates} rules={rules} sectors={sectors} onSave={saveStrategy} onPreview={previewStrategy} onBacktest={moveToBacktest} saving={saving} /></section></div>}
+    {tab === 'strategies' && <div className="grid grid-cols-1 xl:grid-cols-[250px_minmax(0,1fr)] gap-4"><aside className="border border-border rounded-md overflow-hidden h-fit"><div className="flex items-center justify-between px-3 py-2 border-b border-border"><span className="text-sm font-semibold text-text">我的策略</span><button type="button" onClick={() => { setEditingId(null); setBuilderNonce((value) => value + 1); }} className="h-7 w-7 inline-flex items-center justify-center rounded-md text-accent hover:bg-[#1F6FEB22]" title="新建策略" aria-label="新建策略"><Plus size={16} /></button></div><div className="p-2 space-y-1">{strategies.map((strategy) => <div key={strategy.id} className={`group flex items-center gap-2 p-2 rounded-md ${editingId === strategy.id ? 'bg-[#1F6FEB22]' : 'hover:bg-[#161B22]'}`}><button type="button" onClick={() => setEditingId(strategy.id)} className="min-w-0 flex-1 text-left"><div className="text-xs font-medium text-text truncate">{strategy.name}</div><div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-text-secondary"><span className={`w-1.5 h-1.5 rounded-full ${strategy.active ? 'bg-up' : 'bg-text-secondary'}`} /><span className={governanceClass(strategy)}>{governanceLabel(strategy)}</span><span>· {scanStatusLabel(strategy)}</span><span>· {strategy.entry.rules.length} 条买入规则</span></div></button>{!strategy.builtin && <button type="button" onClick={() => deleteStrategy(strategy)} className="h-6 w-6 hidden group-hover:inline-flex items-center justify-center text-text-secondary hover:text-down rounded-md" title="删除策略" aria-label="删除策略"><Trash2 size={13} /></button>}</div>)}{!strategies.length && <div className="p-4 text-center text-xs text-text-secondary">尚未保存策略。可从右侧模板开始。</div>}</div></aside><section className="border border-border rounded-md p-3 md:p-4"><StrategyBuilder key={currentStrategy?.id || `new-${builderNonce}`} strategy={currentStrategy} templates={templates} rules={rules} sectors={sectors} onSave={saveStrategy} onPreview={previewStrategy} onBacktest={moveToBacktest} onApprove={approveStrategy} onRevoke={revokeApproval} governanceBusy={governanceBusy === currentStrategy?.id} saving={saving} /></section></div>}
     {tab === 'signals' && <section className="border border-border rounded-md p-3 md:p-4"><SignalList snapshot={signals} job={scanJob} onRefresh={startScan} onAddToPaper={moveSignalToPaper} history={signalHistory} /></section>}
     {tab === 'research' && <section className="border border-border rounded-md p-3 md:p-4"><ResearchPanel /></section>}
     {tab === 'zhaban' && <section className="border border-border rounded-md p-3 md:p-4"><ZhabanPanel /></section>}

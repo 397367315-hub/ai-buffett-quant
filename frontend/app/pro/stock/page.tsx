@@ -68,6 +68,10 @@ interface SectorRecommendation {
   pe: number | null;
   score: number | null;
   confidence_pct: number | null;
+  data_coverage_pct?: number | null;
+  signal_strength_pct?: number | null;
+  model_probability_pct?: number | null;
+  confidence_type?: string;
   rank: number;
   reasons: string[];
   risk: string;
@@ -855,7 +859,7 @@ export default function StockPage() {
                                 <span className="block truncate text-xs font-medium text-text">{item.name}</span>
                                 <span className="mt-0.5 block font-mono text-[10px] text-text-secondary">{item.code}</span>
                               </button>
-                              <div className="shrink-0 text-right"><div className="font-mono text-base font-semibold text-text">{number(item.score, 1, '')}</div><div className="text-[10px] text-text-secondary">置信 {number(item.confidence_pct, 0, '%')}</div></div>
+                              <div className="shrink-0 text-right"><div className="font-mono text-base font-semibold text-text">{number(item.score, 1, '')}</div><div className="text-[10px] text-text-secondary">数据覆盖 {number(item.data_coverage_pct ?? item.confidence_pct, 0, '%')}</div></div>
                             </div>
                             <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-[10px]">
                               <div><span className="text-text-secondary">现价</span> <span className="font-mono text-text">{number(item.price)}</span> <span className={tone(item.change_pct)}>{signed(item.change_pct)}</span></div>

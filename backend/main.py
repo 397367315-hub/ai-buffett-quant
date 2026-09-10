@@ -152,3 +152,23 @@ async def data_source_health():
                 "error": type(exc).__name__,
             },
         )
+
+
+@app.get("/health/scheduler")
+async def scheduler_health():
+    """Expose scheduler liveness without making Render's basic health stricter."""
+    from services.scheduler import scheduler_status
+
+    payload = scheduler_status()
+    return JSONResponse(
+        status_code=200 if payload["status"] == "running" else 503,
+        content=payload,
+    )
+
+
+@app.get("/health/storage-retention")
+async def storage_retention_health():
+    """Expose the bounded retention policy and its latest completed audit."""
+    from services.data_retention import data_retention_service
+
+    return await data_retention_service.status()

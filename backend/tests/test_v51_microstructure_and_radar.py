@@ -11,6 +11,7 @@ from quant.v51_microstructure import (
     expectation_deviation,
     normalize_auction_snapshots,
 )
+from services.pit_market_data import auction_quality
 from services.event_radar import EventRadarService
 from services.v51_microstructure_service import V51MicrostructureService
 
@@ -37,6 +38,27 @@ def test_single_auction_snapshot_is_observable_but_not_a_forecast():
     assert result["quality"]["status"] == "LIMITED_SINGLE_SNAPSHOT"
     assert result["quality"]["model_enabled"] is False
     assert result["auction_state"] == "WAIT_FOR_CONFIRMATION"
+
+
+def test_auction_quality_blocks_zero_coverage_and_incomplete_sequence():
+    blocked = auction_quality(
+        universe_count=0,
+        observed_stocks=0,
+        timeline_stocks=0,
+        timepoints=[],
+    )
+    assert blocked["status"] == "BLOCKED"
+    assert blocked["execution_allowed"] is False
+
+    incomplete = auction_quality(
+        universe_count=100,
+        observed_stocks=100,
+        timeline_stocks=100,
+        timepoints=["09:24", "09:25"],
+    )
+    assert incomplete["status"] == "INSUFFICIENT"
+    assert incomplete["execution_allowed"] is False
+    assert "09:15" in incomplete["missing_time_points"]
 
 
 def test_expectation_windows_use_0925_as_the_actual_time_origin():
@@ -157,13 +179,22 @@ async def test_auction_dashboard_coverage_counts_each_stock_once_per_session():
             ),
         ])
         await session.commit()
-    try:
-        with patch("services.v51_microstructure_service.async_session", session_factory):
-            result = await V51MicrostructureService().auction_dashboard()
-        assert result["universe_count"] == 2
-        assert result["observed_stocks"] == 1
-        assert result["time_series_snapshots"] == 1
-        assert result["coverage_pct"] == 50.0
-        assert result["timeline_coverage_pct"] == 50.0
-    finally:
-        await engine.dispose()
+        try:
+            with (
+                patch("services.v51_microstructure_service.async_session", session_factory),
+                patch(
+                    "services.v51_microstructure_service.shanghai_now",
+                    return_value=datetime(2026, 8, 21, 12, 0),
+                ),
+            ):
+                result = await V51MicrostructureService().auction_dashboard()
+            assert result["universe_count"] == 2
+            assert result["observed_stocks"] == 1
+            assert result["time_series_snapshots"] == 1
+            assert result["coverage_pct"] == 50.0
+            assert result["timeline_coverage_pct"] == 50.0
+            assert result["quality"]["status"] == "INSUFFICIENT"
+            assert result["quality"]["execution_allowed"] is False
+            assert result["status"] == "INSUFFICIENT"
+        finally:
+            await engine.dispose()

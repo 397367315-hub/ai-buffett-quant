@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from quant.schemas import TradingSkillScanRequest, TradingSkillValidationRequest
 from services.trading_skill_registry import (
@@ -12,9 +12,14 @@ from services.trading_skill_registry import (
 )
 from services.trading_skill_service import trading_skill_service
 from services.trading_skill_validation import trading_skill_validation_service
+from services.admin_auth import require_admin_for_mutation
 
 
-router = APIRouter(prefix="/api/v1/trading-skills", tags=["V5交易技能"])
+router = APIRouter(
+    prefix="/api/v1/trading-skills",
+    tags=["V5交易技能"],
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 
 @router.get("/registry")

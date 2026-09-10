@@ -5,14 +5,23 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from roci.service import roci_service
 from roci.intraday import roci_intraday_service
+from services.admin_auth import require_admin_for_mutation
 
 
-router = APIRouter(prefix="/api/v1/roci", tags=["ROCI风险机会认知"])
-legacy_router = APIRouter(prefix="/api/roci", tags=["ROCI风险机会认知"])
+router = APIRouter(
+    prefix="/api/v1/roci",
+    tags=["ROCI风险机会认知"],
+    dependencies=[Depends(require_admin_for_mutation)],
+)
+legacy_router = APIRouter(
+    prefix="/api/roci",
+    tags=["ROCI风险机会认知"],
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 
 @router.get("/status")

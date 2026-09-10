@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from services.midday_research import midday_research_service
 from services.weekend_research import weekend_research_service
+from services.admin_auth import require_admin_for_mutation
 
 
-router = APIRouter(prefix="/api/v1/research", tags=["AI研究中心"])
+router = APIRouter(
+    prefix="/api/v1/research",
+    tags=["AI研究中心"],
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 
 class WeeklyResearchRequest(BaseModel):

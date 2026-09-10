@@ -51,6 +51,66 @@ def _period_start(period: str, today: date) -> tuple[str, date, str]:
 
 
 class PersonalAnalyticsService:
+    @staticmethod
+    def _discipline_summary(logs: list[PersonalInvestmentLog], start: date) -> dict[str, Any]:
+        relevant = [
+            row for row in logs
+            if row.created_at is not None and row.created_at.date() >= start
+        ]
+        action_counts: dict[str, int] = defaultdict(int)
+        violation_counts: dict[str, int] = defaultdict(int)
+        prechecked = 0
+        reflected = 0
+        violation_logs = 0
+        for row in relevant:
+            action_counts[str(row.action or "unknown")] += 1
+            if isinstance(row.pre_check, dict) and row.pre_check:
+                prechecked += 1
+            if str(row.reflection or "").strip():
+                reflected += 1
+            violations = row.violations if isinstance(row.violations, list) else []
+            normalized: list[str] = []
+            for item in violations:
+                if isinstance(item, dict):
+                    label = str(item.get("label") or item.get("rule") or item.get("message") or "").strip()
+                else:
+                    label = str(item or "").strip()
+                if label:
+                    normalized.append(label)
+            if normalized:
+                violation_logs += 1
+                for label in set(normalized):
+                    violation_counts[label] += 1
+
+        total = len(relevant)
+        compliance_pct = round((total - violation_logs) / total * 100, 1) if total else None
+        precheck_pct = round(prechecked / total * 100, 1) if total else None
+        reflection_pct = round(reflected / total * 100, 1) if total else None
+        top_violations = [
+            {"label": label, "count": count}
+            for label, count in sorted(violation_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ]
+        warnings: list[str] = []
+        if total >= 3 and precheck_pct is not None and precheck_pct < 80:
+            warnings.append("事前检查记录率低于80%，容易在复盘时失去当时的决策依据。")
+        if total >= 3 and reflection_pct is not None and reflection_pct < 60:
+            warnings.append("复盘完成率低于60%，建议优先补全亏损与放弃交易的反思。")
+        if violation_logs:
+            warnings.append(f"区间内有{violation_logs}次决策记录了纪律偏离，需优先处理重复最多的类型。")
+        return {
+            "decision_count": total,
+            "prechecked_count": prechecked,
+            "precheck_pct": precheck_pct,
+            "reflected_count": reflected,
+            "reflection_pct": reflection_pct,
+            "violation_decision_count": violation_logs,
+            "compliance_pct": compliance_pct,
+            "action_distribution": dict(sorted(action_counts.items())),
+            "top_violations": top_violations,
+            "warnings": warnings,
+            "method": "按个人投资日志统计；未填写不等同于执行错误，违规只采用用户已记录的violations字段。",
+        }
+
     async def account_config(self) -> dict[str, Any]:
         async with async_session() as session:
             row = await session.get(PersonalSystemConfig, "account")
@@ -314,6 +374,7 @@ class PersonalAnalyticsService:
                 select(PersonalInvestmentLog).order_by(PersonalInvestmentLog.created_at.asc())
             )).scalars().all()
         closed_trades, gaps = self._closed_trades(logs, start)
+        discipline = self._discipline_summary(logs, start)
         realized_pnl = sum(item["pnl"] for item in closed_trades)
 
         holdings = [
@@ -395,6 +456,7 @@ class PersonalAnalyticsService:
             warnings.append(f"本月已记录 {recent_buys} 笔买入，请检查是否存在频繁交易。")
         if gaps:
             warnings.append(f"有 {len(gaps)} 条交易日志字段不完整，已从已实现收益中排除。")
+        warnings.extend(discipline["warnings"])
 
         risk_metrics = await self._portfolio_series(holdings, days=max(120, (today - start).days + 30))
         return {
@@ -425,6 +487,7 @@ class PersonalAnalyticsService:
                 for key, value in sorted(monthly.items())
             ],
             "closed_trades": closed_trades[-50:],
+            "discipline": discipline,
             "warnings": warnings,
             "data_quality": {
                 "total_assets_configured": total_assets is not None,

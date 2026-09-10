@@ -27,12 +27,39 @@ jobs:
           --connect-timeout 20 --max-time 120
           "$BACKEND_URL/health"
 
+      - name: Login as admin
+        id: admin_login
+        shell: bash
+        env:
+          ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          response="$(curl --silent --show-error --fail-with-body \
+            --retry 3 --retry-delay 5 --retry-all-errors \
+            --connect-timeout 20 --max-time 120 \
+            --header 'Content-Type: application/json' \
+            --request POST \
+            --data "$(jq -n \
+              --arg username "$ADMIN_USERNAME" \
+              --arg password "$ADMIN_PASSWORD" \
+              '{username:$username,password:$password}')" \
+            "$BACKEND_URL/api/v1/auth/login")"
+
+          jq -e '.code == 0 and (.data.token | type == "string" and length > 0)' <<<"$response" >/dev/null
+          token="$(jq -r '.data.token' <<<"$response")"
+          echo "::add-mask::$token"
+          echo "admin_token=$token" >> "$GITHUB_OUTPUT"
+
       - name: Cache verified board snapshots
         shell: bash
+        env:
+          ADMIN_TOKEN: ${{ steps.admin_login.outputs.admin_token }}
         run: |
           response="$(curl --silent --show-error --fail-with-body \
             --retry 4 --retry-delay 10 --retry-all-errors \
             --connect-timeout 20 --max-time 240 \
+            --header "Authorization: Bearer $ADMIN_TOKEN" \
             --request POST "$BACKEND_URL/api/v1/data/sync")"
           jq -e '
             .code == 0 and

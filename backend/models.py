@@ -1153,6 +1153,27 @@ class CacheBackfillRun(Base):
     error = Column(Text)
 
 
+class SchedulerTaskLedger(Base):
+    """Cross-process ledger for same-day scheduler recovery and claims."""
+
+    __tablename__ = "scheduler_task_ledger"
+    __table_args__ = (
+        UniqueConstraint("run_date", "run_key", name="uq_scheduler_task_ledger_date_key"),
+        Index("idx_scheduler_task_ledger_date_status", "run_date", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_date = Column(Date, nullable=False)
+    run_key = Column(String(120), nullable=False)
+    job_id = Column(String(120), nullable=False)
+    status = Column(String(30), nullable=False)
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    reason = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
 class FQEDataSyncRun(Base):
     """Recoverable security-master and valuation-history synchronization."""
 

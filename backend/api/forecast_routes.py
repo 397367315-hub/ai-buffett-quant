@@ -3,26 +3,32 @@
 import asyncio
 import json
 
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException
 
 from services.factor_registry_v5 import causal_chain, factor_definition, factor_definitions
 from services.forecast_v5 import forecast_v5_service
 from services.ai_service import ai_service
 from services.macro_dashboard import macro_dashboard_service
 from services.market_decision_workbench import market_decision_workbench_service
+from services.admin_auth import require_admin_for_mutation
 
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 
 @router.get("/forecast/dashboard")
 async def get_forecast_dashboard(
     refresh: bool = Query(False),
+    include_skills: bool = Query(True, description="是否在主响应中同步计算交易技能"),
     exclude_star_market: bool = Query(True, description="排除科创板"),
     exclude_gem: bool = Query(True, description="排除创业板"),
 ):
     return {"code": 0, "data": await forecast_v5_service.dashboard(
         force=refresh,
+        include_skills=include_skills,
         exclude_star_market=exclude_star_market,
         exclude_gem=exclude_gem,
     )}

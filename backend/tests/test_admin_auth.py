@@ -3,7 +3,12 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from services.admin_auth import TOKEN_TTL_SECONDS, create_admin_token, require_admin, verify_admin_token
+from services.admin_auth import (
+    TOKEN_TTL_SECONDS,
+    create_admin_token,
+    require_admin,
+    verify_admin_token,
+)
 
 
 class AdminAuthTests(unittest.TestCase):
@@ -28,6 +33,14 @@ class AdminAuthTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as context:
                 require_admin(None)
             self.assertEqual(context.exception.status_code, 401)
+
+    def test_token_is_invalid_at_the_exact_expiration_boundary(self):
+        with (
+            patch("services.admin_auth.settings.admin_username", "admin"),
+            patch("services.admin_auth.settings.admin_password", "private-password"),
+        ):
+            token = create_admin_token("admin", now=1000)
+            self.assertIsNone(verify_admin_token(token, now=1000 + TOKEN_TTL_SECONDS))
 
 
 if __name__ == "__main__":

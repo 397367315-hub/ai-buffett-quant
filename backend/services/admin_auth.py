@@ -10,7 +10,7 @@ import json
 import time
 from typing import Annotated
 
-from fastapi import Header, HTTPException, status
+from fastapi import Header, HTTPException, Request, status
 
 from config import settings
 
@@ -46,15 +46,25 @@ def create_admin_token(username: str, *, now: int | None = None) -> str:
 def verify_admin_token(token: str, *, now: int | None = None) -> str | None:
     try:
         payload, supplied_signature = token.split(".", 1)
+        if not payload or not supplied_signature:
+            return None
         if not hmac.compare_digest(supplied_signature, _signature(payload)):
             return None
         claims = json.loads(_decode(payload))
+        if not isinstance(claims, dict):
+            return None
         username = str(claims.get("sub") or "")
+        issued_at = int(claims.get("iat") or 0)
         expires_at = int(claims.get("exp") or 0)
-    except (ValueError, TypeError, binascii.Error, json.JSONDecodeError):
+    except (ValueError, TypeError, OverflowError, UnicodeError, binascii.Error, json.JSONDecodeError):
         return None
     current_time = int(time.time() if now is None else now)
-    if username != settings.admin_username or expires_at < current_time:
+    if (
+        username != settings.admin_username
+        or issued_at <= 0
+        or expires_at <= issued_at
+        or expires_at <= current_time
+    ):
         return None
     return username
 
@@ -62,6 +72,10 @@ def verify_admin_token(token: str, *, now: int | None = None) -> str | None:
 def require_admin(
     authorization: Annotated[str | None, Header()] = None,
 ) -> str:
+    return _require_admin_token(authorization)
+
+
+def _require_admin_token(authorization: str | None) -> str:
     scheme, _, token = str(authorization or "").partition(" ")
     username = verify_admin_token(token) if scheme.lower() == "bearer" and token else None
     if username is None:
@@ -71,3 +85,20 @@ def require_admin(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return username
+
+
+async def require_admin_for_mutation(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+) -> str:
+    """Protect every mutating route in a mixed public/read router.
+
+    Read requests retain their existing access semantics. The login endpoint
+    is the only mutating route that is intentionally public; all other
+    mutations are validated through the same token checker as ``require_admin``.
+    """
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return ""
+    if request.url.path.rstrip("/") in {"/api/v1/auth/login", "/api/auth/login"}:
+        return ""
+    return _require_admin_token(authorization)

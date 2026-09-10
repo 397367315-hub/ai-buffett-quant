@@ -46,7 +46,25 @@ from services.market_decision_workbench import market_decision_workbench_service
 V5_VERSION = "a-share-forecast-v5.0.0"
 MODEL_VERSION = "markov-rule-ensemble-v1.0"
 CALIBRATION_VERSION = "calibration-not-yet-qualified-v1"
+CALIBRATION_QUALIFIED = False
 CACHE_KEY = "forecast_v5_dashboard"
+
+HIGH_CONFIDENCE_COMPLETENESS_MIN = 85.0
+HIGH_CONFIDENCE_FRESHNESS_MIN = 70.0
+
+BEHAVIOR_FACTOR_IDS = {
+    "behavior_imbalance",
+    "fomo_behavior",
+    "panic_behavior",
+    "false_breakout_risk",
+}
+
+BEHAVIOR_HORIZON_MULTIPLIER = {
+    "short_1_3d": 1.0,
+    "week_1w": 0.55,
+    "month_1m": 0.20,
+    "quarter_1q": 0.05,
+}
 
 HORIZONS: tuple[dict[str, Any], ...] = (
     {"id": "short_1_3d", "label": "未来1-3个交易日", "sessions": 3, "weights": {"leading": 0.30, "propagation": 0.38, "confirmation": 0.32}},
@@ -511,41 +529,231 @@ class ForecastV5Service:
         return result
 
     @staticmethod
-    def _data_health(factors: list[dict[str, Any]], macro: dict[str, Any], now: datetime) -> dict[str, Any]:
+    def _data_health(
+        factors: list[dict[str, Any]],
+        macro: dict[str, Any],
+        now: datetime,
+        *,
+        truth: dict[str, Any] | None = None,
+        trading_permission: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         total_weight = sum(float(item.get("lead_score") or 0.5) for item in factors)
         observed_weight = sum(float(item.get("lead_score") or 0.5) for item in factors if item.get("observed"))
         fresh_weight = sum(float(item.get("lead_score") or 0.5) for item in factors if item.get("observed") and (item.get("freshness") or 0) >= 0.25)
         completeness = round(observed_weight / total_weight * 100, 1) if total_weight else 0.0
         fresh_pct = round(fresh_weight / total_weight * 100, 1) if total_weight else 0.0
-        if completeness >= 95:
-            level = "正常"
-        elif completeness >= 85:
-            level = "可预测但提示"
-        elif completeness >= 70:
-            level = "降低置信度"
+        truth = truth or {}
+        trading_permission = trading_permission or {}
+        truth_status = str(truth.get("status") or "UNKNOWN").upper()
+        truth_confidence = _num(truth.get("confidence_pct"))
+        truth_high_confidence = bool(truth.get("high_confidence_allowed"))
+        data_high_confidence = (
+            completeness >= HIGH_CONFIDENCE_COMPLETENESS_MIN
+            and fresh_pct >= HIGH_CONFIDENCE_FRESHNESS_MIN
+            and truth_status == "PASS"
+            and truth_high_confidence
+        )
+        permission_code = str(trading_permission.get("code") or "UNKNOWN").upper()
+        execution_allowed = data_high_confidence and permission_code not in {"BLOCK", "NO_TRADE"}
+        if truth_status == "FAIL":
+            level = "真值阻断"
+        elif truth_status == "UNKNOWN":
+            level = "真值状态不可用，仅研究"
+        elif completeness < 70 or fresh_pct < 40:
+            level = "数据不足，禁止执行"
+        elif truth_status == "LIMITED" or completeness < HIGH_CONFIDENCE_COMPLETENESS_MIN or fresh_pct < HIGH_CONFIDENCE_FRESHNESS_MIN:
+            level = "仅研究，降低置信"
+        elif not truth_high_confidence:
+            level = "真值置信不足，仅研究"
+        elif permission_code in {"BLOCK", "NO_TRADE"}:
+            level = "交易许可阻断"
+        elif not CALIBRATION_QUALIFIED:
+            level = "数据通过，模型待校准"
         else:
-            level = "禁止高置信度预测"
+            level = "高置信度通道可用"
         missing = [{
             "factor_id": item["id"], "name": item["name"], "source": item["source"], "source_level": item["source_level"],
             "action": item.get("missing_reason") or "等待下一次有时间戳的提供方数据",
         } for item in factors if not item.get("observed")]
         stale = [{"factor_id": item["id"], "name": item["name"], "freshness": item.get("freshness"), "updated_at": item.get("updated_at")} for item in factors if item.get("observed") and (item.get("freshness") or 0) < 0.25]
         sources = sorted({str(item.get("source")) for item in factors if item.get("observed") and item.get("source")})
+        ceiling_inputs = [completeness, fresh_pct]
+        if truth_confidence is not None:
+            ceiling_inputs.append(truth_confidence)
+        confidence_ceiling = min(ceiling_inputs) if ceiling_inputs else 0.0
+        block_reasons = []
+        if truth_status == "FAIL":
+            block_reasons.append("V4真值层未通过")
+        elif truth_status == "LIMITED":
+            block_reasons.append("V4真值层存在跨日、冲突或PIT降级")
+        elif truth_status == "UNKNOWN":
+            block_reasons.append("V4真值层状态不可用")
+        if completeness < HIGH_CONFIDENCE_COMPLETENESS_MIN:
+            block_reasons.append(f"数据完整度{completeness:.1f}%低于{HIGH_CONFIDENCE_COMPLETENESS_MIN:.0f}%")
+        if fresh_pct < HIGH_CONFIDENCE_FRESHNESS_MIN:
+            block_reasons.append(f"新鲜覆盖{fresh_pct:.1f}%低于{HIGH_CONFIDENCE_FRESHNESS_MIN:.0f}%")
+        if permission_code in {"BLOCK", "NO_TRADE"}:
+            block_reasons.extend(str(item) for item in trading_permission.get("reasons") or [])
+        if not CALIBRATION_QUALIFIED:
+            block_reasons.append("多周期概率模型尚未完成样本外校准")
         return {
             "completeness_pct": completeness,
             "fresh_coverage_pct": fresh_pct,
             "level": level,
-            "high_confidence_allowed": completeness >= 85,
-            "confidence_ceiling_pct": round(min(88.0, completeness), 1),
+            "high_confidence_allowed": bool(execution_allowed and CALIBRATION_QUALIFIED),
+            "data_high_confidence_allowed": data_high_confidence,
+            "execution_allowed": execution_allowed,
+            "confidence_ceiling_pct": round(min(88.0, confidence_ceiling), 1),
+            "prediction_mode": "calibrated_probability" if CALIBRATION_QUALIFIED else "research_tendency",
+            "calibration_qualified": CALIBRATION_QUALIFIED,
+            "calibration_version": CALIBRATION_VERSION,
+            "truth_status": truth_status,
+            "truth_status_label": truth.get("status_label") or "真值状态不可用",
+            "truth_confidence_pct": truth_confidence,
+            "trading_permission_code": permission_code,
+            "trading_permission_label": trading_permission.get("label") or "交易许可不可用",
+            "block_reasons": list(dict.fromkeys(block_reasons)),
             "observed_factor_count": sum(bool(item.get("observed")) for item in factors),
             "total_factor_count": len(factors),
             "missing_factors": missing,
             "stale_factors": stale,
             "sources": sources,
             "macro_source_status": macro.get("source_status") or {},
-            "rule": "95%以上正常；85-95%提示；70-85%降低置信度；低于70%禁止高置信度预测。缺失字段不以0或中性值替代。",
+            "rule": "高置信度必须同时满足：真值PASS、完整度不低于85%、新鲜覆盖不低于70%、交易许可未阻断且模型已完成样本外校准。缺失字段不以0或中性值替代。",
             "data_cutoff_time": max((item.get("updated_at") or "" for item in factors if item.get("updated_at")), default=None),
             "checked_at": now.isoformat(),
+        }
+
+    @staticmethod
+    def _workbench_summary(workbench: dict[str, Any]) -> dict[str, Any]:
+        """Embed the already-computed market decision instead of refetching it."""
+        return {
+            "available": bool(workbench.get("available")),
+            "meta": deepcopy(workbench.get("meta") or {}),
+            "headline_metrics": deepcopy(workbench.get("headline_metrics") or {}),
+            "main_lines": deepcopy((workbench.get("main_lines") or [])[:8]),
+            "market_state": deepcopy(workbench.get("market_state") or {}),
+            "strategy_selector": deepcopy(workbench.get("strategy_selector") or {}),
+            "decision_2026": deepcopy(workbench.get("decision_2026") or {}),
+            "execution_queue": deepcopy(workbench.get("execution_queue") or {}),
+            "audit": deepcopy(workbench.get("audit") or {}),
+            "quick_links": deepcopy(workbench.get("quick_links") or []),
+        }
+
+    @staticmethod
+    def _today_action_center(
+        workbench: dict[str, Any],
+        health: dict[str, Any],
+        phase: str,
+        target: date,
+        now: datetime,
+    ) -> dict[str, Any]:
+        queue = workbench.get("execution_queue") or {}
+        queue_by_id = {str(item.get("id")): item for item in queue.get("phases") or []}
+        permission = (workbench.get("decision_2026") or {}).get("trading_permission") or {}
+        current_stage = (
+            "pre_market" if phase == "pre_market"
+            else "auction" if phase == "auction_0925"
+            else "midday" if phase in {"morning_1040", "midday_1130", "midday"}
+            else "tail" if phase in {"afternoon_1330", "close_1500"}
+            else "post_close"
+        )
+        stage_order = {"pre_market": 0, "auction": 1, "midday": 2, "tail": 3, "post_close": 4}
+        current_order = stage_order[current_stage]
+
+        def window_status(stage_id: str) -> str:
+            order = stage_order[stage_id]
+            if order == current_order:
+                return "CURRENT"
+            return "PASSED" if order < current_order else "PENDING"
+
+        tail = queue_by_id.get("tail") or {}
+        auction = queue_by_id.get("auction") or {}
+        stages = [
+            {
+                "id": "pre_market", "label": "盘前许可核验", "time": "开盘前",
+                "window_status": window_status("pre_market"),
+                "result": health.get("truth_status_label") or "真值状态不可用",
+                "href": "/market/v4",
+            },
+            {
+                "id": "auction", "label": "09:25竞价确认", "time": "09:15-09:25",
+                "window_status": window_status("auction"),
+                "result": auction.get("display_status") or "承接前一交易日14:55候选，等待真实竞价序列",
+                "candidate_count": auction.get("candidate_count"),
+                "href": "/pro/auction",
+            },
+            {
+                "id": "midday", "label": "午间战术研究", "time": "11:42",
+                "window_status": window_status("midday"),
+                "result": "检查上午强弱、主要矛盾与板块内部结构",
+                "href": "/research/midday",
+            },
+            {
+                "id": "tail", "label": "14:55执行筛选", "time": "14:55",
+                "window_status": window_status("tail"),
+                "result": tail.get("display_status") or "等待窗口",
+                "candidate_count": tail.get("candidate_count"),
+                "href": "/quant",
+            },
+            {
+                "id": "post_close", "label": "盘后验证复盘", "time": "收盘后",
+                "window_status": window_status("post_close"),
+                "result": "核对判断、模拟执行、盈亏与放弃原因",
+                "href": "/pro/research",
+            },
+        ]
+        task_by_stage = {
+            "pre_market": "先核验真值、新鲜度、隔夜事件和持仓风险，不急于找股票。",
+            "auction": "竞价序列或覆盖不足时只观察，不确认隔夜策略。",
+            "midday": "完成上午市场尸检，判断主要矛盾是否发生变化。",
+            "tail": "只跟踪满足规则的候选；条件不完整就放弃，不临时放宽。",
+            "post_close": "复盘系统判断与实际结果，记录执行偏差和下一次改进。",
+        }
+        permission_code = str(permission.get("code") or "UNKNOWN").upper()
+        if health.get("truth_status") == "FAIL":
+            unified_code, unified_label = "BLOCK", "真值阻断，只允许查看"
+            # A failed truth layer is the single source of the execution
+            # decision. Do not leak a second, possibly contradictory market
+            # permission reason into the action center.
+            reasons = ["V4真值层未通过"]
+        elif not health.get("execution_allowed"):
+            unified_code, unified_label = "BLOCK", "数据资格不足，禁止执行"
+            reasons = list(dict.fromkeys([
+                *(health.get("block_reasons") or []),
+                *(permission.get("reasons") or []),
+            ]))
+        elif permission_code in {"BLOCK", "NO_TRADE"}:
+            unified_code, unified_label = "BLOCK", permission.get("label") or "市场许可阻断，禁止执行"
+            reasons = list(dict.fromkeys([
+                *(health.get("block_reasons") or []),
+                *(permission.get("reasons") or []),
+            ]))
+        elif not health.get("calibration_qualified"):
+            unified_code, unified_label = "RESEARCH_ONLY", "可研究，预测概率尚未校准"
+            reasons = list(dict.fromkeys([
+                *(health.get("block_reasons") or []),
+                *(permission.get("reasons") or []),
+            ]))
+        else:
+            unified_code, unified_label = permission_code or "ALLOW", permission.get("label") or "许可通过"
+            reasons = list(dict.fromkeys([
+                *(health.get("block_reasons") or []),
+                *(permission.get("reasons") or []),
+            ]))
+        return {
+            "trade_date": target.isoformat(),
+            "generated_at": now.isoformat(),
+            "current_stage": current_stage,
+            "current_task": task_by_stage[current_stage],
+            "permission": {
+                "code": unified_code,
+                "label": unified_label,
+                "max_total_position_pct": 0 if unified_code in {"BLOCK", "RESEARCH_ONLY"} else permission.get("max_total_position_pct"),
+                "reasons": reasons[:5],
+            },
+            "stages": stages,
+            "rule": "按当日时序执行；09:25竞价承接前一交易日14:55候选，任何候选都不能绕过数据质量闸门。",
         }
 
     @staticmethod
@@ -645,13 +853,15 @@ class ForecastV5Service:
             reliability = float(item.get("reliability") or 0.0)
             lead = float(item.get("lead_score") or 0.5)
             contribution_weight = layer_weight * reliability * (0.6 + lead * 0.4)
+            if item.get("id") in BEHAVIOR_FACTOR_IDS:
+                contribution_weight *= BEHAVIOR_HORIZON_MULTIPLIER.get(str(horizon.get("id")), 1.0)
             numerator += signal * contribution_weight
             denominator += contribution_weight
             trace.append({"factor_id": item["id"], "weight": round(contribution_weight, 4), "signal": round(signal, 4)})
         return (numerator / denominator if denominator else None), {"weights": weights, "observed_factor_count": len(trace), "factor_trace": sorted(trace, key=lambda item: abs(item["signal"] * item["weight"]), reverse=True)[:8]}
 
     @staticmethod
-    def _scenario(horizon: dict[str, Any], name: str, probability: float, trigger: list[str], factors: list[str], beneficiaries: list[str], pressured: list[str], verify: list[str], invalidation: list[str]) -> dict[str, Any]:
+    def _scenario(horizon: dict[str, Any], name: str, probability: float | None, trigger: list[str], factors: list[str], beneficiaries: list[str], pressured: list[str], verify: list[str], invalidation: list[str]) -> dict[str, Any]:
         return {
             "id": name,
             "label": {"main": "主情景", "upside": "向上情景", "downside": "向下情景"}.get(name, name),
@@ -696,11 +906,20 @@ class ForecastV5Service:
         pressured = weak_sectors or (["高拥挤、高Beta方向"] if down >= up else ["尚未形成明确受损板块"])
         common_verify = ["下一观察窗口复核市场宽度与成交额是否同向", "观察核心板块资金是否连续而非单日异动"]
         common_invalidation = ["市场宽度、成交额和核心板块资金同步反向", "高位负反馈或政策/海外事件改变现有传导链"]
+        qualified_probability = bool(CALIBRATION_QUALIFIED and health.get("high_confidence_allowed"))
+        scenario_probabilities = (max(up, neutral, down), up, down) if qualified_probability else (None, None, None)
         scenarios = [
-            self._scenario(horizon, "main", max(up, neutral, down), ["当前状态转移先验与主要因子方向保持"], top_factors[:4], beneficiaries, pressured, common_verify, common_invalidation),
-            self._scenario(horizon, "upside", up, ["成交额相对均值改善且宽度扩散", "核心板块资金连续为正"], top_factors[:4], strong_sectors or ["政策支持与产业验证方向"], weak_sectors or ["缺乏承接的后排题材"], ["连续两个观察窗口宽度改善", "板块龙头、中军、后排同步"], ["成交放大但宽度不扩散", "龙头冲高回落并出现负反馈"]),
-            self._scenario(horizon, "downside", down, ["炸板率/拥挤升高或海外风险因子继续恶化"], [item["factor_id"] for item in trace["factor_trace"][:4]], ["低估值、防御、现金流稳定方向"], pressured, ["宽度持续恶化", "资金迁徙持续两次以上观察"], ["风险偏好快速修复且防御链被反向验证"]),
+            self._scenario(horizon, "main", scenario_probabilities[0], ["当前状态转移先验与主要因子方向保持"], top_factors[:4], beneficiaries, pressured, common_verify, common_invalidation),
+            self._scenario(horizon, "upside", scenario_probabilities[1], ["成交额相对均值改善且宽度扩散", "核心板块资金连续为正"], top_factors[:4], strong_sectors or ["政策支持与产业验证方向"], weak_sectors or ["缺乏承接的后排题材"], ["连续两个观察窗口宽度改善", "板块龙头、中军、后排同步"], ["成交放大但宽度不扩散", "龙头冲高回落并出现负反馈"]),
+            self._scenario(horizon, "downside", scenario_probabilities[2], ["炸板率/拥挤升高或海外风险因子继续恶化"], [item["factor_id"] for item in trace["factor_trace"][:4]], ["低估值、防御、现金流稳定方向"], pressured, ["宽度持续恶化", "资金迁徙持续两次以上观察"], ["风险偏好快速修复且防御链被反向验证"]),
         ]
+        ranked_paths = sorted(
+            (("upside", up), ("main", neutral), ("downside", down)),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        tendency_margin = (ranked_paths[0][1] - ranked_paths[1][1]) * 100
+        tendency_strength = "方向较清晰" if tendency_margin >= 15 else "方向初步形成" if tendency_margin >= 7 else "方向分歧"
         confidence = min(float(health.get("confidence_ceiling_pct") or 0), 88.0)
         if health.get("completeness_pct", 0) < 70:
             confidence = min(confidence, 49.0)
@@ -710,12 +929,18 @@ class ForecastV5Service:
             "id": horizon["id"], "label": horizon["label"], "sessions": horizon["sessions"],
             "direction_score": _pct(score, 4), "state": main_label,
             "main_scenario": scenarios[0], "scenarios": scenarios,
-            "probabilities": {key: _pct(value, 1) for key, value in probabilities.items()},
+            "probabilities": {key: (_pct(value, 1) if qualified_probability else None) for key, value in probabilities.items()},
+            "probability_qualified": qualified_probability,
+            "forecast_mode": "校准概率" if qualified_probability else "研究倾向",
+            "tendency_strength": tendency_strength,
+            "dominant_path": ranked_paths[0][0],
             "trigger_conditions": scenarios[0]["trigger_conditions"], "key_factors": top_factors,
             "benefited_sectors": beneficiaries, "pressured_sectors": pressured,
             "verification_points": common_verify, "invalidation_points": common_invalidation,
-            "model": {"model_version": MODEL_VERSION, "calibration_version": CALIBRATION_VERSION, "transition_prior": round(prior, 4), "signal_score": _pct(score, 4), "trace": trace, "probability_source": "Markov状态先验 + 分层因子Ensemble；非LLM生成"},
-            "confidence_pct": _pct(confidence, 1),
+            "model": {"model_version": MODEL_VERSION, "calibration_version": CALIBRATION_VERSION, "calibration_qualified": qualified_probability, "transition_prior": round(prior, 4), "signal_score": _pct(score, 4), "trace": trace, "probability_source": "Markov状态先验 + 分层因子Ensemble；未完成样本外校准前只输出研究倾向，不输出成功概率"},
+            "confidence_pct": _pct(confidence, 1) if qualified_probability else None,
+            "data_coverage_pct": health.get("completeness_pct"),
+            "fresh_coverage_pct": health.get("fresh_coverage_pct"),
         }
 
     @staticmethod
@@ -904,7 +1129,16 @@ class ForecastV5Service:
             for factor in factors:
                 factor["direction_score"] = _clamp(((_num(factor.get("value")) or 50) - 50) / 50) if factor["id"] in {"market_breadth", "sector_breadth", "market_state_score", "structure_health"} and factor.get("value") is not None else factor.get("direction_score")
                 factor["signal"] = factor.get("direction_score")
-            health = self._data_health(factors, macro, now)
+            v4 = workbench.get("market_way_v4") or {}
+            truth = v4.get("truth") or {}
+            trading_permission = (workbench.get("decision_2026") or {}).get("trading_permission") or {}
+            health = self._data_health(
+                factors,
+                macro,
+                now,
+                truth=truth,
+                trading_permission=trading_permission,
+            )
             resonance = self._resonance(factors)
             state_code = str((workbench.get("market_state") or {}).get("state_code") or "S0")
             forecasts = [self._forecast_for_horizon(item, state_code, factors, resonance, sectors, health) for item in HORIZONS]
@@ -916,6 +1150,8 @@ class ForecastV5Service:
                 "generated_at": now.isoformat(), "forecast_date": target.isoformat(), "phase": phase,
                 "data_cutoff_time": health.get("data_cutoff_time") or (workbench_updated.isoformat() if workbench_updated else now.isoformat()),
                 "cache_used": False, "data_health": health,
+                "workbench_summary": self._workbench_summary(workbench),
+                "today_action_center": self._today_action_center(workbench, health, phase, target, now),
                 "risk_preference": {"state": resonance["risk_preference"], "label": resonance["risk_preference_label"], "evidence": resonance.get("active_chain_ids") or []},
                 "behavior": behavior,
                 "timeline": forecasts,
@@ -926,7 +1162,15 @@ class ForecastV5Service:
                 "alpha_seeds": seeds,
                 "historical_analogs": analogs,
                 "turning_points": self._turning_points(factors, resonance),
-                "audit": {"no_future_data": True, "probability_source": "Markov状态先验 + 分层因子Ensemble + 完整度置信上限", "llm_role": "只负责解释、事件抽取和反证生成，不直接产生概率", "sources": health.get("sources") or [], "missing_policy": health.get("rule")},
+                "audit": {
+                    "no_future_data": True,
+                    "probability_source": "Markov状态先验 + 分层因子Ensemble；样本外校准合格前仅输出研究倾向",
+                    "llm_role": "只负责解释、事件抽取和反证生成，不直接产生概率",
+                    "sources": health.get("sources") or [],
+                    "missing_policy": health.get("rule"),
+                    "truth_status": health.get("truth_status"),
+                    "calibration_qualified": CALIBRATION_QUALIFIED,
+                },
             }
             for factor in payload["factors"]["all"]:
                 factor.pop("signal", None)
@@ -960,7 +1204,24 @@ class ForecastV5Service:
     ) -> dict[str, Any]:
         data = await self.build(force=force, workbench_override=workbench_override)
         if not include_skills:
-            return data
+            # The forecast payload can come from a prior dashboard call or a
+            # cache supplied by a caller. Replace any stale/heavy skill data
+            # with an explicit empty contract so this mode is both cheap and
+            # unambiguous to clients.
+            return {
+                **data,
+                "trading_skills": {
+                    "included": False,
+                    "action": "NOT_REQUESTED",
+                    "active_skills": [],
+                    "candidates": [],
+                    "scanned_count": 0,
+                    "data_cutoff_time": None,
+                    "cache_used": False,
+                    "filters": {},
+                    "reflexivity": {},
+                },
+            }
         # Keep the skill layer downstream of the forecast layer. The runtime
         # service calls dashboard(include_skills=False), preventing a cycle
         # while allowing the V5 cockpit to show the current funnel state.
@@ -972,6 +1233,7 @@ class ForecastV5Service:
                 exclude_gem=exclude_gem,
             )
             return {**data, "trading_skills": {
+                "included": True,
                 "action": skills.get("action"),
                 "market_permission": skills.get("market_permission"),
                 "active_skills": skills.get("active_skills") or [],
@@ -983,7 +1245,7 @@ class ForecastV5Service:
                 "reflexivity": skills.get("reflexivity") or {},
             }}
         except Exception as exc:
-            return {**data, "trading_skills": {"action": "UNAVAILABLE", "error": type(exc).__name__, "active_skills": [], "candidates": []}}
+            return {**data, "trading_skills": {"included": True, "action": "UNAVAILABLE", "error": type(exc).__name__, "active_skills": [], "candidates": []}}
 
     async def factors(self, *, kind: str = "market", factor_id: str | None = None, force: bool = False) -> dict[str, Any]:
         data = await self.build(force=force)
@@ -1026,7 +1288,19 @@ class ForecastV5Service:
 
     async def health(self, *, force: bool = False) -> dict[str, Any]:
         data = await self.build(force=force)
-        return {"version": V5_VERSION, "data_health": data.get("data_health"), "forecast": {"forecast_date": data.get("forecast_date"), "phase": data.get("phase"), "generated_at": data.get("generated_at"), "model_version": data.get("model_version")}, "sources": (data.get("audit") or {}).get("sources") or []}
+        return {
+            "version": V5_VERSION,
+            "data_health": data.get("data_health"),
+            "forecast": {
+                "forecast_date": data.get("forecast_date"),
+                "phase": data.get("phase"),
+                "generated_at": data.get("generated_at"),
+                "model_version": data.get("model_version"),
+                "calibration_version": data.get("calibration_version"),
+                "calibration_qualified": CALIBRATION_QUALIFIED,
+            },
+            "sources": (data.get("audit") or {}).get("sources") or [],
+        }
 
     async def conflicts(self, limit: int = 100) -> dict[str, Any]:
         try:

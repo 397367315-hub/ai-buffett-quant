@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from quant.backtest import quant_backtest_service
 from quant.persistence import (
     StrategyPersistenceError,
+    approve_strategy_persisted,
     create_strategy_persisted,
     delete_strategy_persisted,
     get_strategy_persisted,
     list_strategies_persisted,
+    revoke_strategy_approval_persisted,
     update_strategy_persisted,
 )
 from quant.portfolio import paper_portfolio
@@ -30,7 +32,9 @@ from quant.schemas import (
     ResearchDslValidateRequest,
     ResearchRunRequest,
     ScanRequest,
+    StrategyApprovalRequest,
     StrategyCreate,
+    StrategyRevokeRequest,
     StrategyUpdate,
     ZhabanBacktestRequest,
     ZhabanScanRequest,
@@ -47,9 +51,14 @@ from services.fqe_reference_data import fqe_reference_data
 from services.pit_market_data import pit_market_data_service
 from services.quant_research_workspace import quant_research_workspace
 from services.zhaban_strategy import zhaban_strategy_service
+from services.admin_auth import require_admin_for_mutation
 
 
-router = APIRouter(prefix="/api/v1/quant", tags=["量化策略"])
+router = APIRouter(
+    prefix="/api/v1/quant",
+    tags=["量化策略"],
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 
 def _unprocessable(exc: Exception) -> HTTPException:
@@ -222,6 +231,30 @@ async def update_strategy_endpoint(strategy_id: str, payload: StrategyUpdate):
     if strategy is None:
         raise HTTPException(status_code=404, detail="策略不存在")
     return {"code": 0, "data": strategy}
+
+
+@router.post("/strategy/{strategy_id}/approve")
+async def approve_strategy_endpoint(strategy_id: str, payload: StrategyApprovalRequest):
+    try:
+        strategy = await approve_strategy_persisted(strategy_id, payload.note)
+    except ValueError as exc:
+        raise _unprocessable(exc) from exc
+    except StrategyPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    return {"code": 0, "data": strategy, "message": "策略已批准进入定时扫描治理"}
+
+
+@router.post("/strategy/{strategy_id}/revoke")
+async def revoke_strategy_endpoint(strategy_id: str, payload: StrategyRevokeRequest | None = None):
+    try:
+        strategy = await revoke_strategy_approval_persisted(strategy_id, payload.note if payload else None)
+    except StrategyPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if strategy is None:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    return {"code": 0, "data": strategy, "message": "策略批准已撤销，定时扫描已停用"}
 
 
 @router.delete("/strategy/{strategy_id}")

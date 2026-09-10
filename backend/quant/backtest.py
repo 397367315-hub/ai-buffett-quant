@@ -18,6 +18,7 @@ from quant.engine import get_strategy, match_stock
 from quant.indicators import enrich_with_indicators, normalize_snapshot_stock, number
 from quant.jobs import create_job, get_job, spawn, update_job
 from quant.market_cache import load_quant_market_snapshot, save_quant_market_snapshot
+from quant.persistence import strategy_fingerprint
 from quant.rules import TECHNICAL_RULE_TYPES, evaluate_rules, static_group_can_match
 from quant.storage import quant_store
 from services.data_collector import collector, shanghai_now
@@ -116,6 +117,7 @@ class StrategyBacktestService:
                 result["job_id"] = job_id
                 result["strategy_id"] = strategy["id"]
                 result["strategy_name"] = strategy["name"]
+                result["strategy_fingerprint"] = strategy_fingerprint(strategy)
                 result["completed_at"] = shanghai_now().isoformat()
                 quant_store.write_backtest_result(job_id, result)
                 update_job(
@@ -571,6 +573,7 @@ class StrategyBacktestService:
         return {
             **result,
             "available": True, "period": {"from": start.isoformat(), "to": end.isoformat()},
+            "strategy_fingerprint": strategy_fingerprint(strategy),
             "candidate_count": len(candidates), "stock_count": len(grouped),
             "execution_rule": "T日收盘计算规则，T+1开盘成交；买入和卖出均含0.2%滑点、0.025%佣金，卖出含0.1%印花税。",
             "cost_model": {"commission_rate": COMMISSION_RATE, "stamp_tax_rate_on_sell": STAMP_TAX_RATE, "slippage_rate_each_side": SLIPPAGE_RATE},

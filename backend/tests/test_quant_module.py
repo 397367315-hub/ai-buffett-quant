@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 from quant.backtest import StrategyBacktestService, _history_is_sufficient
 from quant.engine import create_strategy, match_stock, update_strategy
+from quant.persistence import strategy_fingerprint
 from quant.portfolio import paper_portfolio
 from quant.rules import evaluate_rules, evaluate_rules_detailed
 from quant.schemas import PaperBuyRequest, PaperSellRequest, StrategyCreate
@@ -155,9 +156,21 @@ class QuantSignalSchedulingTests(unittest.IsolatedAsyncioTestCase):
                 "id": "daily", "name": "定时策略", "active": True, "scan_schedule": "daily",
                 "filter": {"logic": "AND", "rules": []},
                 "entry": {"logic": "AND", "rules": [{"type": "change_pct", "operator": "gte", "value": 1}]},
+                "governance": {"approved": True},
+            },
+            {
+                "id": "forged", "name": "伪造启用策略", "active": True, "scan_schedule": "daily",
+                "filter": {"logic": "AND", "rules": []},
+                "entry": {"logic": "AND", "rules": [{"type": "change_pct", "operator": "gte", "value": 1}]},
+                "governance": {"approved": False},
             },
             {
                 "id": "manual", "name": "手动策略", "active": True, "scan_schedule": "manual",
+                "filter": {"logic": "AND", "rules": []},
+                "entry": {"logic": "AND", "rules": [{"type": "change_pct", "operator": "gte", "value": 1}]},
+            },
+            {
+                "id": "legacy", "name": "旧版兼容策略", "active": True, "scan_schedule": "daily",
                 "filter": {"logic": "AND", "rules": []},
                 "entry": {"logic": "AND", "rules": [{"type": "change_pct", "operator": "gte", "value": 1}]},
             },
@@ -180,8 +193,35 @@ class QuantSignalSchedulingTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await service.scan(scheduled_only=True, persist=False)
 
-        self.assertEqual(result["strategy_count"], 1)
-        self.assertEqual(result["signals"][0]["strategy_ids"], ["daily"])
+        self.assertEqual(result["strategy_count"], 2)
+        self.assertEqual(result["signals"][0]["strategy_ids"], ["daily", "legacy"])
+
+
+class QuantBacktestGovernanceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_persisted_backtest_contains_strategy_fingerprint(self):
+        strategy = {
+            "id": "strat_fingerprint",
+            "name": "指纹测试策略",
+            "filter": {"logic": "AND", "rules": []},
+            "entry": {"logic": "AND", "rules": [{"type": "change_pct", "operator": "gte", "value": 1}]},
+            "exit": {},
+            "position": {},
+            "scan_schedule": "daily",
+        }
+        result = {"available": True, "data_quality": {"audit_eligible": True}}
+        with tempfile.TemporaryDirectory() as directory:
+            store = QuantJsonStore(Path(directory))
+            service = StrategyBacktestService()
+            with (
+                patch("quant.backtest.quant_store", store),
+                patch("quant.backtest.update_job"),
+                patch.object(service, "run", new=AsyncMock(return_value=result)),
+            ):
+                await service._run_job("bt_fingerprint", strategy, {})
+
+            persisted = store.read_backtest_result("bt_fingerprint")
+
+        self.assertEqual(persisted["strategy_fingerprint"], strategy_fingerprint(strategy))
 
 
 if __name__ == "__main__":

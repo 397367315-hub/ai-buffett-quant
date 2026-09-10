@@ -1207,6 +1207,7 @@ def _topic_candidate(topic: dict, market_state: dict, decision_date: str) -> dic
         "连板高度": "连板高度未形成源生事件证据，不作通过条件",
     }
     why_not.extend(gap_labels.get(item, f"{item}证据未形成") for item in data_gaps[:2])
+    data_coverage_pct = round(observed_weight / 0.90 * 100, 1)
     return {
         "code": code,
         "name": str(stock.get("name") or code),
@@ -1224,7 +1225,11 @@ def _topic_candidate(topic: dict, market_state: dict, decision_date: str) -> dic
         "pullback_5d_pct": _round(_number(stock.get("pullback_5d_pct")), 2),
         "history_sessions": _integer(stock.get("history_sessions")),
         "score": _round(score, 1),
-        "confidence_pct": round(observed_weight / 0.90 * 100, 1),
+        "confidence_pct": data_coverage_pct,
+        "confidence_type": "data_coverage_compatibility_alias",
+        "data_coverage_pct": data_coverage_pct,
+        "signal_strength_pct": _round(score, 1),
+        "model_probability_pct": None,
         "score_breakdown": components,
         "score_method": CANDIDATE_SCORE_VERSION,
         "strategy": "主线结构观察",
@@ -1751,6 +1756,7 @@ def _build_daily_short_term_recommendations(
             source_parts.append("financial_pit_cache")
         if history:
             source_parts.append("stock_daily_bars")
+        data_coverage_pct = round(observed_weight * 100, 1)
         rows.append({
             "code": code,
             "name": name,
@@ -1763,7 +1769,11 @@ def _build_daily_short_term_recommendations(
             "main_net_inflow": round(capital_value, 0) if capital_value is not None else None,
             "market_cap": round(_number(stock.get("market_cap")), 0) if _number(stock.get("market_cap")) is not None else None,
             "score": score,
-            "confidence_pct": round(observed_weight * 100, 1),
+            "confidence_pct": data_coverage_pct,
+            "confidence_type": "data_coverage_compatibility_alias",
+            "data_coverage_pct": data_coverage_pct,
+            "signal_strength_pct": score,
+            "model_probability_pct": None,
             "score_breakdown": {
                 "market_sentiment": round(sentiment_score, 1) if sentiment_score is not None else None,
                 "market_fit": round(market_fit, 1) if market_fit is not None else None,

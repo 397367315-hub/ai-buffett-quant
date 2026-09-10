@@ -46,6 +46,57 @@ def _exchange(code: str) -> str:
     return "SZ"
 
 
+# These are the same provider capture points registered by the scheduler.  A
+# single 09:24/09:25 quote is useful evidence, but it is not a complete
+# auction sequence and must never be presented as an executable confirmation.
+AUCTION_REQUIRED_TIMEPOINTS = tuple(f"09:{minute:02d}" for minute in range(15, 26))
+
+
+def auction_quality(
+    *,
+    universe_count: int,
+    observed_stocks: int,
+    timeline_stocks: int,
+    timepoints: set[str] | list[str] | tuple[str, ...],
+) -> dict[str, Any]:
+    """Return the shared, conservative quality contract for auction data."""
+    universe = max(0, int(universe_count or 0))
+    observed = max(0, int(observed_stocks or 0))
+    timeline = max(0, int(timeline_stocks or 0))
+    observed_coverage = round(observed / universe * 100, 2) if universe else 0.0
+    timeline_coverage = round(timeline / universe * 100, 2) if universe else 0.0
+    normalized_points = sorted({str(item)[:5] for item in (timepoints or []) if item})
+    missing = [item for item in AUCTION_REQUIRED_TIMEPOINTS if item not in normalized_points]
+
+    if universe == 0 or observed == 0 or timeline == 0 or not normalized_points:
+        status = "BLOCKED"
+        reason = "竞价股票数、时间点或覆盖率为0，禁止生成竞价结论"
+    elif missing:
+        status = "INSUFFICIENT"
+        reason = "09:15-09:25竞价序列不完整，继续积累真实快照"
+    elif observed_coverage < 80 or timeline_coverage < 80:
+        status = "INSUFFICIENT"
+        reason = "竞价全市场覆盖率不足80%，仅供观察"
+    else:
+        status = "OBSERVED"
+        reason = None
+
+    return {
+        "status": status,
+        "execution_allowed": status == "OBSERVED",
+        "model_enabled": status == "OBSERVED",
+        "universe_stocks": universe,
+        "observed_stocks": observed,
+        "timeline_stocks": timeline,
+        "coverage_pct": observed_coverage,
+        "timeline_coverage_pct": timeline_coverage,
+        "time_points": normalized_points,
+        "required_time_points": list(AUCTION_REQUIRED_TIMEPOINTS),
+        "missing_time_points": missing,
+        "warning": reason,
+    }
+
+
 class PITMarketDataService:
     _AUCTION_BATCH_SIZE = 200
     _AUCTION_CONCURRENCY = 4
@@ -292,6 +343,12 @@ class PITMarketDataService:
                 AuctionSnapshotV51, timeline_rows,
                 ["stock_code", "trade_date", "snapshot_time"],
             )
+            capture_quality = auction_quality(
+                universe_count=len(codes),
+                observed_stocks=len({item["stock_code"] for item in rows}),
+                timeline_stocks=len({item["stock_code"] for item in timeline_rows}),
+                timepoints={item["quote_at"].strftime("%H:%M") for item in rows},
+            )
             return {
                 "status": "success" if rows else "unavailable",
                 "written": written,
@@ -303,6 +360,9 @@ class PITMarketDataService:
                 "data_date": now.date().isoformat(),
                 "source": "tencent",
                 "window": "09:15-09:27",
+                "quality_status": capture_quality["status"],
+                "quality": capture_quality,
+                "execution_allowed": capture_quality["execution_allowed"],
             }
 
     async def coverage(self) -> dict[str, Any]:

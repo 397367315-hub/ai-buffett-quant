@@ -812,6 +812,55 @@ class DecisionWorkbench2026Service:
                         "evidence": f"{item.get('name')} Alpha由{alpha:+.2f}%降至{later_alpha:+.2f}%",
                         "lesson": "增加Alpha持续时间和资金确认，单点超额不能视为持续Alpha。",
                     })
+
+            morning_action = str(
+                ((morning.payload or {}).get("market_cognition") or {}).get("final_action") or ""
+            )
+            abstained = morning_permission in {"BLOCK", "OBSERVE"} or morning_action in {"observe", "no_trade"}
+            late_opportunities = []
+            if abstained and late_permission in {"ALLOW", "CAUTION"}:
+                for item in late_decision.get("candidate_decisions") or []:
+                    alpha = _number((item.get("beta_alpha") or {}).get("individual_alpha_pct"))
+                    execution_level = str((item.get("execution") or {}).get("level") or "")
+                    if alpha is not None and alpha >= 1.5 and execution_level in {"PREPARE", "EXECUTE"}:
+                        late_opportunities.append({
+                            "code": item.get("code"),
+                            "name": item.get("name"),
+                            "alpha_pct": round(alpha, 2),
+                            "execution_level": execution_level,
+                        })
+            if not abstained:
+                abstention_review = {
+                    "status": "NOT_APPLICABLE",
+                    "label": "早盘未选择空仓/观望",
+                    "opportunity_observed": False,
+                    "candidates": [],
+                    "lesson": "本次按实际执行许可复盘，不进入放弃交易样本。",
+                }
+            elif late_opportunities:
+                abstention_review = {
+                    "status": "REVIEW_REQUIRED",
+                    "label": "放弃后出现结构性机会，需复核是否过度防守",
+                    "opportunity_observed": True,
+                    "candidates": late_opportunities[:5],
+                    "lesson": "只检查当时的阻断阈值是否过严；事后上涨本身不能证明早盘决策错误。",
+                }
+            elif late_permission in {"BLOCK", "OBSERVE"}:
+                abstention_review = {
+                    "status": "CAPITAL_PROTECTED",
+                    "label": "观望许可延续，放弃交易避免了模式外执行",
+                    "opportunity_observed": False,
+                    "candidates": [],
+                    "lesson": "保留当时的阻断证据，继续验证同类市场状态下的机会成本。",
+                }
+            else:
+                abstention_review = {
+                    "status": "INCONCLUSIVE",
+                    "label": "放弃交易结果暂不可判定",
+                    "opportunity_observed": False,
+                    "candidates": [],
+                    "lesson": "候选或Alpha证据不足，不把空白样本归类为正确或错误。",
+                }
             outcome = "ERROR" if errors else "CONFIRMED"
             result = {
                 "status": "COMPLETED",
@@ -820,6 +869,7 @@ class DecisionWorkbench2026Service:
                 "morning_snapshot_id": morning.id,
                 "late_snapshot_id": late.id,
                 "errors": errors,
+                "abstention_review": abstention_review,
                 "message": "发现需进入错误数据库的偏差" if errors else "未发现达到归因阈值的判断偏差",
             }
             morning.validation_status = outcome
@@ -846,6 +896,34 @@ class DecisionWorkbench2026Service:
                         error_attribution=error["type"],
                         lesson=error["lesson"],
                         tags=["2026决策工作台", morning.phase, late.phase],
+                        case_date=decision_date,
+                    ))
+            if abstention_review["status"] == "REVIEW_REQUIRED":
+                title = f"{decision_date.isoformat()} 放弃交易复核"
+                existing_case = (await session.execute(select(ResearchMarketCase).where(
+                    ResearchMarketCase.case_date == decision_date,
+                    ResearchMarketCase.case_type == "abstention_review",
+                    ResearchMarketCase.title == title,
+                ))).scalar_one_or_none()
+                if existing_case is None:
+                    names = "、".join(
+                        str(item.get("name") or item.get("code") or "候选")
+                        for item in abstention_review["candidates"]
+                    )
+                    session.add(ResearchMarketCase(
+                        case_type="abstention_review",
+                        title=title,
+                        summary=f"早盘选择观望后，尾盘出现完成结构确认的候选：{names}",
+                        market_context={
+                            "morning_snapshot_id": morning.id,
+                            "late_snapshot_id": late.id,
+                            "contract_version": WORKBENCH_CONTRACT_VERSION,
+                            "candidates": abstention_review["candidates"],
+                        },
+                        outcome="REVIEW",
+                        error_attribution="可能过度防守，尚未认定为决策错误",
+                        lesson=abstention_review["lesson"],
+                        tags=["2026决策工作台", "放弃交易复盘", morning.phase, late.phase],
                         case_date=decision_date,
                     ))
             await session.commit()

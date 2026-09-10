@@ -1230,6 +1230,7 @@ class StockEssenceDecisionService:
 
         def render(row: dict, group: str, rank: int) -> dict:
             factors = row["factor_scores"]
+            data_coverage_pct = round(row["coverage"][group] / 1.0 * 100, 1)
             reasons = []
             if factors.get("change") is not None:
                 reasons.append(f"板块内涨幅强度 {present(factors['change'])} 分（排名 {row['ranks']['change'] or '--'}）")
@@ -1262,7 +1263,11 @@ class StockEssenceDecisionService:
                 "roe": round(row["roe"], 2) if row["roe"] is not None else None,
                 "pe": round(row["pe"], 2) if row["pe"] is not None else None,
                 "score": row["scores"][group],
-                "confidence_pct": round(row["coverage"][group] / 1.0 * 100, 1),
+                "confidence_pct": data_coverage_pct,
+                "confidence_type": "data_coverage_compatibility_alias",
+                "data_coverage_pct": data_coverage_pct,
+                "signal_strength_pct": row["scores"][group],
+                "model_probability_pct": None,
                 "rank": rank,
                 "reasons": reasons[:3],
                 "risk": "；".join(risk),

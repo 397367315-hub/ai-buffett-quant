@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from services.strong_stock_v21 import strong_stock_v21_service
+from services.admin_auth import require_admin_for_mutation
 
 
-router = APIRouter(prefix="/api/v1", tags=["强势股交易决策 V2.1"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["强势股交易决策 V2.1"],
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 
 def _date(value: str | None, field: str = "date") -> date | None:

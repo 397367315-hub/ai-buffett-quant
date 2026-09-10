@@ -164,6 +164,38 @@ class DecisionWorkbenchSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["is_realtime"])
         self.assertEqual(result["decision_date"], "2026-08-18")
 
+    async def test_validation_records_abstention_opportunity_without_calling_it_an_error(self):
+        morning_payload = payload(permission_action="no_trade")
+        late_payload = payload(permission_action="execute", alpha_change=6.0)
+        getter = AsyncMock(side_effect=[morning_payload, late_payload])
+        with (
+            patch("services.market_decision_workbench.market_decision_workbench_service.get", getter),
+            patch("services.decision_workbench_2026.shanghai_now", return_value=NOW),
+        ):
+            await self.service.capture("morning_1040")
+            await self.service.capture("tail_1455")
+            result = await self.service.validate()
+
+        self.assertEqual(result["outcome"], "CONFIRMED")
+        review = result["abstention_review"]
+        self.assertEqual(review["status"], "REVIEW_REQUIRED")
+        self.assertTrue(review["opportunity_observed"])
+        self.assertEqual(review["candidates"][0]["code"], "600001")
+
+    async def test_validation_marks_continued_abstention_as_capital_protection(self):
+        morning_payload = payload(permission_action="no_trade")
+        late_payload = payload(permission_action="no_trade", alpha_change=-1.0)
+        getter = AsyncMock(side_effect=[morning_payload, late_payload])
+        with (
+            patch("services.market_decision_workbench.market_decision_workbench_service.get", getter),
+            patch("services.decision_workbench_2026.shanghai_now", return_value=NOW),
+        ):
+            await self.service.capture("morning_1040")
+            await self.service.capture("tail_1455")
+            result = await self.service.validate()
+
+        self.assertEqual(result["abstention_review"]["status"], "CAPITAL_PROTECTED")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,7 +35,7 @@ class PositionConfig(BaseModel):
 
 class StrategyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    active: bool = True
+    active: bool = False
     scan_schedule: Literal["daily", "manual"] = "daily"
     filter: RuleGroup = Field(default_factory=RuleGroup)
     entry: RuleGroup
@@ -75,6 +75,30 @@ class StrategyUpdate(BaseModel):
         if not cleaned:
             raise ValueError("策略名称不能为空")
         return cleaned
+
+
+class StrategyApprovalRequest(BaseModel):
+    note: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def clean_note(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("人工确认说明不能为空")
+        return cleaned
+
+
+class StrategyRevokeRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def clean_optional_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
 
 class PreviewRequest(BaseModel):

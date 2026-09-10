@@ -1,9 +1,28 @@
+import asyncio
+import os
+import tempfile
 import unittest
+from contextlib import ExitStack
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from models import SchedulerTaskLedger
 from services import scheduler as scheduler_module
+
+
+async def _temporary_ledger():
+    fd, path = tempfile.mkstemp(prefix="scheduler-ledger-", suffix=".db")
+    os.close(fd)
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{path}",
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(SchedulerTaskLedger.__table__.create)
+    return engine, async_sessionmaker(engine, expire_on_commit=False), path
 
 
 class SchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -62,6 +81,194 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovery_call.kwargs["minutes"], 1)
         self.assertTrue(recovery_call.kwargs["coalesce"])
         self.assertEqual(recovery_call.kwargs["max_instances"], 1)
+        self.assertEqual(recovery_call.kwargs["misfire_grace_time"], 60)
+
+    async def test_startup_audit_compensates_only_today_and_is_idempotent(self):
+        scheduler_module._job_state.clear()
+        scheduler_module._startup_audit_state.clear()
+        scheduler_module._startup_compensation_state.clear()
+        now = datetime(2026, 8, 12, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        engine, ledger_session, ledger_path = await _temporary_ledger()
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(scheduler_module, "async_session", ledger_session))
+                mocked_handlers = {
+                    name: stack.enter_context(
+                        patch.object(
+                            scheduler_module,
+                            name,
+                            new_callable=AsyncMock,
+                            return_value={"mocked": name},
+                        )
+                    )
+                    for name in {spec["handler"] for spec in scheduler_module._CRITICAL_TASKS}
+                }
+                first = await scheduler_module.audit_missed_critical_jobs(now)
+                # Simulate a second Render process: process-local state is
+                # gone, while the SQLite ledger remains authoritative.
+                scheduler_module._startup_audit_state.clear()
+                scheduler_module._startup_compensation_state.clear()
+                second = await scheduler_module.audit_missed_critical_jobs(now)
+        finally:
+            await engine.dispose()
+            os.unlink(ledger_path)
+
+        assert first["date"] == "2026-08-12"
+        assert all(item.get("date") != "2026-08-11" for item in first["items"])
+        assert any(
+            item["job_id"] == "midday_ai_research" and item["status"] == "COMPENSATED"
+            for item in first["items"]
+        )
+        assert any(
+            item["job_id"] == "market_auction_pit_timeline"
+            and item["status"] == "MISSED_WINDOW_BLOCKED"
+            for item in first["items"]
+        )
+        assert second["date"] == "2026-08-12"
+        mocked_handlers["run_midday_research"].assert_awaited_once()
+        mocked_handlers["run_market_data_collection"].assert_awaited_once()
+        for name, handler in mocked_handlers.items():
+            if name not in {"run_midday_research", "run_market_data_collection"}:
+                handler.assert_not_awaited()
+
+    async def test_persistent_ledger_records_completion_and_failure(self):
+        scheduler_module._job_state.clear()
+        scheduler_module._startup_audit_state.clear()
+        scheduler_module._startup_compensation_state.clear()
+        now = datetime(2026, 8, 12, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+        engine, ledger_session, ledger_path = await _temporary_ledger()
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(scheduler_module, "async_session", ledger_session))
+                handlers = {
+                    name: stack.enter_context(
+                        patch.object(
+                            scheduler_module,
+                            name,
+                            new_callable=AsyncMock,
+                            return_value={"mocked": name},
+                        )
+                    )
+                    for name in {spec["handler"] for spec in scheduler_module._CRITICAL_TASKS}
+                }
+                handlers["run_midday_research"].side_effect = RuntimeError("mock research failure")
+                result = await scheduler_module.audit_missed_critical_jobs(now)
+
+            async with ledger_session() as session:
+                rows = list((await session.execute(select(SchedulerTaskLedger))).scalars().all())
+        finally:
+            await engine.dispose()
+            os.unlink(ledger_path)
+
+        by_key = {row.run_key: row for row in rows}
+        self.assertEqual(by_key["market_data_midday"].status, "COMPENSATED")
+        self.assertEqual(by_key["midday_ai_research"].status, "COMPENSATION_FAILED")
+        self.assertEqual(by_key["market_data_midday"].run_date.isoformat(), "2026-08-12")
+        self.assertIsNotNone(by_key["market_data_midday"].started_at)
+        self.assertIsNotNone(by_key["market_data_midday"].completed_at)
+        self.assertIn("mock research failure", by_key["midday_ai_research"].reason)
+        self.assertEqual(result["status"], "AUDITED")
+
+    async def test_normal_critical_execution_is_persisted_and_restart_safe(self):
+        engine, ledger_session, ledger_path = await _temporary_ledger()
+        now = datetime(2026, 8, 12, 14, 55, tzinfo=ZoneInfo("Asia/Shanghai"))
+        research_handler = AsyncMock(return_value={"ok": "research"})
+        execution_handler = AsyncMock(return_value={"ok": "execution"})
+        try:
+            with patch.object(scheduler_module, "async_session", ledger_session), patch.object(scheduler_module, "_now", return_value=now):
+                first_research = await scheduler_module.run_scheduled_critical_job("midday_ai_research", research_handler)
+                first_execution = await scheduler_module.run_scheduled_critical_job("overnight_entry_scan", execution_handler)
+                # Simulate a process restart. The durable rows must suppress
+                # both the safe research task and the execution task.
+                scheduler_module._startup_audit_state.clear()
+                scheduler_module._startup_compensation_state.clear()
+                second_research = await scheduler_module.run_scheduled_critical_job("midday_ai_research", research_handler)
+                second_execution = await scheduler_module.run_scheduled_critical_job("overnight_entry_scan", execution_handler)
+
+            async with ledger_session() as session:
+                rows = list((await session.execute(select(SchedulerTaskLedger))).scalars().all())
+        finally:
+            await engine.dispose()
+            os.unlink(ledger_path)
+
+        self.assertEqual(first_research, {"ok": "research"})
+        self.assertEqual(first_execution, {"ok": "execution"})
+        self.assertEqual(second_research["status"], "SKIPPED_ALREADY_LEDGER")
+        self.assertEqual(second_execution["status"], "SKIPPED_ALREADY_LEDGER")
+        research_handler.assert_awaited_once()
+        execution_handler.assert_awaited_once()
+        self.assertEqual({row.run_key for row in rows}, {"midday_ai_research", "overnight_entry_scan"})
+        self.assertTrue(all(row.status == "COMPLETED" for row in rows))
+
+    async def test_atomic_claim_unique_key_allows_one_process_only(self):
+        engine, ledger_session, ledger_path = await _temporary_ledger()
+        try:
+            with patch.object(scheduler_module, "async_session", ledger_session):
+                results = await asyncio.gather(
+                    scheduler_module._ledger_claim(
+                        datetime(2026, 8, 12).date(),
+                        "same-run",
+                        "job-a",
+                        status="CLAIMED",
+                        started_at=datetime(2026, 8, 12, 12, 0),
+                        completed_at=None,
+                        reason="test claim",
+                    ),
+                    scheduler_module._ledger_claim(
+                        datetime(2026, 8, 12).date(),
+                        "same-run",
+                        "job-b",
+                        status="CLAIMED",
+                        started_at=datetime(2026, 8, 12, 12, 0),
+                        completed_at=None,
+                        reason="test claim",
+                    ),
+                )
+                async with ledger_session() as session:
+                    rows = list((await session.execute(select(SchedulerTaskLedger))).scalars().all())
+        finally:
+            await engine.dispose()
+            os.unlink(ledger_path)
+
+        self.assertEqual(sum(bool(item.get("claimed")) for item in results), 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].run_key, "same-run")
+
+    async def test_database_unavailable_is_degraded_and_never_replays_handlers(self):
+        scheduler_module._job_state.clear()
+        scheduler_module._startup_audit_state.clear()
+        scheduler_module._startup_compensation_state.clear()
+        now = datetime(2026, 8, 12, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+        def broken_session():
+            raise RuntimeError("database unavailable")
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(scheduler_module, "async_session", broken_session))
+            mocked_handlers = {
+                name: stack.enter_context(
+                    patch.object(
+                        scheduler_module,
+                        name,
+                        new_callable=AsyncMock,
+                        return_value={"mocked": name},
+                    )
+                )
+                for name in {spec["handler"] for spec in scheduler_module._CRITICAL_TASKS}
+            }
+            result = await scheduler_module.audit_missed_critical_jobs(now)
+            scheduler_module._startup_audit_state.clear()
+            blocked_result = await scheduler_module.audit_missed_critical_jobs(
+                datetime(2026, 8, 12, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
+            )
+
+        self.assertEqual(result["status"], "DEGRADED")
+        midday = next(item for item in result["items"] if item["job_id"] == "midday_ai_research")
+        overnight = next(item for item in blocked_result["items"] if item["job_id"] == "overnight_preliminary_scan")
+        self.assertEqual(midday["status"], "DEGRADED")
+        self.assertEqual(overnight["status"], "STARTUP_REPLAY_BLOCKED")
+        mocked_handlers["run_midday_research"].assert_not_awaited()
+        mocked_handlers["run_market_data_collection"].assert_not_awaited()
 
     async def test_scheduler_registers_market_snapshots_and_personal_automation(self):
         fake_scheduler = MagicMock()
@@ -96,6 +303,7 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
             "margin_leverage_first_disclosure",
             "margin_leverage_final_disclosure",
             "personal_report_calendar",
+            "bounded_data_retention",
             "overnight_preliminary_scan",
             "overnight_entry_scan",
             "overnight_auction_watch",
@@ -111,17 +319,18 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(calls["margin_leverage_first_disclosure"].args[0], scheduler_module.refresh_margin_leverage_cache)
         self.assertIs(calls["margin_leverage_final_disclosure"].args[0], scheduler_module.refresh_margin_leverage_cache)
         self.assertIs(calls["personal_report_calendar"].args[0], scheduler_module.refresh_personal_report_calendar)
-        self.assertIs(calls["overnight_preliminary_scan"].args[0], scheduler_module.run_overnight_preliminary_scan)
-        self.assertIs(calls["overnight_entry_scan"].args[0], scheduler_module.run_overnight_entry_scan)
+        self.assertIs(calls["bounded_data_retention"].args[0], scheduler_module.run_data_retention)
+        self.assertEqual(calls["overnight_preliminary_scan"].args[0].__name__, "critical_overnight_preliminary_scan")
+        self.assertEqual(calls["overnight_entry_scan"].args[0].__name__, "critical_overnight_entry_scan")
         self.assertIs(calls["overnight_auction_watch"].args[0], scheduler_module.run_overnight_auction_watch)
         self.assertIs(calls["overnight_exit_monitor"].args[0], scheduler_module.monitor_overnight_exits)
         self.assertIs(calls["overnight_force_exit"].args[0], scheduler_module.force_overnight_exits)
         self.assertIs(calls["resume_fqe_data_sync"].args[0], scheduler_module.resume_incomplete_fqe_syncs)
         self.assertIs(calls["fqe_audit_data_close"].args[0], scheduler_module.refresh_fqe_audit_data)
-        self.assertIs(calls["midday_ai_research"].args[0], scheduler_module.run_midday_research)
+        self.assertEqual(calls["midday_ai_research"].args[0].__name__, "critical_midday_ai_research")
         self.assertIs(calls["midday_track_1330"].args[0], scheduler_module.track_midday_research)
         self.assertEqual(calls["midday_track_1330"].kwargs["args"], ["13:30"])
-        self.assertIs(calls["midday_close_validation"].args[0], scheduler_module.validate_midday_research)
+        self.assertEqual(calls["midday_close_validation"].args[0].__name__, "critical_midday_close_validation")
         self.assertIs(calls["decision_2026_morning_freeze"].args[0], scheduler_module.capture_decision_workbench_window)
         self.assertEqual(calls["decision_2026_morning_freeze"].kwargs["args"], ["morning_1040"])
         self.assertIs(calls["decision_2026_close_validation"].args[0], scheduler_module.close_and_validate_decision_workbench)

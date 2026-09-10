@@ -26,6 +26,33 @@ export interface PositionConfig {
   fixed_amount?: number | null;
 }
 
+export type GovernanceStatus = 'DRAFT' | 'APPROVED' | 'MODIFIED_PENDING_REVIEW' | 'LEGACY_GRANDFATHERED' | string;
+
+export interface AuditableBacktestSummary {
+  job_id?: string | null;
+  completed_at?: string | null;
+  period?: { from?: string; to?: string };
+  total_return?: number | null;
+  win_rate?: number | null;
+  max_drawdown?: number | null;
+  trade_count?: number | null;
+  completed_trade_count?: number | null;
+  data_quality?: { grade?: string; audit_eligible?: boolean; cached_bar_stocks?: number; warnings?: string[] };
+}
+
+export interface StrategyGovernance {
+  status: GovernanceStatus;
+  approved: boolean;
+  legacy_grandfathered?: boolean;
+  source?: string;
+  approved_at?: string | null;
+  approval_note?: string | null;
+  approved_fingerprint?: string | null;
+  last_auditable_backtest?: AuditableBacktestSummary | null;
+  revoked_at?: string | null;
+  revocation_note?: string | null;
+}
+
 export interface Strategy {
   id: string;
   name: string;
@@ -42,6 +69,7 @@ export interface Strategy {
   horizon?: 'short' | 'long';
   target_win_rate?: [number, number];
   validation_note?: string;
+  governance?: StrategyGovernance;
 }
 
 export type StrategyDraft = Omit<

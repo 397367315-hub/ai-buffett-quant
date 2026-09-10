@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from services.ai_service import ai_service
 from services.event_radar import event_radar_service
+from services.admin_auth import require_admin_for_mutation
 
 
-router = APIRouter(prefix="/api/v1/radar", tags=["AI实时事件雷达"])
+router = APIRouter(
+    prefix="/api/v1/radar",
+    tags=["AI实时事件雷达"],
+    dependencies=[Depends(require_admin_for_mutation)],
+)
 
 
 @router.get("/events")
