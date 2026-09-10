@@ -25,6 +25,7 @@ from services.mao_strategy_agent import mao_strategy_agent
 from services.stock_selection_agents import (
     VALID_RISK_PROFILES,
     VALID_SELECTION_MODES,
+    VALID_SELECTION_STYLES,
     stock_selection_agents,
 )
 from services.technical_screener import SCREENER_PRESETS, SCREENER_SCHEMA, technical_screener_service
@@ -2023,6 +2024,7 @@ async def run_stock_selection(request: dict | None = None):
     mode = str(payload.get("mode", "quick")).strip().lower()
     risk_profile = str(payload.get("risk_profile", "balanced")).strip().lower()
     horizon = str(payload.get("horizon", "week")).strip().lower()
+    selection_style = str(payload.get("selection_style", "balanced")).strip().lower()
     try:
         top_n = int(payload.get("top_n", 5))
     except (TypeError, ValueError) as exc:
@@ -2034,8 +2036,19 @@ async def run_stock_selection(request: dict | None = None):
         raise HTTPException(status_code=422, detail="risk_profile 仅支持 conservative、balanced 或 aggressive")
     if horizon not in VALID_HORIZONS:
         raise HTTPException(status_code=422, detail="horizon 仅支持 week、half_month 或 month")
+    if selection_style not in VALID_SELECTION_STYLES:
+        raise HTTPException(status_code=422, detail="selection_style 仅支持 balanced、early、trend、pullback 或 fundamental")
     if not 3 <= top_n <= 10:
         raise HTTPException(status_code=422, detail="top_n 必须在 3 到 10 之间")
+    raw_sector_limit = payload.get("sector_limit", 2)
+    if isinstance(raw_sector_limit, bool):
+        raise HTTPException(status_code=422, detail="sector_limit 必须是 0 到 10 的整数")
+    try:
+        sector_limit = int(raw_sector_limit)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="sector_limit 必须是 0 到 10 的整数") from exc
+    if str(raw_sector_limit).strip() != str(sector_limit) or not 0 <= sector_limit <= 10:
+        raise HTTPException(status_code=422, detail="sector_limit 必须是 0 到 10 的整数")
     raw_sector = payload.get("sector")
     if raw_sector is not None and not isinstance(raw_sector, str):
         raise HTTPException(status_code=422, detail="sector 必须是行业名称字符串")
@@ -2064,6 +2077,8 @@ async def run_stock_selection(request: dict | None = None):
             sector_code=sector_code,
             horizon=horizon,
             factor_filters=factor_filters,
+            selection_style=selection_style,
+            sector_limit=sector_limit,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2086,6 +2101,8 @@ async def list_stock_selection_runs(limit: int = Query(10, ge=1, le=30)):
         {
             "id": row.id,
             "mode": row.mode,
+            "selection_style": (row.result or {}).get("selection_style"),
+            "selection_style_label": (row.result or {}).get("selection_style_label"),
             "risk_profile": row.risk_profile,
             "candidate_count": row.candidate_count,
             "selected_count": row.selected_count,

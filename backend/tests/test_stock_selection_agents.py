@@ -404,7 +404,9 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["source"], "ftshare_mcp")
         self.assertFalse(result["is_realtime"])
         self.assertIsNone(result["data_date"])
-        self.assertIn("未提供主力资金流", result["recommendations"][0]["agents"]["capital"]["summary"])
+        self.assertEqual(result["recommendations"], [])
+        self.assertEqual(result["watchlist"][0]["qualification"]["status"], "watch")
+        self.assertIn("未提供主力资金流", result["watchlist"][0]["agents"]["capital"]["summary"])
         self.assertEqual(
             next(agent for agent in result["agent_pipeline"] if agent["id"] == "data")["skill"],
             "FTShare 行情快照候选池",
@@ -443,7 +445,57 @@ class StockSelectionAgentTests(unittest.IsolatedAsyncioTestCase):
         ):
             result = await service.run(top_n=3)
 
-        recommendation = result["recommendations"][0]
+        self.assertEqual(result["recommendations"], [])
+        recommendation = result["watchlist"][0]
         self.assertEqual(recommendation["research"]["data_quality"]["grade"], "不足")
         self.assertEqual(recommendation["verdict"], "证据不足")
         self.assertNotEqual(recommendation["verdict"], "优先研究")
+        self.assertEqual(recommendation["qualification"]["status"], "watch")
+
+    def test_hard_risk_and_audit_evidence_cannot_be_offset_by_score(self):
+        service = StockSelectionAgentService()
+        strong = {
+            "score": 99,
+            "agents": {
+                "risk": {
+                    "signal": "通过", "plan": {"risk_level": "低"},
+                    "structural_risk": {"hard_blocked": False},
+                },
+            },
+            "research": {"data_quality": {"grade": "充分"}, "strategy_audit": {"overall_risk": "高"}},
+        }
+        self.assertEqual(service._qualification(strong)[0], "watch")
+        strong["agents"]["risk"]["structural_risk"] = {
+            "hard_blocked": True, "hard_blocks": ["退市风险"],
+        }
+        self.assertEqual(service._qualification(strong), ("excluded", ["退市风险"]))
+
+    def test_opportunity_conditions_are_waiting_until_explicitly_confirmed(self):
+        service = StockSelectionAgentService()
+        item = {
+            "price": 10, "change_pct": 1,
+            "agents": {"risk": {"plan": {"stop_loss_price": 9, "reference_target_price": 12}, "structural_risk": {}}},
+            "research": {"data_quality": {"grade": "一般"}},
+            "horizon_outlook": {
+                "validation_conditions": ["收盘维持在MA20之上"],
+                "invalidation_conditions": ["有效跌破MA20"],
+            },
+        }
+        result = service._opportunity(item, "early", "早期发现", data_date="2026-08-03", is_realtime=True)
+        self.assertEqual(result["status"], "waiting")
+        self.assertIn("收盘维持在MA20之上", result["next_confirmation"])
+        self.assertEqual(result["reward_risk_ratio"], 2.0)
+
+    def test_analysis_cap_round_robin_keeps_low_momentum_source(self):
+        service = StockSelectionAgentService()
+        candidates = [
+            {"code": f"600{index:03d}", "change_pct": 6, "volume_ratio": 3, "turnover": 5,
+             "main_net_inflow": 100_000_000, "selection_sources": ["fund_flow"]}
+            for index in range(45)
+        ]
+        candidates.append({
+            "code": "600999", "change_pct": -1, "volume_ratio": 1, "turnover": 1,
+            "main_net_inflow": -10_000_000, "selection_sources": ["momentum"],
+        })
+        selected = service._diversify_candidates(candidates, "balanced", 45)
+        self.assertIn("600999", [item["code"] for item in selected])

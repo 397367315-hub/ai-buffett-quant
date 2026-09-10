@@ -9,6 +9,8 @@ import {
   ChevronRight,
   Clock3,
   CircleAlert,
+  GitCompareArrows,
+  History,
   Database,
   FlaskConical,
   Gauge,
@@ -31,6 +33,8 @@ type SelectionMode = 'quick' | 'full' | 'numcat';
 type RiskProfile = 'conservative' | 'balanced' | 'aggressive';
 type ResearchHorizon = 'week' | 'half_month' | 'month';
 type FactorPreset = 'off' | 'short' | 'long' | 'custom';
+type SelectionStyle = 'balanced' | 'early' | 'trend' | 'pullback' | 'fundamental';
+type RecommendationStatus = 'qualified' | 'watch' | 'excluded';
 
 interface FactorConfig {
   enabled: boolean;
@@ -98,6 +102,25 @@ interface AgentReport {
     bear_points: string[];
     decisive_factor: string;
   };
+}
+
+interface RecommendationQualification {
+  status: RecommendationStatus;
+  reasons: string[];
+}
+
+interface RecommendationOpportunity {
+  style: SelectionStyle | string;
+  style_label: string;
+  status: 'waiting' | 'ready' | 'overheated' | 'invalid' | 'needs_data' | string;
+  status_label: string;
+  reasons: string[];
+  next_confirmation: string[];
+  invalidation: string[];
+  data_date: string | null;
+  stop_loss_price: number | null;
+  reference_target_price: number | null;
+  reward_risk_ratio: number | null;
 }
 
 interface ResearchDataQuality {
@@ -217,6 +240,10 @@ interface Recommendation {
   score: number;
   verdict: string;
   confidence: number;
+  evidence_support?: number | string | null;
+  data_quality?: string | number | null;
+  qualification?: RecommendationQualification;
+  opportunity?: RecommendationOpportunity;
   base_score?: number;
   horizon_outlook: {
     horizon: ResearchHorizon;
@@ -269,6 +296,9 @@ interface SelectionResult {
   mode: SelectionMode;
   risk_profile: RiskProfile;
   risk_profile_label: string;
+  selection_style?: SelectionStyle | string;
+  selection_style_label?: string;
+  sector_limit?: number;
   research_horizon: {
     id: ResearchHorizon;
     label: string;
@@ -325,6 +355,13 @@ interface SelectionResult {
   };
   agent_pipeline: PipelineAgent[];
   recommendations: Recommendation[];
+  watchlist?: Recommendation[];
+  excluded?: Recommendation[];
+  qualification_summary?: {
+    qualified: number;
+    watch: number;
+    excluded: number;
+  };
   message: string;
   disclaimer: string;
   run_id?: number | null;
@@ -414,6 +451,82 @@ const factorPresetOptions: Array<{ id: 'off' | 'short' | 'long'; label: string }
   { id: 'long', label: '长期' },
 ];
 
+const selectionStyles: Array<{ id: SelectionStyle; label: string; detail: string }> = [
+  { id: 'balanced', label: '综合', detail: '多因子平衡' },
+  { id: 'early', label: '启动观察', detail: '早期信号待确认' },
+  { id: 'trend', label: '趋势延续', detail: '顺势跟随' },
+  { id: 'pullback', label: '回调企稳', detail: '回撤后的修复' },
+  { id: 'fundamental', label: '基本面改善', detail: '财务质量与改善待验证' },
+];
+
+const resultTabs: Array<{ id: RecommendationStatus; label: string }> = [
+  { id: 'qualified', label: '合格候选' },
+  { id: 'watch', label: '待验证观察' },
+  { id: 'excluded', label: '已排除' },
+];
+
+interface SelectionRunSummary {
+  id: number;
+  mode?: SelectionMode;
+  risk_profile?: RiskProfile;
+  selection_style?: SelectionStyle | string;
+  selection_style_label?: string;
+  candidate_count?: number;
+  selected_count?: number;
+  source?: string;
+  data_date?: string | null;
+  is_realtime?: boolean;
+  created_at?: string | null;
+}
+
+interface HistoryReview {
+  comparison: HistoryComparison;
+  performance: {
+    methodology: string;
+    windows: HistoryWindow[];
+  };
+}
+
+interface HistoryWindow {
+  sessions: number;
+  sample_count: number;
+  pending_count: number;
+  missing_count: number;
+  mean_return_pct: number | null;
+  positive_rate_pct: number | null;
+}
+
+interface HistoryComparison {
+  comparable?: boolean;
+  reason?: string;
+  added?: Array<{ code: string; name: string; reason: string }>;
+  retained?: Array<{ code: string; name: string; reason: string }>;
+  removed?: Array<{ code: string; name: string; reason: string }>;
+}
+
+function historyComparison(review: HistoryReview | null): HistoryComparison {
+  const value = review?.comparison;
+  return value && typeof value === 'object' ? value as HistoryComparison : {};
+}
+
+function historyItemText(item: unknown): string {
+  if (typeof item === 'string' || typeof item === 'number') return String(item);
+  if (!item || typeof item !== 'object') return '未披露';
+  const row = item as Record<string, unknown>;
+  return String(row.name || row.code || row.symbol || row.reason || row.message || '未披露');
+}
+
+function historyPerformance(review: HistoryReview | null): HistoryWindow[] {
+  return review?.performance?.windows || [];
+}
+
+function historyPerformanceText(row: HistoryWindow): { days: string; value: string } {
+  const value = row.mean_return_pct;
+  return { days: String(row.sessions), value: row.sample_count > 0 && value != null && Number.isFinite(value)
+    ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+    : row.missing_count > 0 ? '数据缺失' : row.pending_count > 0 ? '观察期未完成' : '无入选样本' };
+}
+
 const rejectionLabels: Record<string, string> = {
   change_pct: '涨跌幅', change_pct_missing: '缺少涨跌幅',
   volume_ratio: '量比', volume_ratio_missing: '缺少量比',
@@ -470,6 +583,8 @@ function formatTime(value: string): string {
 }
 
 function sourceLabel(source: string): string {
+  const labels: Record<string, string> = { fundamental_universe: '基本面全市场初筛', early_universe: '启动全市场初筛', pullback_universe: '回调全市场初筛', turnover: '换手观察', numcat_fundamental_enrichment: '猫爪财务初筛', numcat_screening: '猫爪行情' };
+  if (labels[source]) return labels[source];
   if (source === 'fund_flow') return '资金流';
   if (source === 'volume') return '量比';
   if (source === 'momentum') return '动量';
@@ -515,6 +630,45 @@ function auditClass(value: string | undefined): string {
 function moneyValue(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '--';
   return `¥${value.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
+}
+
+function recommendationStatus(stock: Recommendation): RecommendationStatus {
+  if (stock.qualification?.status) return stock.qualification.status;
+  // A saved result produced before the qualification contract must never be
+  // presented as a newly qualified candidate.
+  return 'watch';
+}
+
+function opportunityStatusLabel(stock: Recommendation): string {
+  return stock.opportunity?.status_label || (recommendationStatus(stock) === 'qualified' ? '已形成候选' : '历史未复核');
+}
+
+function recommendationReasons(stock: Recommendation): string[] {
+  return stock.qualification?.reasons?.length
+    ? stock.qualification.reasons
+    : stock.opportunity?.reasons?.length
+      ? stock.opportunity.reasons
+      : [];
+}
+
+function evidenceSupport(stock: Recommendation): string {
+  const value = stock.evidence_support;
+  if (typeof value === 'number' && Number.isFinite(value)) return `${value.toFixed(0)}%`;
+  if (typeof value === 'string' && value.trim()) return value;
+  const quality = stock.research?.data_quality?.score;
+  return typeof quality === 'number' && Number.isFinite(quality) ? `${quality.toFixed(0)}/100` : '未评估';
+}
+
+function uniqueRecommendations(result: SelectionResult | null): Recommendation[] {
+  if (!result) return [];
+  const byCode = new Map<string, Recommendation>();
+  for (const stock of [...(result.recommendations || []), ...(result.watchlist || []), ...(result.excluded || [])]) {
+    if (!stock?.code) continue;
+    const current = byCode.get(stock.code);
+    const rank: Record<RecommendationStatus, number> = { qualified: 3, watch: 2, excluded: 1 };
+    if (!current || rank[recommendationStatus(stock)] > rank[recommendationStatus(current)]) byCode.set(stock.code, stock);
+  }
+  return [...byCode.values()];
 }
 
 function FactorRangeControl({ label, unit, enabled, values, onToggle, onChange }: {
@@ -566,6 +720,8 @@ export default function StockPickerPage() {
   const [mode, setMode] = useState<SelectionMode>('quick');
   const [riskProfile, setRiskProfile] = useState<RiskProfile>('balanced');
   const [horizon, setHorizon] = useState<ResearchHorizon>('week');
+  const [selectionStyle, setSelectionStyle] = useState<SelectionStyle>('balanced');
+  const [sectorLimit, setSectorLimit] = useState(2);
   const [topN, setTopN] = useState(5);
   const [sector, setSector] = useState('');
   const [factorConfig, setFactorConfig] = useState<FactorConfig>(() => cloneFactors(factorPresets.off));
@@ -579,10 +735,58 @@ export default function StockPickerPage() {
   }>({ cacheUsed: false, stale: false, refreshedAt: null });
   const [result, setResult] = useState<SelectionResult | null>(null);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
+  const [resultTab, setResultTab] = useState<RecommendationStatus>('qualified');
+  const [compareCodes, setCompareCodes] = useState<string[]>([]);
+  const [historyRuns, setHistoryRuns] = useState<SelectionRunSummary[]>([]);
+  const [historyRunId, setHistoryRunId] = useState<number | null>(null);
+  const [historyDetail, setHistoryDetail] = useState<SelectionResult | null>(null);
+  const [historyReview, setHistoryReview] = useState<HistoryReview | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyReviewLoading, setHistoryReviewLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingElapsed, setLoadingElapsed] = useState(0);
   const [error, setError] = useState<string | null>(null);
+
+  const loadHistoryRuns = async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await apiFetch<{ code: number; data: SelectionRunSummary[] | { runs?: SelectionRunSummary[] } }>('/stock-selection/runs?limit=12');
+      setHistoryRuns(Array.isArray(res.data) ? res.data : res.data?.runs || []);
+    } catch (err) {
+      console.warn('Failed to load stock-selection history:', err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const loadHistoryRun = async (runId: number) => {
+    setHistoryRunId(runId);
+    setHistoryReview(null);
+    setHistoryDetail(null);
+    setHistoryReviewLoading(true);
+    try {
+      const [detailRes, reviewRes] = await Promise.all([
+        apiFetch<{ code: number; data: SelectionResult & { id?: number } }>(`/stock-selection/runs/${runId}`),
+        apiFetch<{ code: number; data: HistoryReview }>(`/stock-selection/runs/${runId}/review`),
+      ]);
+      setHistoryDetail(detailRes.data);
+      setHistoryReview(reviewRes.data || null);
+    } catch (err) {
+      // Older deployments expose the saved run before the review endpoint.
+      try {
+        const detailRes = await apiFetch<{ code: number; data: SelectionResult & { id?: number } }>(`/stock-selection/runs/${runId}`);
+        setHistoryDetail(detailRes.data);
+      } catch (detailErr) {
+        console.warn('Failed to load stock-selection history run:', detailErr);
+      }
+      console.warn('Stock-selection review is not available yet:', err);
+    } finally {
+      setHistoryReviewLoading(false);
+    }
+  };
+
+  useEffect(() => { void loadHistoryRuns(); }, []);
 
   useEffect(() => {
     try {
@@ -676,6 +880,8 @@ export default function StockPickerPage() {
           mode,
           risk_profile: riskProfile,
           horizon,
+          selection_style: selectionStyle,
+          sector_limit: sectorLimit,
           top_n: topN,
           sector: selectedSector?.name,
           sector_code: selectedSector?.code || undefined,
@@ -683,7 +889,10 @@ export default function StockPickerPage() {
         }),
       });
       setResult(res.data);
-      setSelectedCode(res.data.recommendations[0]?.code ?? null);
+      setResultTab(res.data.recommendations?.length ? 'qualified' : res.data.watchlist?.length ? 'watch' : 'excluded');
+      setCompareCodes([]);
+      setSelectedCode(res.data.recommendations[0]?.code ?? res.data.watchlist?.[0]?.code ?? res.data.excluded?.[0]?.code ?? null);
+      void loadHistoryRuns();
       setLoadingProgress(100);
       await new Promise((resolve) => window.setTimeout(resolve, 180));
     } catch (err) {
@@ -694,8 +903,16 @@ export default function StockPickerPage() {
     }
   };
 
-  const recommendations = result?.recommendations || [];
-  const selected = recommendations.find((item) => item.code === selectedCode) || recommendations[0];
+  const allRecommendations = uniqueRecommendations(result);
+  const tabRecommendations = allRecommendations.filter((stock) => recommendationStatus(stock) === resultTab);
+  const selected = allRecommendations.find((item) => item.code === selectedCode) || tabRecommendations[0] || allRecommendations[0];
+  const comparisonStocks = allRecommendations.filter((item) => compareCodes.includes(item.code));
+  const counts = {
+    qualified: allRecommendations.filter((item) => recommendationStatus(item) === 'qualified').length,
+    watch: allRecommendations.filter((item) => recommendationStatus(item) === 'watch').length,
+    excluded: allRecommendations.filter((item) => recommendationStatus(item) === 'excluded').length,
+  };
+  const hasDisplayableResults = allRecommendations.length > 0;
   const macroSources = result?.macro_policy
     ? [...result.macro_policy.international_items, ...result.macro_policy.policy_items]
     : [];
@@ -794,6 +1011,17 @@ export default function StockPickerPage() {
               </div>
             </div>
             <label className="block">
+              <span className="block text-xs text-text-secondary mb-1.5">选股风格</span>
+              <select
+                value={selectionStyle}
+                onChange={(event) => setSelectionStyle(event.target.value as SelectionStyle)}
+                className="w-full min-w-36 bg-[#0D1117] border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                aria-label="选股风格"
+              >
+                {selectionStyles.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.detail}</option>)}
+              </select>
+            </label>
+            <label className="block">
               <span className="block text-xs text-text-secondary mb-1.5">行业板块</span>
               <select
                 value={sector}
@@ -827,6 +1055,18 @@ export default function StockPickerPage() {
               >
                 {[3, 5, 8, 10].map((value) => <option key={value} value={value}>{value} 只</option>)}
               </select>
+            </label>
+            <label className="block">
+              <span className="block text-xs text-text-secondary mb-1.5">同业上限</span>
+              <select
+                value={sectorLimit}
+                onChange={(event) => setSectorLimit(Math.max(0, Math.min(10, Number(event.target.value))))}
+                className="w-full min-w-24 bg-[#0D1117] border border-border rounded-md px-3 py-2 text-sm text-text focus:outline-none focus:border-accent"
+                aria-label="同业上限"
+              >
+                {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((value) => <option key={value} value={value}>{value === 0 ? '不限' : `${value} 只`}</option>)}
+              </select>
+              <span className="block text-xs text-text-secondary mt-1">0 表示不限，避免行业扎堆</span>
             </label>
           </div>
           <button
@@ -926,6 +1166,48 @@ export default function StockPickerPage() {
         </section>
       )}
 
+      <section className="mb-6 border border-border bg-card rounded-lg p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-bold text-text flex items-center gap-2"><History size={16} className="text-accent" />历史选股记录</h2>
+            <p className="text-xs text-text-secondary mt-1">选择一次已保存运行，查看名单变动与后续收盘观察。</p>
+          </div>
+          <button type="button" onClick={() => void loadHistoryRuns()} disabled={historyLoading} className="inline-flex items-center gap-1.5 text-xs text-text-secondary hover:text-accent disabled:opacity-50"><RefreshCw size={13} className={historyLoading ? 'animate-spin' : ''} />刷新</button>
+        </div>
+        {historyRuns.length > 0 ? (
+          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {historyRuns.map((run) => (
+              <button key={run.id} type="button" onClick={() => void loadHistoryRun(run.id)} disabled={historyReviewLoading} className={`rounded-md border p-3 text-left transition-colors ${historyRunId === run.id ? 'border-accent bg-[#1F6FEB18]' : 'border-border hover:border-accent'}`}>
+                <div className="flex items-center justify-between gap-2"><span className="font-mono text-xs text-text">#{run.id}</span><span className="text-[11px] text-text-secondary">{run.data_date || (run.created_at ? run.created_at.slice(0, 10) : '日期未披露')}</span></div>
+                <div className="mt-1 text-xs text-text-secondary">{run.selection_style_label || selectionStyles.find((item) => item.id === run.selection_style)?.label || '历史记录'} · {modes.find((mode) => mode.id === run.mode)?.label || '--'} · {profiles.find((profile) => profile.id === run.risk_profile)?.label || '--'}</div>
+                <div className="mt-1 text-[11px] text-text-secondary">候选 {run.candidate_count ?? '--'} · 入选 {run.selected_count ?? '--'} · {run.source || '来源未披露'}</div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-3 text-xs text-text-secondary">暂无可读取的历史运行记录。</div>
+        )}
+        {historyRunId != null && (
+          <div className="mt-4 border-t border-border pt-4">
+            {historyReviewLoading && <div className="text-xs text-text-secondary">正在读取历史名单与复核结果…</div>}
+            {historyDetail && (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-semibold text-text">运行 #{historyRunId} 复核</h3><span className="text-xs text-text-secondary">数据日期 {historyDetail.data_date || '未披露'}</span></div>
+                <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                  {(['added', 'retained', 'removed'] as const).map((key) => {
+                    const rows = historyComparison(historyReview)[key] || [];
+                    return <div key={key} className="rounded-md border border-border p-3"><div className="text-xs text-text-secondary">{{ added: '名单新增', retained: '名单保留', removed: '名单移出' }[key]}</div><div className="mt-2 max-h-48 overflow-y-auto space-y-2 text-xs text-text">{rows.length ? rows.map((item) => <div key={item.code}><p>{item.name} {item.code}</p><p className="mt-1 text-text-secondary">{item.reason}</p></div>) : <p className="text-text-secondary">暂无变化记录</p>}</div></div>;
+                  })}
+                </div>
+                <p className="mt-2 text-xs text-text-secondary">{historyComparison(historyReview).reason || '历史复核暂时不可用。'}</p>
+                <button type="button" onClick={() => { setResult(historyDetail); setResultTab(historyDetail.recommendations?.some((stock) => stock.qualification?.status === 'qualified') ? 'qualified' : 'watch'); setCompareCodes([]); setSelectedCode(null); }} className="mt-3 text-xs text-accent">查看该次完整名单与研究详情</button>
+                <div className="mt-3 rounded-md border border-border p-3"><div className="text-xs text-text-secondary">入选名单后续平均收盘表现</div><div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">{historyPerformance(historyReview).map((item) => { const display = historyPerformanceText(item); return <div key={display.days} className="rounded bg-[#0D1117] p-2 text-center"><div className="text-[11px] text-text-secondary">之后 {display.days} 个已记录交易日</div><div className="mt-1 font-mono text-sm text-text">{display.value}</div><p className="mt-1 text-[10px] text-text-secondary">有效 {item.sample_count} · 未完成 {item.pending_count} · 缺失 {item.missing_count}</p></div>; })}</div><p className="mt-2 text-[11px] leading-5 text-warn">{historyReview?.performance?.methodology || '等待历史数据复核；缺失数据不显示为零收益。'}</p></div>
+              </>
+            )}
+          </div>
+        )}
+      </section>
+
       {!loading && result && (
         <>
           <section className="mb-6 border-b border-border pb-5">
@@ -933,7 +1215,7 @@ export default function StockPickerPage() {
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">市场环境</div>
                 <div className="mt-1 text-lg font-bold text-text">{result.market_regime.regime}</div>
-                <div className="text-xs text-text-secondary mt-1">置信度 {(result.market_regime.confidence * 100).toFixed(0)}%</div>
+                <div className="text-xs text-text-secondary mt-1">状态支持度 {(result.market_regime.confidence * 100).toFixed(0)}%</div>
               </div>
               <div className="border border-border bg-card rounded-lg p-3">
                 <div className="text-xs text-text-secondary">{result.factor_filter?.enabled ? '因子后候选' : `${result.sector_filter?.label || '全部行业'}候选`}</div>
@@ -1000,23 +1282,48 @@ export default function StockPickerPage() {
             </div>
           </section>
 
-          {!result.available ? (
-            <section className="border border-[#D2992255] bg-[#D2992218] rounded-lg px-4 py-4 text-sm text-warn flex items-start gap-2">
+          {!result.available && (
+            <section className="border border-[#D2992255] bg-[#D2992218] rounded-lg px-4 py-4 text-sm text-warn flex items-start gap-2 mb-6">
               <AlertTriangle size={17} className="shrink-0 mt-0.5" />
               <div>{result.message}</div>
             </section>
-          ) : (
+          )}
+          {hasDisplayableResults && (
             <>
               <section className="mb-6">
                 <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
                   <div>
                     <h2 className="text-base font-bold text-text flex items-center gap-2"><SearchCheck size={16} className="text-accent" />研究优先级</h2>
-                    <p className="text-xs text-text-secondary mt-1">{result.sector_filter?.label || '全部行业'} · {result.message}</p>
+                    <p className="text-xs text-text-secondary mt-1">{result.selection_style_label || selectionStyles.find((item) => item.id === result.selection_style)?.label || selectionStyles.find((item) => item.id === selectionStyle)?.label || '综合'} · 同业上限 {result.sector_limit ?? sectorLimit}{(result.sector_limit ?? sectorLimit) === 0 ? '（不限）' : '只'} · {result.message}</p>
                   </div>
                   {result.trace_available && <span className="text-xs text-text-secondary">运行记录 #{result.run_id}</span>}
                 </div>
+                <div className="mb-3 flex flex-wrap items-center gap-1 border-b border-border" role="tablist" aria-label="选股结果分类">
+                  {resultTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={resultTab === tab.id}
+                      onClick={() => setResultTab(tab.id)}
+                      className={`rounded-t px-3 py-2 text-xs transition-colors ${resultTab === tab.id ? 'border-b-2 border-accent text-accent' : 'text-text-secondary hover:text-text'}`}
+                    >
+                      {tab.label} <span className="font-mono">{counts[tab.id]}</span>
+                    </button>
+                  ))}
+                  <span className="ml-auto pb-2 text-[11px] text-text-secondary">合格 {counts.qualified} · 待验证 {counts.watch} · 排除 {counts.excluded}</span>
+                </div>
                 <div className="border border-border bg-card rounded-lg overflow-hidden">
-                  <div className="overflow-x-auto">
+                  <div className="sm:hidden divide-y divide-border">
+                    {tabRecommendations.map((stock) => <article key={stock.code} className="p-4">
+                      <div className="flex items-start justify-between gap-3"><div><StockKlineButton code={stock.code} name={stock.name} className="font-semibold text-text">{stock.name}</StockKlineButton><p className="mt-1 text-xs text-text-secondary">{stock.code} · {stock.sector || '行业未标注'}</p></div><div className="text-right shrink-0"><p className="text-[10px] text-text-secondary">研究分</p><b className="font-mono text-accent">{stock.score.toFixed(1)}</b></div></div>
+                      <div className="mt-3 flex flex-wrap gap-2 text-xs"><span className="text-warn">{stock.qualification ? resultTabs.find((tab) => tab.id === stock.qualification?.status)?.label : '历史未复核'}</span><span className="text-accent">{opportunityStatusLabel(stock)}</span></div>
+                      <p className="mt-2 text-xs leading-5 text-text-secondary">{recommendationReasons(stock).slice(0, 2).join('；') || '历史记录需按新规则重新复核'}</p>
+                      <div className="mt-2 flex justify-between text-xs"><span className="font-mono text-text">现价 {stock.price.toFixed(2)} <span className={getChangeColor(stock.change_pct)}>{stock.change_pct >= 0 ? '+' : ''}{stock.change_pct.toFixed(2)}%</span></span><span className="text-text-secondary">{stock.opportunity?.data_date || result.data_date || '日期待核验'}</span></div>
+                      <div className="mt-3 flex gap-3"><button type="button" onClick={() => { setSelectedCode(stock.code); window.requestAnimationFrame(() => document.getElementById("selection-detail")?.scrollIntoView({ behavior: "smooth", block: "start" })); }} className="rounded border border-border px-3 py-2 text-xs text-accent">查看研究</button><button type="button" aria-label={`${compareCodes.includes(stock.code) ? '移出' : '加入'}${stock.name}比较`} aria-pressed={compareCodes.includes(stock.code)} disabled={!compareCodes.includes(stock.code) && compareCodes.length >= 3} onClick={() => setCompareCodes((current) => current.includes(stock.code) ? current.filter((code) => code !== stock.code) : current.length < 3 ? [...current, stock.code] : current)} className="rounded border border-border px-3 py-2 text-xs text-text-secondary disabled:opacity-40">{compareCodes.includes(stock.code) ? '取消比较' : '加入比较'}</button></div>
+                    </article>)}
+                  </div>
+                  <div className="hidden sm:block overflow-x-auto">
                     <table className="w-full table-fixed sm:table-auto text-sm">
                       <thead>
                         <tr className="border-b border-border bg-[#0D1117] text-text-secondary text-xs">
@@ -1033,8 +1340,10 @@ export default function StockPickerPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {recommendations.map((stock) => {
+                        {tabRecommendations.map((stock) => {
                           const active = selected?.code === stock.code;
+                          const reasons = recommendationReasons(stock);
+                          const opportunity = stock.opportunity;
                           return (
                             <tr key={stock.code} className={`border-b border-border/50 transition-colors ${active ? 'bg-[#1F6FEB12]' : 'hover:bg-[#21262D]'}`}>
                               <td className="px-2 sm:px-4 py-3">
@@ -1042,7 +1351,13 @@ export default function StockPickerPage() {
                                   <span className="w-4 sm:w-5 shrink-0 text-xs font-mono text-text-secondary">{stock.rank}</span>
                                   <div className="min-w-0">
                                     <StockKlineButton code={stock.code} name={stock.name} className="font-medium text-text">{stock.name}</StockKlineButton>
-                                    <div className="text-xs text-text-secondary leading-4 break-words">{stock.code} · {stock.sector || '行业未标注'} · {stock.selection_sources.map(sourceLabel).join(' / ')}</div>
+                                    <div className="text-xs text-text-secondary leading-4 break-words">{stock.code} · {stock.sector || '行业未标注'} · {stock.selection_sources?.map(sourceLabel).join(' / ') || '来源未披露'}</div>
+                                    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] leading-4">
+                                      <span className={recommendationStatus(stock) === 'qualified' ? 'text-down' : recommendationStatus(stock) === 'excluded' ? 'text-up' : 'text-warn'}>{recommendationStatus(stock) === 'qualified' ? '合格候选' : recommendationStatus(stock) === 'excluded' ? '已排除' : '待验证观察'}</span>
+                                      <span className="text-accent">{opportunityStatusLabel(stock)}</span>
+                                      {opportunity?.data_date && <span className="text-text-secondary">数据 {opportunity.data_date}</span>}
+                                    </div>
+                                    {reasons.length > 0 && <div className="mt-1 text-[11px] leading-4 text-text-secondary">理由：{reasons.slice(0, 2).join('；')}</div>}
                                   </div>
                                 </div>
                               </td>
@@ -1053,11 +1368,12 @@ export default function StockPickerPage() {
                               <td className="hidden sm:table-cell px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.capital.score.toFixed(0)}</td>
                               <td className={`hidden sm:table-cell px-3 py-3 text-right font-mono ${scoreClass(stock.agents.news.score)}`}>{stock.agents.news.score.toFixed(0)}</td>
                               <td className="hidden sm:table-cell px-3 py-3 text-right font-mono text-text-secondary">{stock.agents.risk.score.toFixed(0)}</td>
-                              <td className="hidden sm:table-cell px-3 py-3"><span className={`inline-flex border rounded px-2 py-1 text-xs whitespace-nowrap ${verdictClass(stock.verdict)}`}>{stock.verdict}</span></td>
+                              <td className="hidden sm:table-cell px-3 py-3"><span className={`inline-flex border rounded px-2 py-1 text-xs whitespace-nowrap ${verdictClass(stock.verdict)}`}>{stock.verdict || opportunityStatusLabel(stock)}</span></td>
                               <td className="px-1 sm:px-2 py-3 text-right">
-                                <button type="button" onClick={() => setSelectedCode(stock.code)} aria-label={`查看${stock.name}的研究轨迹`} title="查看研究轨迹" className="p-1 text-text-secondary hover:text-accent transition-colors">
-                                  <ChevronRight size={18} />
-                                </button>
+                                <div className="flex items-center justify-end gap-1">
+                                  <button type="button" onClick={() => setCompareCodes((current) => current.includes(stock.code) ? current.filter((code) => code !== stock.code) : current.length < 3 ? [...current, stock.code] : current)} aria-pressed={compareCodes.includes(stock.code)} aria-label={`${compareCodes.includes(stock.code) ? '移出' : '加入'}${stock.name}比较`} title="最多比较3项" className={`p-1 transition-colors ${compareCodes.includes(stock.code) ? 'text-accent' : 'text-text-secondary hover:text-accent'}`}><GitCompareArrows size={15} /></button>
+                                  <button type="button" onClick={() => setSelectedCode(stock.code)} aria-label={`查看${stock.name}的研究轨迹`} title="查看研究轨迹" className="p-1 text-text-secondary hover:text-accent transition-colors"><ChevronRight size={18} /></button>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -1068,18 +1384,60 @@ export default function StockPickerPage() {
                 </div>
               </section>
 
+              {comparisonStocks.length > 0 && (
+                <section className="mb-6 border border-accent/40 bg-card rounded-lg p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                    <h3 className="text-sm font-bold text-text flex items-center gap-2"><GitCompareArrows size={16} className="text-accent" />横向比较 <span className="font-mono text-xs text-text-secondary">{comparisonStocks.length}/3</span></h3>
+                    <button type="button" onClick={() => setCompareCodes([])} className="text-xs text-text-secondary hover:text-accent">清空</button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[760px] text-xs">
+                      <thead><tr className="border-b border-border text-text-secondary"><th className="text-left px-2 py-2 font-medium">标的 / 类型</th><th className="text-right px-2 py-2 font-medium">评分</th><th className="text-left px-2 py-2 font-medium">数据质量</th><th className="text-left px-2 py-2 font-medium">价格位置</th><th className="text-left px-2 py-2 font-medium">风险计划</th><th className="text-left px-2 py-2 font-medium">确认 / 条件</th><th className="text-left px-2 py-2 font-medium">行业</th></tr></thead>
+                      <tbody>{comparisonStocks.map((stock) => {
+                        const metrics = stock.agents?.technical?.metrics || {};
+                        const position = metrics.ma20 == null || !stock.price ? '--' : `${((stock.price / Number(metrics.ma20) - 1) * 100).toFixed(1)}% vs MA20`;
+                        return <tr key={stock.code} className="border-b border-border/60 last:border-b-0"><td className="px-2 py-2 text-text"><div className="font-medium">{stock.name} <span className="font-mono text-text-secondary">{stock.code}</span></div><div className="mt-1 text-[11px] text-text-secondary">{recommendationStatus(stock) === 'qualified' ? '合格候选' : recommendationStatus(stock) === 'excluded' ? '已排除' : '待验证观察'} · {opportunityStatusLabel(stock)}</div></td><td className={`px-2 py-2 text-right font-mono font-bold ${scoreClass(stock.score)}`}>{stock.score.toFixed(1)}</td><td className="px-2 py-2 text-text-secondary">{stock.data_quality ?? stock.research?.data_quality?.grade ?? evidenceSupport(stock)}</td><td className="px-2 py-2 font-mono text-text-secondary">{position}</td><td className="px-2 py-2 text-text-secondary">{stock.opportunity?.stop_loss_price == null ? '--' : `止损 ${stock.opportunity.stop_loss_price.toFixed(2)}`} · {stock.opportunity?.reference_target_price == null ? '--' : `目标 ${stock.opportunity.reference_target_price.toFixed(2)}`}</td><td className="max-w-[220px] px-2 py-2 text-text-secondary">{(stock.opportunity?.next_confirmation || stock.horizon_outlook?.validation_conditions || ['未披露']).slice(0, 1).join('；')}<div className="mt-1 text-warn">{(stock.opportunity?.invalidation || stock.horizon_outlook?.invalidation_conditions || ['未披露']).slice(0, 1).join('；')}</div></td><td className="px-2 py-2 text-text-secondary">{stock.sector || '未标注'}</td></tr>;
+                      })}</tbody>
+                    </table>
+                  </div>
+                  <p className="mt-3 text-[11px] text-text-secondary">可从不同名单选择最多3只股票比较，留意同一行业的风险集中。</p>
+                </section>
+              )}
+
               {selected && (
-                <section className="border-t border-border pt-6">
+                <section id="selection-detail" className="border-t border-border pt-6 scroll-mt-16">
                   <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
                     <div>
                       <h2 className="text-lg font-bold text-text flex items-center gap-2">
                         <Target size={18} className="text-warn" /> <StockKlineButton code={selected.code} name={selected.name} className="font-bold text-text">{selected.name}</StockKlineButton>
                         <span className="text-sm font-mono text-text-secondary">{selected.code}</span>
                       </h2>
-                      <p className="text-xs text-text-secondary mt-1">{selected.sector || '行业未标注'} · 置信度 {selected.confidence.toFixed(0)}% · 现价 {selected.price.toFixed(2)} · 换手率 {selected.turnover.toFixed(2)}%</p>
+                      <p className="text-xs text-text-secondary mt-1">{selected.sector || '行业未标注'} · 证据支持度 {evidenceSupport(selected)} · 现价 {selected.price.toFixed(2)} · 换手率 {selected.turnover.toFixed(2)}%</p>
                     </div>
                     <div className="flex items-center gap-2"><AddToPersonalPoolButton code={selected.code} name={selected.name} industry={selected.sector} thesis={`${selected.horizon_outlook.label}：${selected.horizon_outlook.basis}`} source="stock_selection_agent" /><span className={`border rounded px-2.5 py-1 text-sm ${verdictClass(selected.verdict)}`}>{selected.verdict}</span></div>
                   </div>
+
+                  {selected.opportunity && (
+                    <section className="mb-5 border border-accent/40 bg-[#1F6FEB12] rounded-lg p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h3 className="text-sm font-bold text-text">{selected.opportunity.style_label || '选股风格'} · 机会卡</h3>
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-secondary">
+                            <span>类型：{recommendationStatus(selected) === 'qualified' ? '合格候选' : recommendationStatus(selected) === 'excluded' ? '已排除' : '待验证观察'}</span>
+                            <span>阶段：{selected.opportunity.status_label || selected.opportunity.status}</span>
+                            <span>数据日期：{selected.opportunity.data_date || result.data_date || '未披露'}</span>
+                          </div>
+                        </div>
+                        <span className={`rounded border px-2 py-1 text-xs ${recommendationStatus(selected) === 'qualified' ? 'border-down/50 text-down' : recommendationStatus(selected) === 'excluded' ? 'border-up/50 text-up' : 'border-warn/50 text-warn'}`}>{recommendationStatus(selected) === 'watch' && !selected.qualification ? '历史未复核' : selected.opportunity.status_label || selected.opportunity.status}</span>
+                      </div>
+                      <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+                        <div><div className="font-medium text-text">{recommendationStatus(selected) === 'qualified' ? '入选理由' : recommendationStatus(selected) === 'excluded' ? '排除理由' : '待验证理由'}</div><div className="mt-1.5 space-y-1 text-text-secondary">{(recommendationReasons(selected).length ? recommendationReasons(selected) : ['理由未披露']).map((item) => <p key={item} className="leading-5">{item}</p>)}</div></div>
+                        <div><div className="font-medium text-accent">下一确认</div><div className="mt-1.5 space-y-1 text-text-secondary">{(selected.opportunity.next_confirmation || selected.horizon_outlook.validation_conditions || ['暂无']).map((item) => <p key={item} className="leading-5">{item}</p>)}</div></div>
+                        <div><div className="font-medium text-warn">失效条件</div><div className="mt-1.5 space-y-1 text-text-secondary">{(selected.opportunity.invalidation || selected.horizon_outlook.invalidation_conditions || ['暂无']).map((item) => <p key={item} className="leading-5">{item}</p>)}</div></div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 border-t border-border/70 pt-3 text-xs text-text-secondary"><span>止损参考 {selected.opportunity.stop_loss_price == null ? '--' : moneyValue(selected.opportunity.stop_loss_price)}</span><span>目标参考 {selected.opportunity.reference_target_price == null ? '--' : moneyValue(selected.opportunity.reference_target_price)}</span><span>参考价格比值 {selected.opportunity.reward_risk_ratio == null ? '--' : selected.opportunity.reward_risk_ratio.toFixed(2)}</span></div>
+                    </section>
+                  )}
 
                   <section className="border-y border-border py-4 mb-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1096,7 +1454,7 @@ export default function StockPickerPage() {
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-3 mt-4">
                       <div><div className="text-xs text-text-secondary">潜力分</div><div className={`mt-1 font-mono text-lg font-bold ${scoreClass(selected.horizon_outlook.potential_score)}`}>{selected.horizon_outlook.potential_score.toFixed(1)}</div></div>
-                      <div><div className="text-xs text-text-secondary">结论置信度</div><div className="mt-1 font-mono text-lg font-bold text-text">{selected.horizon_outlook.confidence.toFixed(0)}%</div></div>
+                      <div><div className="text-xs text-text-secondary">证据支持度</div><div className="mt-1 font-mono text-lg font-bold text-text">{evidenceSupport(selected)}</div></div>
                       <div><div className="text-xs text-text-secondary">观察周期</div><div className="mt-1 font-mono text-lg font-bold text-text">{selected.horizon_outlook.trading_days}日</div></div>
                       <div><div className="text-xs text-text-secondary">历史波动区间</div><div className="mt-1 font-mono text-lg font-bold text-text">{selected.horizon_outlook.volatility_range_pct == null ? '--' : `±${selected.horizon_outlook.volatility_range_pct.toFixed(2)}%`}</div></div>
                     </div>

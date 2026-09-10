@@ -913,6 +913,26 @@ class DataCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["stocks"][0]["sector"], "")
         self.assertIsNone(result["stocks"][0]["main_net_inflow"])
 
+    async def test_fundamental_style_uses_complete_market_snapshot_before_cut(self):
+        collector = EastMoneyDataCollector()
+        collector.fetch_quant_market_snapshot = AsyncMock(return_value={
+            "source": "eastmoney", "complete": True, "total": 2,
+            "stocks": [
+                {"code": "600001", "name": "未启动价值股", "price": 10, "change_pct": 0.2,
+                 "turnover": 1, "pe": 10, "pb": 1, "roe": 20},
+                {"code": "600002", "name": "高动量股", "price": 10, "change_pct": 9,
+                 "turnover": 10, "pe": 30, "pb": 4, "roe": 8},
+            ],
+        })
+
+        result = await collector.fetch_intelligent_selection_candidates(
+            page_size=1, selection_style="fundamental",
+        )
+
+        collector.fetch_quant_market_snapshot.assert_awaited_once()
+        self.assertEqual(result["stocks"][0]["code"], "600001")
+        self.assertEqual(result["stocks"][0]["selection_sources"], ["fundamental_universe"])
+
     async def test_tencent_complete_history_preserves_amount_turnover_and_units(self):
         collector = EastMoneyDataCollector()
 

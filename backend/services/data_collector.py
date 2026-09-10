@@ -2943,23 +2943,96 @@ class EastMoneyDataCollector:
         page_size: int = 180,
         *,
         force_numcat: bool = False,
+        selection_style: str = "balanced",
     ) -> dict:
         """Build a live candidate pool from capital flow, volume and momentum leaders.
 
         The union avoids a single sorting dimension dominating the stock picker.
         It intentionally uses only verified, non-zero-price A-share quotes.
         """
+        style = str(selection_style or "balanced").strip().lower()
+        style_sort_fields = {
+            "balanced": ("f62", "f10", "f3"),
+            "early": ("f8", "f10", "f3"),
+            "trend": ("f3", "f62", "f10"),
+            "pullback": ("f3", "f8", "f10"),
+        }
+        if style in {"fundamental", "pullback", "early"} and not force_numcat:
+            try:
+                universe = await self.fetch_quant_market_snapshot()
+                stocks = list(universe.get("stocks") or [])
+                stocks.sort(key=lambda item: self._selection_style_priority(item, style), reverse=True)
+                stocks = stocks[:max(1, min(int(page_size), 500))]
+                for stock in stocks:
+                    stock["selection_sources"] = [f"{style}_universe"]
+                return {
+                    **universe,
+                    "total": len(stocks),
+                    "scan_total": as_int(universe.get("total"), len(stocks)),
+                    "stocks": stocks,
+                    "selection_style": style,
+                }
+            except Exception as exc:
+                print(f"Fundamental universe scan failed: {type(exc).__name__}")
+                # Do not relabel a turnover/flow leader pool as fundamental.
+                # NumCat below may still provide a full screening payload and
+                # enrich it before selecting; otherwise report the gap.
+                if not numcat_market_provider.configured:
+                    return {
+                        "total": 0, "stocks": [], "source": "eastmoney",
+                        "is_realtime": False, "data_date": None,
+                        "error": f"{style}_universe_unavailable",
+                    }
+        style_sort_fields["fundamental"] = ("f8", "f62", "f3")
+        sort_fields = style_sort_fields.get(style, style_sort_fields["balanced"])
+
         if numcat_market_provider.configured:
             try:
                 rows = await numcat_market_provider.screening(
-                    enrichment_limit=max(500, min(int(page_size) * 2, 1000)),
+                    # Fundamental recall must receive the complete screening
+                    # rows before any page-size cut. Other styles can use the
+                    # provider's bounded valuation enrichment.
+                    enrichment_limit=0 if style == "fundamental" else max(500, min(int(page_size) * 2, 1000)),
                 )
-                rows.sort(key=lambda item: (
-                    as_float(item.get("volume_ratio")),
-                    as_float(item.get("change_pct")),
-                    as_float(item.get("turnover")),
-                ), reverse=True)
+                if style == "fundamental" and rows:
+                    all_codes = [str(item.get("code") or "") for item in rows if item.get("code")]
+                    batches = [all_codes[start:start + 2000] for start in range(0, len(all_codes), 2000)]
+                    valuation_results, finance_results = await asyncio.gather(
+                        asyncio.gather(*(
+                            numcat_market_provider.valuation(batch)
+                            for batch in batches
+                        ), return_exceptions=True),
+                        asyncio.gather(*(
+                            numcat_market_provider.finance_indicator(batch, as_of=shanghai_now().isoformat(), limit=2000)
+                            for batch in batches
+                        ), return_exceptions=True),
+                    )
+                    valuation_by_code = {
+                        str(item.get("code") or ""): item
+                        for result in valuation_results if not isinstance(result, Exception)
+                        for item in result
+                    }
+                    finance_by_code = {
+                        str(item.get("code") or ""): item
+                        for result in finance_results if not isinstance(result, Exception)
+                        for item in result
+                    }
+                    for stock in rows:
+                        code = str(stock.get("code") or "")
+                        valuation = valuation_by_code.get(code) or {}
+                        finance = finance_by_code.get(code) or {}
+                        stock.update({
+                            "pe": valuation.get("pe_ttm") if valuation.get("pe_ttm") is not None else valuation.get("pe"),
+                            "pb": valuation.get("pb"),
+                            "roe": finance.get("roe"),
+                            "financial_report_date": finance.get("report_date"),
+                            "financial_disclosed_at": finance.get("announce_date"),
+                        })
+                rows.sort(key=lambda item: self._selection_style_priority(item, style), reverse=True)
                 stocks = rows[:max(1, min(int(page_size), 500))]
+                source_tag = "numcat_fundamental_enrichment" if style == "fundamental" else "numcat_screening"
+                for stock in stocks:
+                    stock.setdefault("selection_sources", [source_tag])
                 if stocks:
                     codes = [str(item["code"]) for item in stocks]
                     finance_result, flow_result = await asyncio.gather(
@@ -2999,6 +3072,10 @@ class EastMoneyDataCollector:
                         "scan_total": len(rows),
                         "stocks": stocks,
                         "source": "numcat",
+                        "selection_style_note": (
+                            "基本面字段已在截取前按全量筛选行分批补充；供应商返回空值的项目仍待财报核验。"
+                            if style == "fundamental" else None
+                        ),
                         "is_realtime": bool(
                             data_date == now.date().isoformat()
                             and is_a_share_market_session(now)
@@ -3018,6 +3095,12 @@ class EastMoneyDataCollector:
                         "data_date": None,
                         "error": "numcat_upstream_unavailable",
                     }
+                if style == "fundamental":
+                    return {
+                        "total": 0, "stocks": [], "source": "numcat",
+                        "is_realtime": False, "data_date": None,
+                        "error": "fundamental_screening_unavailable",
+                    }
 
         if force_numcat:
             return {
@@ -3028,6 +3111,12 @@ class EastMoneyDataCollector:
                 "data_date": None,
                 "error": "numcat_not_configured",
             }
+        if style == "fundamental":
+            return {
+                "total": 0, "stocks": [], "source": "eastmoney",
+                "is_realtime": False, "data_date": None,
+                "error": f"{style}_universe_unavailable",
+            }
 
         base_filters = {
             "min_change": -100,
@@ -3036,15 +3125,17 @@ class EastMoneyDataCollector:
             "page_size": min(max(page_size, 50), 300),
             "exclude_special": True,
         }
-        snapshots = await asyncio.gather(
-            self.fetch_technical_screener({**base_filters, "sort_field": "f62"}),
-            self.fetch_technical_screener({**base_filters, "sort_field": "f10"}),
-            self.fetch_technical_screener({**base_filters, "sort_field": "f3"}),
-        )
+        snapshots = await asyncio.gather(*(
+            self.fetch_technical_screener({**base_filters, "sort_field": sort_field})
+            for sort_field in sort_fields
+        ))
 
         candidates: dict[str, dict] = {}
-        source_names = ("fund_flow", "volume", "momentum")
-        for source_name, snapshot in zip(source_names, snapshots):
+        source_labels = {
+            "f62": "fund_flow", "f10": "volume", "f3": "momentum", "f8": "turnover",
+        }
+        for sort_field, snapshot in zip(sort_fields, snapshots):
+            source_name = source_labels[sort_field]
             for stock in snapshot.get("stocks") or []:
                 code = stock["code"]
                 if code not in candidates:
@@ -3058,7 +3149,11 @@ class EastMoneyDataCollector:
             change_score = max(-15.0, min(20.0, as_float(stock.get("change_pct")) * 3))
             return flow_score + volume_score + change_score + len(stock.get("selection_sources", [])) * 5
 
-        stocks = sorted(candidates.values(), key=priority, reverse=True)
+        stocks = sorted(
+            candidates.values(),
+            key=lambda stock: (self._selection_style_priority(stock, style), priority(stock)),
+            reverse=True,
+        )
         if stocks:
             return {
                 "total": len(stocks),
@@ -3068,6 +3163,27 @@ class EastMoneyDataCollector:
                 **self._quote_snapshot_metadata(stocks),
             }
         return await self._fetch_ftshare_intelligent_selection_candidates(page_size)
+
+    @staticmethod
+    def _selection_style_priority(stock: dict, style: str) -> tuple[float, ...]:
+        """Rank only on fields exposed by the upstream screener contract."""
+        change = as_float(stock.get("change_pct"))
+        volume_ratio = as_float(stock.get("volume_ratio"))
+        turnover = as_float(stock.get("turnover"))
+        inflow = as_float(stock.get("main_net_inflow")) / 1e8
+        pe = as_optional_float(stock.get("pe"))
+        roe = as_optional_float(stock.get("roe"))
+        if style == "early":
+            return (float(0 <= change <= 4 and 1 <= volume_ratio <= 4), -abs(change - 2), -abs(turnover - 4), inflow)
+        if style == "trend":
+            return (change, inflow, volume_ratio, turnover)
+        if style == "pullback":
+            return (float(-5 <= change <= 0), -abs(change + 2), -abs(turnover - 3), inflow)
+        if style == "fundamental":
+            # PE/ROE are included only when actually supplied by the provider;
+            # missing values remain tied and are never converted to a claim.
+            return (float(roe is not None and roe > 0 and pe is not None and pe > 0), roe if roe is not None else -1e9, -pe if pe is not None and pe > 0 else -1e9, -abs(change))
+        return (inflow, volume_ratio, change, turnover)
 
     async def _fetch_ftshare_intelligent_selection_candidates(self, page_size: int) -> dict:
         """Use FTShare quotes only when every primary candidate ranking is empty.

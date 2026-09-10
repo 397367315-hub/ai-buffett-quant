@@ -43,6 +43,16 @@ from quant.risk import assess_stock_risk
 
 VALID_SELECTION_MODES = {"quick", "full", "numcat"}
 VALID_RISK_PROFILES = {"conservative", "balanced", "aggressive"}
+VALID_SELECTION_STYLES = {"balanced", "early", "trend", "pullback", "fundamental"}
+SELECTION_STYLE_LABELS = {
+    "balanced": "均衡",
+    "early": "早期发现",
+    "trend": "趋势延续",
+    "pullback": "回撤修复",
+    "fundamental": "基本面优先",
+}
+VALID_SECTOR_LIMITS = range(0, 11)
+QUALIFIED_SCORE = 72.0
 
 PROFILE_CONFIG = {
     "conservative": {
@@ -450,6 +460,127 @@ class StockSelectionAgentService:
         volume_score = _clamp(as_float(stock.get("volume_ratio")) * 5, 0, 20)
         change_score = _clamp(as_float(stock.get("change_pct")) * 3, -15, 20)
         return flow_score + volume_score + change_score + len(stock.get("selection_sources") or []) * 5
+
+    @staticmethod
+    def _style_priority(stock: dict, style: str) -> tuple[float, ...]:
+        """Share the same recall priorities with the upstream candidate service."""
+        return collector._selection_style_priority(stock, style)
+
+    @classmethod
+    def _diversify_candidates(
+        cls, candidates: list[dict], style: str, limit: int,
+    ) -> list[dict]:
+        """Round-robin source strata so the analysis cap cannot erase a source."""
+        ranked = sorted(
+            candidates,
+            key=lambda stock: (cls._style_priority(stock, style), cls._preliminary_priority(stock)),
+            reverse=True,
+        )
+        buckets: dict[str, list[dict]] = defaultdict(list)
+        for stock in ranked:
+            sources = stock.get("selection_sources") or ["unclassified"]
+            bucket = str(sources[0] or "unclassified")
+            buckets[bucket].append(stock)
+        if len(buckets) <= 1:
+            return ranked[:limit]
+        output: list[dict] = []
+        while len(output) < limit and any(buckets.values()):
+            for bucket in list(buckets):
+                if buckets[bucket]:
+                    output.append(buckets[bucket].pop(0))
+                    if len(output) >= limit:
+                        break
+        return output
+
+    @staticmethod
+    def _qualification(item: dict) -> tuple[str, list[str]]:
+        agents = item.get("agents") or {}
+        risk = agents.get("risk") or {}
+        structural = risk.get("structural_risk") or {}
+        research = item.get("research") or {}
+        quality = research.get("data_quality") or {}
+        audit = research.get("strategy_audit") or {}
+        reasons: list[str] = []
+        hard_blocks = list(structural.get("hard_blocks") or [])
+        if structural.get("hard_blocked"):
+            reasons.extend(hard_blocks or ["触发硬性风险否决条件"])
+            return "excluded", list(dict.fromkeys(reasons))
+        if quality.get("grade") not in {"充分", "一般"}:
+            reasons.append("证据不足：关键数据完整度未达到研究要求")
+        if not audit or not audit.get("overall_risk"):
+            reasons.append("审计证据缺失，暂不进入推荐")
+        if audit.get("blockers"):
+            reasons.extend(f"审计阻断：{reason}" for reason in audit["blockers"])
+        if audit.get("overall_risk") in {"高", "致命"}:
+            reasons.append(f"审计风险为{audit.get('overall_risk')}，暂不进入推荐")
+        risk_level = str((risk.get("plan") or {}).get("risk_level") or "")
+        if risk_level == "高" or risk.get("signal") == "高风险":
+            reasons.append("风险等级为高")
+        score = _optional_number(item.get("score"))
+        if score is None or score < QUALIFIED_SCORE:
+            reasons.append(f"研究合格分不足（{score if score is not None else '缺失'}，要求{QUALIFIED_SCORE:g}）")
+        if reasons:
+            return "watch", list(dict.fromkeys(reasons))
+        evidence = ((agents.get("supervisor") or {}).get("debate") or {}).get("bull_points") or []
+        return "qualified", [f"研究分{score:g}，通过数据与风险门槛", *[str(value) for value in evidence[:3]]]
+
+    @staticmethod
+    def _opportunity(
+        item: dict, style: str, style_label: str, *, data_date: str | None, is_realtime: bool,
+    ) -> dict:
+        agents = item.get("agents") or {}
+        risk = agents.get("risk") or {}
+        plan = risk.get("plan") or {}
+        outlook = item.get("horizon_outlook") or {}
+        quality = ((item.get("research") or {}).get("data_quality") or {})
+        price = _optional_number(item.get("price"))
+        invalidation = list(outlook.get("invalidation_conditions") or [])
+        confirmation = list(outlook.get("validation_conditions") or [])
+        reasons: list[str] = []
+        valid_quote = bool(price and price > 0 and (data_date or is_realtime))
+        structural = risk.get("structural_risk") or {}
+        if structural.get("hard_blocked") or not price or price <= 0:
+            status = "invalid"
+            reasons.extend(structural.get("hard_blocks") or ["行情价格无效或触发硬性风险否决"])
+        elif quality.get("grade") not in {"充分", "一般"} or not data_date:
+            status = "needs_data"
+            reasons.extend(quality.get("missing") or ["缺少可核验数据日期或关键研究证据"])
+        elif not valid_quote:
+            status = "needs_data"
+            reasons.append("行情快照缺少可核验有效时间")
+        elif as_float(item.get("change_pct")) > 8:
+            status = "overheated"
+            reasons.append("单日涨幅过大，等待情绪降温或回踩确认")
+        elif outlook.get("confirmation_met") is True and is_realtime and (item.get("qualification") or {}).get("status") == "qualified" and data_date == shanghai_now().date().isoformat() and confirmation:
+            status = "ready"
+            reasons.append("行情有效，且已有可核验的技术/资金确认条件")
+        else:
+            status = "waiting"
+            reasons.append("确认条件仍待验证；当前条件只是研究观察线索")
+            if style in {"early", "pullback"}:
+                reasons.append("尚未验证启动或企稳")
+        stop = _optional_number(plan.get("stop_loss_price"))
+        target = _optional_number(plan.get("reference_target_price"))
+        ratio = None
+        if price and stop is not None and target is not None and target > price > stop > 0:
+            ratio = round((target - price) / (price - stop), 2)
+        labels = {
+            "waiting": "等待确认", "ready": "确认就绪", "overheated": "短线过热",
+            "invalid": "条件失效", "needs_data": "待补数据",
+        }
+        return {
+            "style": style,
+            "style_label": style_label,
+            "status": status,
+            "status_label": labels[status],
+            "reasons": list(dict.fromkeys(reasons)),
+            "next_confirmation": ([f"{style_label}为研究方向，仍需验证价格结构及基本证据"] + confirmation)[:4],
+            "invalidation": list(dict.fromkeys(invalidation))[:6],
+            "data_date": data_date,
+            "stop_loss_price": round(stop, 2) if stop is not None else None,
+            "reference_target_price": round(target, 2) if target is not None else None,
+            "reward_risk_ratio": ratio,
+        }
 
     def _technical_agent(self, stock: dict, history: list[dict]) -> dict:
         price = as_float(stock.get("price"))
@@ -1338,6 +1469,8 @@ class StockSelectionAgentService:
         sector_code: str | None = None,
         horizon: str = "week",
         factor_filters: dict | None = None,
+        selection_style: str = "balanced",
+        sector_limit: int = 2,
     ) -> dict:
         if mode not in VALID_SELECTION_MODES:
             raise ValueError("mode 必须是 quick、full 或 numcat")
@@ -1345,6 +1478,15 @@ class StockSelectionAgentService:
             raise ValueError("risk_profile 必须是 conservative、balanced 或 aggressive")
         if horizon not in VALID_HORIZONS:
             raise ValueError("horizon 必须是 week、half_month 或 month")
+        selection_style = str(selection_style or "balanced").strip().lower()
+        if selection_style not in VALID_SELECTION_STYLES:
+            raise ValueError("selection_style 必须是 balanced、early、trend、pullback 或 fundamental")
+        try:
+            sector_limit = int(sector_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("sector_limit 必须是 0 到 10 的整数") from exc
+        if sector_limit not in VALID_SECTOR_LIMITS:
+            raise ValueError("sector_limit 必须是 0 到 10 的整数")
         top_n = min(max(int(top_n), 3), 10)
         sector_filter = _normalise_sector(sector)
         sector_board_code = normalize_board_code(sector_code) if sector_code else ""
@@ -1359,10 +1501,11 @@ class StockSelectionAgentService:
             else (lambda: collector.fetch_intelligent_selection_candidates(
                 page_size=500 if mode == "numcat" else 180,
                 force_numcat=mode == "numcat",
+                selection_style=selection_style,
             ))
         )
         source_awaitable = self._candidate_snapshot(
-            f"stock_selection_candidates_v1:{'numcat:' if mode == 'numcat' else ''}{sector_board_code or 'market'}",
+            f"stock_selection_candidates_v1:{'numcat:' if mode == 'numcat' else ''}{sector_board_code or 'market'}:{selection_style}",
             candidate_fetcher,
             prefer_cache=not market_session,
         )
@@ -1406,9 +1549,8 @@ class StockSelectionAgentService:
         sector_candidate_count = len(candidates)
         candidates, factor_metadata = self._apply_factor_filters(candidates, factor_config)
         filtered_candidate_count = len(candidates)
-        candidates.sort(key=self._preliminary_priority, reverse=True)
         analysis_limit = self._FULL_ANALYSIS_LIMIT if mode == "full" else self._QUICK_ANALYSIS_LIMIT
-        candidates = candidates[:analysis_limit]
+        candidates = self._diversify_candidates(candidates, selection_style, analysis_limit)
         source_data_date = (
             str(source_result.get("data_date") or "") or None
             if not isinstance(source_result, Exception)
@@ -1530,6 +1672,17 @@ class StockSelectionAgentService:
             research_ready=bool(analyzed),
         )
 
+        common_parameters = {
+            "mode": mode,
+            "risk_profile": risk_profile,
+            "horizon": horizon,
+            "top_n": top_n,
+            "sector": sector_filter or None,
+            "sector_code": sector_board_code or None,
+            "selection_style": selection_style,
+            "sector_limit": sector_limit,
+            "factor_filters": factor_config,
+        }
         if not analyzed:
             if factor_config["enabled"] and sector_candidate_count and not filtered_candidate_count:
                 empty_message = "当前候选全部未通过已启用的因子条件，请放宽阈值或关闭部分因子。"
@@ -1547,6 +1700,11 @@ class StockSelectionAgentService:
                 "risk_profile": risk_profile,
                 "risk_profile_label": PROFILE_CONFIG[risk_profile]["label"],
                 "research_horizon": {"id": horizon, **HORIZON_CONFIG[horizon]},
+                "selection_style": selection_style,
+                "selection_style_label": SELECTION_STYLE_LABELS[selection_style],
+                "selection_style_note": source_result.get("selection_style_note") if not isinstance(source_result, Exception) else None,
+                "sector_limit": sector_limit,
+                "selection_parameters": common_parameters,
                 "market_regime": regime,
                 "candidate_summary": {
                     "live_candidates": filtered_candidate_count,
@@ -1565,23 +1723,53 @@ class StockSelectionAgentService:
                 "feature_warnings": feature_warnings,
                 "agent_pipeline": pipeline,
                 "recommendations": [],
+                "watchlist": [],
+                "excluded": [],
+                "qualification_summary": {"qualified": 0, "watch": 0, "excluded": 0},
                 "message": empty_message,
                 "disclaimer": "结果仅供研究与学习参考，不构成任何投资建议。",
             }
 
-        eligible = [
-            item for item in analyzed
-            if not bool(
-                (((item.get("agents") or {}).get("risk") or {}).get("structural_risk") or {}).get("hard_blocked")
+        for item in analyzed:
+            status, reasons = self._qualification(item)
+            item["qualification"] = {"status": status, "reasons": reasons}
+            item["opportunity"] = self._opportunity(
+                item, selection_style, SELECTION_STYLE_LABELS[selection_style],
+                data_date=data_date, is_realtime=is_realtime,
             )
-        ]
-        risk_excluded_count = len(analyzed) - len(eligible)
-        recommendations = eligible[:top_n]
+        qualified = [item for item in analyzed if item["qualification"]["status"] == "qualified"]
+        watchlist = [item for item in analyzed if item["qualification"]["status"] == "watch"]
+        excluded = [item for item in analyzed if item["qualification"]["status"] == "excluded"]
+        # Only known, exact industry labels consume the user-selected quota.
+        if sector_limit:
+            sector_counts: dict[str, int] = defaultdict(int)
+            for item in qualified:
+                item_sector = _normalise_sector(item.get("sector"))
+                if not item_sector:
+                    continue
+                if sector_counts[item_sector] >= sector_limit:
+                    item["qualification"] = {
+                        "status": "watch",
+                        "reasons": [f"行业配额已满：{item_sector}最多{sector_limit}只"],
+                    }
+                    watchlist.append(item)
+                else:
+                    sector_counts[item_sector] += 1
+            qualified = [item for item in qualified if item["qualification"]["status"] == "qualified"]
+            watchlist.sort(key=lambda item: (item.get("score", 0), item.get("confidence", 0)), reverse=True)
+        risk_excluded_count = len(excluded)
+        recommendations = qualified[:top_n]
+        for overflow in qualified[top_n:]:
+            overflow["qualification"] = {"status": "watch", "reasons": ["通过研究门槛，但本轮展示名额已满；继续观察"]}
+            if overflow["opportunity"]["status"] == "ready":
+                overflow["opportunity"].update(status="waiting", status_label="等待确认")
+            watchlist.append(overflow)
+        watchlist.sort(key=lambda item: (item.get("score", 0), item.get("confidence", 0)), reverse=True)
         for index, recommendation in enumerate(recommendations, start=1):
             recommendation["rank"] = index
         selection_available = bool(recommendations)
         if not selection_available:
-            selection_message = "本轮候选全部触发不可抵消的风险否决条件，系统未生成潜力股推荐。"
+            selection_message = "本轮没有达到研究合格门槛的候选，系统未生成潜力股推荐；观察名单和排除名单仍保留。"
         else:
             selection_message = (
                 f"按{HORIZON_CONFIG[horizon]['label']}窗口调整因子权重，并以近一年相似形态做低权重校验；"
@@ -1601,6 +1789,11 @@ class StockSelectionAgentService:
             "risk_profile": risk_profile,
             "risk_profile_label": PROFILE_CONFIG[risk_profile]["label"],
             "research_horizon": {"id": horizon, **HORIZON_CONFIG[horizon]},
+            "selection_style": selection_style,
+            "selection_style_label": SELECTION_STYLE_LABELS[selection_style],
+            "selection_style_note": source_result.get("selection_style_note") if not isinstance(source_result, Exception) else None,
+            "sector_limit": sector_limit,
+            "selection_parameters": common_parameters,
             "market_regime": regime,
             "candidate_summary": {
                 "live_candidates": filtered_candidate_count,
@@ -1619,6 +1812,11 @@ class StockSelectionAgentService:
             "feature_warnings": feature_warnings,
             "agent_pipeline": pipeline,
             "recommendations": recommendations,
+            "watchlist": watchlist,
+            "excluded": excluded,
+            "qualification_summary": {
+                "qualified": len(qualified), "watch": len(watchlist), "excluded": len(excluded),
+            },
             "message": selection_message,
             "disclaimer": "结果仅供研究与学习参考，不构成任何投资建议。市场行情和指标会随盘中数据变化。",
         }
