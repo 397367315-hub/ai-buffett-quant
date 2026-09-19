@@ -149,6 +149,26 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["001216"]["market_cap"], 4_200_000_000)
         self.assertEqual(metadata["001216"]["trade_date"], "2026-09-10")
 
+    def test_cleared_resistance_is_not_reused_as_forward_target(self):
+        service = WildmanService()
+        rows = [self._bar(index) for index in range(30)]
+        for row in rows[:-1]:
+            row.high_price = 9.8
+        rows[-1].close_price = 10.5
+        rows[-1].high_price = 10.6
+        rows[-1].change_pct = 6.0
+
+        facts = service._stock_facts(
+            {"code": "001216", "name": "华瓷股份", "continuous_days": 1},
+            rows,
+            None,
+            {"limit_up_count": 3, "max_limit_height": 1},
+            {},
+        )
+
+        self.assertTrue(facts["break_neckline"])
+        self.assertIsNone(facts["pressure_price"])
+
 
 if __name__ == "__main__":
     unittest.main()

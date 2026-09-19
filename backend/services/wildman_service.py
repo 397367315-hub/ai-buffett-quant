@@ -183,6 +183,7 @@ class WildmanService:
         volume_contract = latest_volume is not None and volume_values and latest_volume < sum(volume_values) / len(volume_values) * .8
         recent_highs = [_num(row.high_price) for row in rows[-21:-1]]
         pressure = max((value for value in recent_highs if value is not None), default=None)
+        pressure_target = pressure if close is not None and pressure is not None and pressure > close else None
         recent_peak = max((value for value in [_num(row.high_price) for row in rows[-30:]] if value is not None), default=None)
         drawdown = (close / recent_peak - 1) * 100 if close and recent_peak else None
         height = int(_num(item.get("continuous_days")) or 1)
@@ -227,7 +228,9 @@ class WildmanService:
             "holds_limit_candle_half": True if height >= 1 else None,
             "limit_candle_half": round(((low or 0) + (high or 0)) / 2, 3) if low and high else None,
             "renewed_volume_breakout": latest is not None and _num(latest.change_pct) is not None and latest.change_pct >= 3 and not volume_contract,
-            "pressure_price": pressure,
+            # A former high that price has already cleared is evidence of a
+            # breakout, not a valid forward target for risk/reward math.
+            "pressure_price": pressure_target,
             "fake_breakout": bool(close and pressure and close < pressure and latest_change_pct > 5 and volume_contract),
             "high_volume_stall": bool(latest_volume and volume_values and latest_volume > sum(volume_values) / len(volume_values) * 1.8 and latest_change_pct < 1),
             "anchor_broken": False, "open_low": auction_pct is not None and auction_pct < 0,
