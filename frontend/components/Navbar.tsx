@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, Bell, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge, Database, History as HistoryIcon } from 'lucide-react';
+import { Activity, BarChart3, Bell, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge, Database, Crosshair, History as HistoryIcon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -23,6 +23,7 @@ const proSubItems = [
   { href: '/pro/potential', label: '潜力股分析', icon: Sparkles },
   { href: '/pro/stock-picker', label: '智能选股', icon: BrainCircuit },
   { href: '/strong-stock-decision', label: '强势股交易决策', icon: Flame },
+  { href: '/wildman', label: '野人哥交易决策', icon: Crosshair },
   { href: '/pro/personal', label: '个人投资池', icon: Bookmark },
   { href: '/pro/robot', label: 'AI机器人池', icon: Bot },
   { href: '/pro/portfolio', label: '仓位管理', icon: PieChart },

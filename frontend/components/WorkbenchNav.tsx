@@ -12,6 +12,7 @@ const LINKS = [
   ['/research/midday', '午间研究'],
   ['/roci', '风险机会'],
   ['/strong-stock-decision', '强势股决策'],
+  ['/wildman', '野人哥决策'],
   ['/pro/stock-picker', '智能选股'],
   ['/quant', '量化策略'],
   ['/pro/flow-observer', '资金流观察'],

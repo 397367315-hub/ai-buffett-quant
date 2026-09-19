@@ -3146,5 +3146,131 @@ class MarginRefreshJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class WildmanMarketCycle(Base):
+    """Versioned daily facts and the resulting strict Wildman cycle state."""
+
+    __tablename__ = "wildman_market_cycle"
+    __table_args__ = (UniqueConstraint("trade_date", "rule_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    rule_version = Column(String(32), nullable=False, default="WM_RULE_CORE_V1_0")
+    cycle = Column(String(32), nullable=False)
+    cycle_node = Column(String(40), nullable=False)
+    max_limit_height = Column(Integer)
+    limit_up_count = Column(Integer)
+    limit_down_count = Column(Integer)
+    nuclear_button_count = Column(Integer)
+    yesterday_limit_loss_count = Column(Integer)
+    evidence_json = Column(JSON, nullable=False, default=list)
+    allowed_actions_json = Column(JSON, nullable=False, default=list)
+    forbidden_actions_json = Column(JSON, nullable=False, default=list)
+    data_quality_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WildmanMainline(Base):
+    """Auditable five-step mainline state without an opaque score."""
+
+    __tablename__ = "wildman_mainline"
+    __table_args__ = (UniqueConstraint("trade_date", "theme_id", "rule_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    theme_id = Column(String(40), nullable=False)
+    theme_name = Column(String(160), nullable=False)
+    rule_version = Column(String(32), nullable=False, default="WM_RULE_CORE_V1_0")
+    state = Column(String(40), nullable=False)
+    step1_pass = Column(Boolean)
+    step2_pass = Column(Boolean)
+    step3_pass = Column(Boolean)
+    step4_pass = Column(Boolean)
+    step5_pass = Column(Boolean)
+    evidence_json = Column(JSON, nullable=False, default=list)
+    missing_json = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WildmanStockRole(Base):
+    """Daily rule-based stock role inside a theme."""
+
+    __tablename__ = "wildman_stock_role"
+    __table_args__ = (UniqueConstraint("trade_date", "symbol", "theme_id", "rule_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    symbol = Column(String(20), nullable=False)
+    stock_name = Column(String(120))
+    theme_id = Column(String(40), nullable=False, default="UNKNOWN")
+    role = Column(String(40), nullable=False)
+    rule_version = Column(String(32), nullable=False, default="WM_RULE_CORE_V1_0")
+    role_evidence_json = Column(JSON, nullable=False, default=list)
+    confidence_source = Column(String(24), nullable=False, default="rule_based")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WildmanCandidate(Base):
+    """Compact candidate snapshot used for replay and later research."""
+
+    __tablename__ = "wildman_candidate"
+    __table_args__ = (UniqueConstraint("trade_date", "symbol", "setup_type", "rule_version"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_date = Column(Date, nullable=False)
+    symbol = Column(String(20), nullable=False)
+    stock_name = Column(String(120))
+    theme_id = Column(String(40), nullable=False, default="UNKNOWN")
+    theme_name = Column(String(160))
+    rule_version = Column(String(32), nullable=False, default="WM_RULE_CORE_V1_0")
+    market_cycle = Column(String(32), nullable=False)
+    cycle_node = Column(String(40), nullable=False)
+    role = Column(String(40), nullable=False)
+    setup_type = Column(String(48), nullable=False)
+    candidate_status = Column(String(32), nullable=False)
+    anchor_type = Column(String(48))
+    anchor_price = Column(Float)
+    risk_reward = Column(Float)
+    position_json = Column(JSON, nullable=False, default=dict)
+    exit_plan_json = Column(JSON, nullable=False, default=dict)
+    risk_flags_json = Column(JSON, nullable=False, default=list)
+    passed_rules_json = Column(JSON, nullable=False, default=list)
+    failed_rules_json = Column(JSON, nullable=False, default=list)
+    waiting_rules_json = Column(JSON, nullable=False, default=list)
+    explain_chain_json = Column(JSON, nullable=False, default=list)
+    source_snapshot_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WildmanTradeReview(Base):
+    """Manual trade review linked to the immutable rule snapshot."""
+
+    __tablename__ = "wildman_trade_review"
+    __table_args__ = (Index("idx_wildman_review_entry", "entry_date", "symbol"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_id = Column(String(80), nullable=False, unique=True)
+    symbol = Column(String(20), nullable=False)
+    stock_name = Column(String(120))
+    entry_date = Column(Date, nullable=False)
+    exit_date = Column(Date)
+    setup_type = Column(String(48), nullable=False)
+    cycle_at_entry = Column(String(32))
+    role_at_entry = Column(String(40))
+    mode_inside = Column(Boolean, nullable=False, default=True)
+    entry_price = Column(Float)
+    exit_price = Column(Float)
+    pnl_pct = Column(Float)
+    max_favorable_excursion = Column(Float)
+    max_adverse_excursion = Column(Float)
+    anchor_price = Column(Float)
+    anchor_broken = Column(Boolean)
+    stop_executed = Column(Boolean)
+    expectation_state = Column(String(24))
+    violation_tags_json = Column(JSON, nullable=False, default=list)
+    review_text = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # Descriptive alias for integrations that use the full document name.
 ABOpportunitySnapshot = ABOppSnapshot

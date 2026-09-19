@@ -14,7 +14,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   const isLoginPage = pathname === '/login';
   const isV5Workbench = pathname === '/market';
-  const isFullscreenWorkbench = pathname.startsWith('/market/v4') || pathname === '/strong-stock-decision';
+  const isFullscreenWorkbench = pathname.startsWith('/market/v4') || pathname === '/strong-stock-decision' || pathname.startsWith('/wildman');
 
   useEffect(() => {
     if (isAuthReady && !isLoggedIn && !isLoginPage) {
