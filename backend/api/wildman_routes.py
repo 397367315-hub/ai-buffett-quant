@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from services.admin_auth import require_admin_for_mutation
+from services.wildman_classic_service import wildman_classic_service
 from services.wildman_service import wildman_service
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/wildman",
@@ -35,6 +39,7 @@ async def _call(factory, *args, **kwargs):
     except HTTPException:
         raise
     except Exception as exc:
+        logger.exception("Wildman endpoint failed")
         raise HTTPException(status_code=503, detail="野人哥交易决策模块暂时不可用，请稍后重试") from exc
 
 
@@ -144,3 +149,33 @@ async def plan(payload: dict[str, Any] = Body(default_factory=dict)):
     dashboard_payload = await wildman_service.dashboard(_date(payload.get("date")), refresh=bool(payload.get("refresh")))
     focus = [row for row in dashboard_payload["candidates"] if row["candidate_status"] in {"模式条件成立", "等待确认"}][:8]
     return {"code": 0, "data": {"trade_date": dashboard_payload["trade_date"], "cycle": dashboard_payload["cycle"], "mainlines": dashboard_payload["mainlines"][:5], "focus": focus, "scripts": {"above": "超预期：持有或等待模式内盘口确认", "match": "符合预期：观察锚点和承接", "below": "不及预期：竞价或开盘优先处理，绝不补仓"}}}
+
+
+@router.get("/toolbox/{strategy_id}/scan")
+async def classic_scan(
+    strategy_id: str,
+    date_value: str | None = Query(None, alias="date"),
+    refresh: bool = Query(False),
+    exclude_star_market: bool = Query(True),
+    exclude_gem: bool = Query(True),
+):
+    return await _call(
+        wildman_classic_service.scan,
+        strategy_id,
+        _date(date_value),
+        refresh=refresh,
+        exclude_star_market=exclude_star_market,
+        exclude_gem=exclude_gem,
+    )
+
+
+@router.get("/toolbox/{strategy_id}/stocks/{symbol}")
+async def classic_stock_detail(
+    strategy_id: str,
+    symbol: str,
+    date_value: str | None = Query(None, alias="date"),
+    detail: bool = Query(True),
+    refresh: bool = Query(False),
+):
+    del detail
+    return await _call(wildman_classic_service.detail, strategy_id, symbol, _date(date_value), refresh=refresh)

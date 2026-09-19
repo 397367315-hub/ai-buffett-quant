@@ -3,6 +3,8 @@
 import { useMemo } from 'react';
 import ReactECharts from 'echarts-for-react';
 
+const DEFAULT_MOVING_AVERAGE_PERIODS = [5, 10, 20, 30, 60];
+
 export interface KlineRow {
   date: string;
   open: number | null;
@@ -18,6 +20,7 @@ interface Props {
   rows: KlineRow[];
   height?: number | string;
   showMovingAverages?: boolean;
+  movingAveragePeriods?: number[];
   /** V2 research overlays; they are descriptive chart annotations only. */
   annotations?: Array<Record<string, any>>;
   showAnnotations?: boolean;
@@ -43,7 +46,7 @@ function movingAverage(rows: KlineRow[], window: number): Array<number | null> {
   });
 }
 
-export default function KlineChart({ rows, height = 360, showMovingAverages = false, annotations = [], showAnnotations = false }: Props) {
+export default function KlineChart({ rows, height = 360, showMovingAverages = false, movingAveragePeriods = DEFAULT_MOVING_AVERAGE_PERIODS, annotations = [], showAnnotations = false }: Props) {
   const chartRows = useMemo(() => rows.filter(hasCompletePrice), [rows]);
   const option = useMemo(() => {
     const dates = chartRows.map((row) => row.date);
@@ -58,14 +61,13 @@ export default function KlineChart({ rows, height = 360, showMovingAverages = fa
       itemStyle: { color: finite(row.close) >= finite(row.open) ? '#EF5350' : '#26A69A' },
       itemIndex: index,
     }));
+    const movingAverageColors = ['#f0c44b', '#37d9b0', '#d36fff', '#7eaefb', '#39c66e', '#f28b82'];
     const movingAverageSeries = showMovingAverages
-      ? [
-          { name: 'MA5', data: movingAverage(chartRows, 5), color: '#f0c44b' },
-          { name: 'MA10', data: movingAverage(chartRows, 10), color: '#37d9b0' },
-          { name: 'MA20', data: movingAverage(chartRows, 20), color: '#d36fff' },
-          { name: 'MA30', data: movingAverage(chartRows, 30), color: '#7eaefb' },
-          { name: 'MA60', data: movingAverage(chartRows, 60), color: '#39c66e' },
-        ].map((line) => ({
+      ? movingAveragePeriods.filter((period) => Number.isInteger(period) && period > 0).map((period, index) => ({
+          name: `MA${period}`,
+          data: movingAverage(chartRows, period),
+          color: movingAverageColors[index % movingAverageColors.length],
+        })).map((line) => ({
           name: line.name,
           type: 'line',
           data: line.data,
@@ -208,7 +210,7 @@ export default function KlineChart({ rows, height = 360, showMovingAverages = fa
         },
       ],
     };
-  }, [annotations, chartRows, showAnnotations, showMovingAverages]);
+  }, [annotations, chartRows, movingAveragePeriods, showAnnotations, showMovingAverages]);
 
   if (chartRows.length === 0) {
     return <div className="grid h-[260px] place-items-center text-xs text-text-secondary">暂无可核验K线</div>;

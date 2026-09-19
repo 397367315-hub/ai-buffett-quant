@@ -17,7 +17,9 @@ from models import (
     WildmanStockRole,
     WildmanTradeReview,
 )
-from services.wildman_service import WildmanService
+from services.wildman_service import WildmanService, _num
+from services.data_collector import shanghai_now
+from wildman.rules import RULE_VERSION
 
 
 class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
@@ -148,6 +150,29 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["001216"]["sector"], "家居用品")
         self.assertEqual(metadata["001216"]["market_cap"], 4_200_000_000)
         self.assertEqual(metadata["001216"]["trade_date"], "2026-09-10")
+
+    async def test_review_includes_old_entry_closed_in_selected_period(self):
+        service = WildmanService()
+        await service.save_review({"trade_id": "closed", "symbol": "600001", "entry_date": "2026-09-01", "exit_date": "2026-09-18", "entry_price": 10, "exit_price": 11, "pnl_pct": 10})
+        with patch.object(service, "dashboard", new=AsyncMock(return_value={"cycle": {"allowed_actions": [], "forbidden_actions": []}, "mainlines": []})):
+            result = await service.review("daily", date(2026, 9, 18))
+        self.assertEqual([row["trade_id"] for row in result["trades"]], ["closed"])
+        self.assertEqual(result["metrics"]["sample_count"], 1)
+
+    async def test_review_rejects_invalid_dates_and_nonfinite_prices(self):
+        service = WildmanService()
+        for payload in ({"entry_date": "2026-09-18", "exit_date": "2026-09-17"}, {"entry_price": float("inf")}, {"exit_price": -2}):
+            with self.assertRaises(ValueError):
+                await service.save_review({"symbol": "600001", **payload})
+
+    def test_cache_requires_current_rule_date_and_recent_timestamp(self):
+        target = date(2026, 9, 18)
+        fresh = {"rule_version": RULE_VERSION, "trade_date": target.isoformat(), "updated_at": shanghai_now().isoformat()}
+        self.assertTrue(WildmanService._cache_fresh(fresh, target))
+        self.assertFalse(WildmanService._cache_fresh({**fresh, "rule_version": "old"}, target))
+        self.assertFalse(WildmanService._cache_fresh({**fresh, "updated_at": "2026-01-01T12:00:00+08:00"}, target))
+        self.assertFalse(WildmanService._cache_fresh(fresh, date(2026, 9, 17)))
+        self.assertIsNone(_num(float("inf")))
 
     def test_cleared_resistance_is_not_reused_as_forward_target(self):
         service = WildmanService()

@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from math import isfinite
 from typing import Any
+from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import desc, func, select
@@ -25,10 +27,12 @@ from models import (
 )
 from services.data_collector import collector, shanghai_now
 from services.level2_service import level2_service
+from market_data.numcat.market_provider import numcat_market_provider
 from wildman.rules import RULE_VERSION, WildmanRuleCore, review_metrics
+from wildman.facts import daily_facts, intraday_facts
 
 
-CACHE_KEY = "wildman_dashboard_v3"
+CACHE_KEY = "wildman_dashboard_v4"
 
 
 def _num(value: Any) -> float | None:
@@ -36,7 +40,7 @@ def _num(value: Any) -> float | None:
         result = float(value)
     except (TypeError, ValueError):
         return None
-    return result if result == result else None
+    return result if isfinite(result) else None
 
 
 def _iso(value: Any) -> str | None:
@@ -59,6 +63,11 @@ class WildmanService:
     async def _target_date(self, requested: date | None = None) -> date:
         if requested:
             return requested
+        if numcat_market_provider.configured:
+            rows = await self._safe(numcat_market_provider.market_emotion(recentdays=5), [])
+            observed = [date.fromisoformat(row["trade_date"]) for row in rows if row.get("trade_date") and row["trade_date"] <= shanghai_now().date().isoformat()]
+            if observed:
+                return max(observed)
         async with async_session() as session:
             values = [
                 (await session.execute(select(func.max(MarketSentimentDaily.trade_date)))).scalar_one_or_none(),
@@ -83,6 +92,15 @@ class WildmanService:
             row = await session.get(MarketDataCache, key)
         return dict(row.payload) if row and isinstance(row.payload, dict) else None
 
+    @staticmethod
+    def _cache_fresh(payload: dict | None, target: date) -> bool:
+        if not payload or payload.get("trade_date") != target.isoformat() or payload.get("rule_version") != RULE_VERSION:
+            return False
+        try:
+            return 0 <= (shanghai_now() - datetime.fromisoformat(payload["updated_at"])).total_seconds() < 300
+        except (KeyError, TypeError, ValueError):
+            return False
+
     async def _write_cache(self, key: str, payload: dict[str, Any]) -> None:
         async with async_session() as session:
             row = await session.get(MarketDataCache, key)
@@ -94,6 +112,11 @@ class WildmanService:
             await session.commit()
 
     async def _sentiments(self, target: date) -> list[MarketSentimentDaily]:
+        if numcat_market_provider.configured:
+            rows = await self._safe(numcat_market_provider.market_emotion(recentdays=30), [])
+            matched = [row for row in rows if str(row.get("trade_date") or "") <= target.isoformat()]
+            if matched and any(row.get("trade_date") == target.isoformat() for row in matched):
+                return [SimpleNamespace(**{**row, "trade_date": date.fromisoformat(row["trade_date"])}) for row in sorted(matched, key=lambda row: row["trade_date"], reverse=True)[:5]]
         async with async_session() as session:
             return list((await session.execute(
                 select(MarketSentimentDaily)
@@ -105,7 +128,7 @@ class WildmanService:
     async def _bars(self, symbols: list[str], target: date) -> dict[str, list[StockDailyBar]]:
         if not symbols:
             return {}
-        start = target - timedelta(days=180)
+        start = target - timedelta(days=420)
         async with async_session() as session:
             rows = list((await session.execute(
                 select(StockDailyBar).where(
@@ -117,6 +140,22 @@ class WildmanService:
         grouped: dict[str, list[StockDailyBar]] = defaultdict(list)
         for row in rows:
             grouped[row.stock_code].append(row)
+        if numcat_market_provider.configured:
+            from services.wildman_classic_service import fetch_numcat_history_batch
+            semaphore = asyncio.Semaphore(3)
+            async def primary_batch(codes: list[str]) -> dict:
+                async with semaphore:
+                    return await self._safe(fetch_numcat_history_batch(codes, days=420, end_date=target), {})
+            primary = await asyncio.gather(*(primary_batch(symbols[start:start + 32]) for start in range(0, len(symbols), 32)))
+            for batch in primary:
+                for code, history in batch.items():
+                    if len(history) < 21 or str(history[-1].get("date") or "") != target.isoformat():
+                        continue
+                    grouped[code] = [SimpleNamespace(
+                        stock_code=code, trade_date=date.fromisoformat(row["date"]),
+                        open_price=row.get("open"), close_price=row.get("close"), high_price=row.get("high"), low_price=row.get("low"),
+                        volume=row.get("volume"), change_pct=row.get("change_pct"), source=row.get("source") or "numcat",
+                    ) for row in history]
         return grouped
 
     async def _auctions(self, symbols: list[str], target: date) -> dict[str, StockAuctionSnapshot]:
@@ -127,7 +166,15 @@ class WildmanService:
                 StockAuctionSnapshot.trade_date == target,
                 StockAuctionSnapshot.stock_code.in_(symbols),
             ))).scalars().all())
-        return {row.stock_code: row for row in rows}
+        result = {row.stock_code: row for row in rows}
+        if numcat_market_provider.configured:
+            primary = await self._safe(numcat_market_provider.auction(symbols, tradedate=target), [])
+            for row in primary:
+                if str(row.get("tradedate") or "")[:10] != target.isoformat():
+                    continue
+                code = _normalize_code(row.get("symbol"))
+                result[code] = SimpleNamespace(stock_code=code, trade_date=target, high_open_pct=_num(row.get("auc_pct_chg")), auction_volume_ratio=_num(row.get("auc_vol_ratio")), auction_price=_num(row.get("m_price")), source="numcat_daily_auc")
+        return result
 
     async def _universe_metadata(self, symbols: list[str], target: date) -> dict[str, dict[str, Any]]:
         """Load the latest PIT industry and market cap known by the target date."""
@@ -171,73 +218,7 @@ class WildmanService:
         return sum(values) / period if len(values) == period else None
 
     def _stock_facts(self, item: dict[str, Any], rows: list[StockDailyBar], auction: StockAuctionSnapshot | None, theme: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
-        latest = rows[-1] if rows else None
-        close = _num(getattr(latest, "close_price", None)) or _num(item.get("price"))
-        low = _num(getattr(latest, "low_price", None)) or close
-        high = _num(getattr(latest, "high_price", None)) or close
-        ma5, ma10, ma20, ma75 = (self._ma(rows, period) for period in (5, 10, 20, 75))
-        previous_ma20 = self._ma(rows[:-1], 20) if len(rows) > 20 else None
-        volume_values = [_num(row.volume) for row in rows[-6:-1]]
-        volume_values = [value for value in volume_values if value is not None]
-        latest_volume = _num(getattr(latest, "volume", None))
-        volume_contract = latest_volume is not None and volume_values and latest_volume < sum(volume_values) / len(volume_values) * .8
-        recent_highs = [_num(row.high_price) for row in rows[-21:-1]]
-        pressure = max((value for value in recent_highs if value is not None), default=None)
-        pressure_target = pressure if close is not None and pressure is not None and pressure > close else None
-        recent_peak = max((value for value in [_num(row.high_price) for row in rows[-30:]] if value is not None), default=None)
-        drawdown = (close / recent_peak - 1) * 100 if close and recent_peak else None
-        height = int(_num(item.get("continuous_days")) or 1)
-        failed = int(_num(item.get("failed_attempts")) or 0)
-        market_cap = _num(item.get("market_cap"))
-        auction_pct = _num(getattr(auction, "high_open_pct", None))
-        auction_ratio = _num(getattr(auction, "auction_volume_ratio", None))
-        latest_change_pct = _num(getattr(latest, "change_pct", None)) or 0
-        theme_count = int(theme.get("limit_up_count") or 0)
-        max_height = int(theme.get("max_limit_height") or 0)
-        return {
-            "symbol": _normalize_code(item.get("code")), "name": item.get("name"),
-            "close_price": close, "low_price": low, "high_price": high,
-            "market_cap": market_cap, "consecutive_limit_days": height,
-            "theme_linkage": theme_count >= 3, "emotion_benchmark": height >= max_height and theme_count >= 3,
-            "first_limit_pioneer": height == 1 and item.get("first_limit_time") is not None,
-            "trend_intact": ma20 is not None and close is not None and close >= ma20,
-            "supplement": max_height >= 4 and 1 <= height <= max(2, int(max_height * .7)),
-            "old_dragon": False, "cross_cycle": False,
-            "first_volume_divergence": height >= 4 and failed > 0,
-            "divergence_low": low, "yesterday_divergence": height >= 2 and failed > 0,
-            "yesterday_strong": height >= 2 and failed == 0,
-            "auction_pct": auction_pct,
-            "auction_volume_strength": auction_ratio is not None and auction_ratio >= 1,
-            "open_volume_attack": auction_pct is not None and auction_pct >= 2,
-            "intraday_anchor": _num(getattr(auction, "auction_price", None)) or low,
-            "weekly_monthly_bottom": len(rows) >= 75 and close is not None and min((_num(row.low_price) or close) for row in rows[-75:]) >= close * .7,
-            "ma20": ma20, "ma20_turning_up": ma20 is not None and previous_ma20 is not None and ma20 >= previous_ma20,
-            "ma20_flat": ma20 is not None and previous_ma20 is not None and abs(ma20 / previous_ma20 - 1) <= .003,
-            "ma5_cross_ma10": ma5 is not None and ma10 is not None and ma5 >= ma10,
-            "ma5_near_cross": ma5 is not None and ma10 is not None and ma5 >= ma10 * .985,
-            "ma5_cross_ma20": ma5 is not None and ma20 is not None and ma5 >= ma20,
-            "cross_volume_expand": not volume_contract,
-            "pullback_ma10_ma20": close is not None and any(value is not None and abs(close / value - 1) <= .03 for value in (ma10, ma20)),
-            "volume_contract": bool(volume_contract),
-            "stabilizing_candle": latest is not None and _num(latest.close_price) is not None and _num(latest.open_price) is not None and latest.close_price >= latest.open_price * .99,
-            "bottom_volume_breakout": latest is not None and _num(latest.change_pct) is not None and latest.change_pct >= 5 and not volume_contract,
-            "drawdown_pct": drawdown, "extreme_low_volume": bool(volume_contract),
-            "support_recovered": latest is not None and close is not None and low is not None and close > low * 1.02,
-            "reversal_confirmed": latest is not None and _num(latest.change_pct) is not None and latest.change_pct > 0,
-            "recent_solid_limit": height >= 1 and failed == 0,
-            "holds_limit_candle_half": True if height >= 1 else None,
-            "limit_candle_half": round(((low or 0) + (high or 0)) / 2, 3) if low and high else None,
-            "renewed_volume_breakout": latest is not None and _num(latest.change_pct) is not None and latest.change_pct >= 3 and not volume_contract,
-            # A former high that price has already cleared is evidence of a
-            # breakout, not a valid forward target for risk/reward math.
-            "pressure_price": pressure_target,
-            "fake_breakout": bool(close and pressure and close < pressure and latest_change_pct > 5 and volume_contract),
-            "high_volume_stall": bool(latest_volume and volume_values and latest_volume > sum(volume_values) / len(volume_values) * 1.8 and latest_change_pct < 1),
-            "anchor_broken": False, "open_low": auction_pct is not None and auction_pct < 0,
-            "no_support": False, "decline_days": sum(1 for row in rows[-5:] if (_num(row.change_pct) or 0) < 0),
-            "arc_days": len(rows), "ma75_turning_up": ma75 is not None and close is not None and close >= ma75,
-            "break_neckline": bool(close and pressure and close >= pressure),
-        }
+        return daily_facts(item, rows, auction, theme, market)
 
     async def _snapshot(self, target: date, refresh: bool) -> dict[str, Any]:
         sentiments_task = self._sentiments(target)
@@ -245,15 +226,47 @@ class WildmanService:
         down_task = self._safe(collector.fetch_limit_down_pool(page_size=500, target_date=target), {"stocks": [], "total": 0, "trade_date": None})
         failed_task = self._safe(collector.fetch_failed_limit_pool(page_size=500, target_date=target), {"stocks": [], "total": 0, "trade_date": None})
         sentiments, up_pool, down_pool, failed_pool = await asyncio.gather(sentiments_task, up_task, down_task, failed_task)
+        async with async_session() as session:
+            previous_date = (await session.execute(select(func.max(StockDailyBar.trade_date)).where(StockDailyBar.trade_date < target))).scalar_one_or_none()
+        observed_prior = [row.trade_date for row in sentiments if row.trade_date < target]
+        if observed_prior:
+            previous_date = max(observed_prior + ([previous_date] if previous_date else []))
+        previous_pool = await self._safe(collector.fetch_limit_up_pool(page_size=500, target_date=previous_date), {}) if previous_date else {}
+        def dated(pool: dict, day: date | None) -> bool:
+            return day is not None and str(pool.get("trade_date") or "").replace("-", "")[:8] == day.strftime("%Y%m%d")
+        up_valid, down_valid = dated(up_pool, target), dated(down_pool, target)
+        failed_valid, previous_valid = dated(failed_pool, target), dated(previous_pool, previous_date)
+        if not up_valid:
+            up_pool = {"stocks": [], "total": None}
+        if not down_valid:
+            down_pool = {"stocks": [], "total": None}
+        if not failed_valid:
+            failed_pool = {"stocks": [], "total": None}
         up_rows = list(up_pool.get("stocks") or [])
         down_rows = list(down_pool.get("stocks") or [])
         failed_rows = list(failed_pool.get("stocks") or [])
+        previous_rows = list(previous_pool.get("stocks") or []) if previous_valid else []
+        previous_by_code = {_normalize_code(row.get("code")): {**row, "trade_date": previous_date.isoformat()} for row in previous_rows}
+        all_rows = [*up_rows, *down_rows, *failed_rows, *previous_rows]
         metadata = await self._universe_metadata(
-            [_normalize_code(item.get("code")) for item in up_rows],
+            list({_normalize_code(item.get("code")) for item in all_rows}),
             target,
         )
+        if all_rows and numcat_market_provider.configured and 0 <= (shanghai_now().date() - target).days <= 3:
+            codes = list({_normalize_code(item.get("code")) for item in all_rows})
+            basics, quotes = await asyncio.gather(
+                self._safe(numcat_market_provider.stock_basic(codes), []),
+                self._safe(numcat_market_provider.screening(symbols=codes, tradedate=target, enrichment_limit=0), []),
+            )
+            for row in basics:
+                code = _normalize_code(row.get("code"))
+                primary = {"sector": row.get("industry"), "name": row.get("name"), "source": "numcat_stockbasic"}
+                metadata.setdefault(code, {}).update({key: value for key, value in primary.items() if value})
+            for row in quotes:
+                if str(row.get("trade_date") or "")[:10] == target.isoformat():
+                    metadata.setdefault(_normalize_code(row.get("code")), {}).update({"market_cap": row.get("market_cap")})
         metadata_hits = 0
-        for item in up_rows:
+        for item in all_rows:
             row = metadata.get(_normalize_code(item.get("code"))) or {}
             if not str(item.get("sector") or "").strip() and row.get("sector"):
                 item["sector"] = row["sector"]
@@ -262,8 +275,28 @@ class WildmanService:
                 item["market_cap"] = row["market_cap"]
             if not str(item.get("name") or "").strip() and row.get("name"):
                 item["name"] = row["name"]
-        latest_sentiment = sentiments[0] if sentiments else None
-        previous_sentiment = sentiments[1] if len(sentiments) > 1 else None
+        latest_sentiment = next((row for row in sentiments if row.trade_date == target), None)
+        previous_sentiment = next((row for row in sentiments if row.trade_date == previous_date), None)
+        bars = await self._bars(list({_normalize_code(item.get("code")) for item in all_rows if _normalize_code(item.get("code"))}), target)
+        for item in [*up_rows, *failed_rows]:
+            item["previous_limit"] = previous_by_code.get(_normalize_code(item.get("code")))
+        def current_bar(code: str):
+            rows = bars.get(code) or []
+            return rows[-1] if rows and rows[-1].trade_date == target else None
+        def healthy_core(item: dict) -> bool | None:
+            rows = bars.get(_normalize_code(item.get("code"))) or []
+            latest = current_bar(_normalize_code(item.get("code")))
+            if latest is None or len(rows) < 21:
+                return None
+            avg_volume = sum(_num(row.volume) or 0 for row in rows[-6:-1]) / 5
+            return bool(latest.close_price is not None and latest.close_price >= (self._ma(rows, 20) or float("inf")) and avg_volume > 0 and (_num(latest.volume) or 0) >= avg_volume * 1.2)
+
+        def board_date(item: dict, offset: int = 0) -> str | None:
+            history = bars.get(_normalize_code(item.get("code"))) or []
+            height = int(_num(item.get("continuous_days")) or 0)
+            if height > offset and len(history) >= height and history[-1].trade_date == target:
+                return history[len(history) - height + offset].trade_date.isoformat()
+            return None
 
         by_theme: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in up_rows:
@@ -273,49 +306,70 @@ class WildmanService:
             heights = [int(_num(item.get("continuous_days")) or 1) for item in rows]
             max_height = max(heights, default=0)
             core_rows = [item for item in rows if (_num(item.get("market_cap")) or 0) >= 10_000_000_000]
-            non_first = sum(height >= 2 for height in heights)
+            prior_theme = [item for item in previous_rows if item.get("sector") == theme_name]
+            prior_height = max((int(_num(item.get("continuous_days")) or 1) for item in prior_theme), default=0)
+            prior_leaders = [item for item in prior_theme if int(_num(item.get("continuous_days")) or 1) == prior_height]
+            prior_cores = [item for item in prior_theme if (_num(item.get("market_cap")) or 0) >= 10_000_000_000]
+            leader_bars = [current_bar(_normalize_code(item.get("code"))) for item in prior_leaders]
+            core_bars = [current_bar(_normalize_code(item.get("code"))) for item in prior_cores]
             theme_facts.append({
                 "theme_id": theme_name, "theme_name": theme_name,
                 "limit_up_count": len(rows), "max_limit_height": max_height,
+                "leader_established_date": min((day for item in rows if int(_num(item.get("continuous_days")) or 0) == max_height and (day := board_date(item, 3))), default=None),
+                "earliest_start_date": min((day for item in rows if (day := board_date(item))), default=None),
+                "leader_first_limit_time": min((str(item.get("first_limit_time") or "").replace(":", "")[:4] for item in rows if int(_num(item.get("continuous_days")) or 1) == max_height and item.get("first_limit_time")), default=None),
+                "earliest_first_limit_time": min((str(item.get("first_limit_time") or "").replace(":", "")[:4] for item in rows if item.get("first_limit_time")), default=None),
                 "has_pioneer": any(height == 1 for height in heights),
                 "has_core_midcap": bool(core_rows), "old_dragon_active": None,
-                # A successful promotion to the second board or above is the
-                # observable price fact used here; no actor intent is inferred.
-                "leader_premium": max_height >= 2, "support_promotion": non_first >= 2,
-                "core_midcap_stable": any((_num(item.get("change_pct")) or 0) >= 0 for item in core_rows) if core_rows else None,
-                "fund_return": None, "reversal": None, "supplement_started": len(rows) >= 3,
+                "leader_premium": all(_num(bar.change_pct) is not None and bar.change_pct > 0 for bar in leader_bars) if leader_bars and all(bar is not None for bar in leader_bars) else None,
+                "support_promotion": any(item.get("previous_limit") and int(_num(item.get("continuous_days")) or 0) > int(_num(item["previous_limit"].get("continuous_days")) or 1) and _normalize_code(item.get("code")) not in {_normalize_code(p.get("code")) for p in prior_leaders} for item in rows) if previous_valid and prior_theme else None,
+                "core_midcap_stable": all(_num(bar.change_pct) is not None and bar.change_pct >= 0 for bar in core_bars) if core_bars and all(bar is not None for bar in core_bars) else None,
+                "core_volume_support": any(healthy_core(item) is True for item in core_rows) if core_rows else None,
+                "fund_return": None, "reversal": None, "supplement_started": prior_height >= 4 and any(int(_num(item.get("continuous_days")) or 1) == 1 for item in rows) if previous_valid else None,
                 "resists_market_drop": None, "rows": rows,
             })
         theme_facts.sort(key=lambda row: (row["max_limit_height"], row["limit_up_count"]), reverse=True)
         all_heights = [int(_num(item.get("continuous_days")) or 1) for item in up_rows]
         max_height = max(all_heights, default=int(_num(getattr(latest_sentiment, "max_streak_height", None)) or 0))
-        ladder_complete = max_height >= 4 and any(height in {2, 3} for height in all_heights) and sum(height == 1 for height in all_heights) >= 3
-        core_support = any(theme.get("has_core_midcap") for theme in theme_facts[:5])
-        one_word = sum(1 for item in up_rows if str(item.get("first_limit_time") or "")[:4] in {"0925", "09:25"} and int(_num(item.get("failed_attempts")) or 0) == 0)
-        limit_down_count = int(_num(getattr(latest_sentiment, "limit_down_count", None)) or down_pool.get("total") or len(down_rows))
+        ladder_complete = any(theme["max_limit_height"] >= 4 and any(int(_num(item.get("continuous_days")) or 1) in {2, 3} for item in theme["rows"]) and any(int(_num(item.get("continuous_days")) or 1) == 1 for item in theme["rows"]) and theme["has_core_midcap"] for theme in theme_facts) if up_valid else None
+        core_support = any(theme.get("core_volume_support") is True for theme in theme_facts[:5]) if up_valid and bars else None
+        one_word = sum(1 for item in up_rows if str(item.get("first_limit_time") or "").replace(":", "")[:4] == "0925" and _num(item.get("failed_attempts")) == 0)
+        limit_down_count = _num(getattr(latest_sentiment, "limit_down_count", None))
+        if limit_down_count is None and down_valid:
+            limit_down_count = int(down_pool.get("total") if down_pool.get("total") is not None else len(down_rows))
         previous_down = _num(getattr(previous_sentiment, "limit_down_count", None))
+        prior_max = max((int(_num(item.get("continuous_days")) or 1) for item in previous_rows), default=0)
+        prior_leader_codes = {_normalize_code(item.get("code")) for item in previous_rows if int(_num(item.get("continuous_days")) or 1) == prior_max}
+        down_codes = {_normalize_code(item.get("code")) for item in down_rows}
+        failed_codes = {_normalize_code(item.get("code")) for item in failed_rows}
         market = {
-            "max_limit_height": max_height, "limit_up_count": int(up_pool.get("total") or len(up_rows)),
+            "trade_date": target.isoformat(),
+            "max_limit_height": max_height if up_valid else None, "limit_up_count": int(up_pool.get("total") or len(up_rows)) if up_valid else None,
             "limit_down_count": limit_down_count, "nuclear_button_count": None,
-            "yesterday_limit_loss_count": None, "new_theme_first_boards": max((sum(int(_num(item.get("continuous_days")) or 1) == 1 for item in rows) for rows in by_theme.values()), default=0),
-            "limit_down_decreasing": previous_down is not None and limit_down_count < previous_down,
+            "yesterday_limit_loss_count": len(set(previous_by_code) & down_codes) if previous_valid and down_valid else None, "new_theme_first_boards": max((sum(int(_num(item.get("continuous_days")) or 1) == 1 for item in rows) for name, rows in by_theme.items() if name not in {item.get("sector") for item in previous_rows}), default=0) if previous_valid and up_valid else None,
+            "limit_down_decreasing": limit_down_count < previous_down if previous_down is not None and limit_down_count is not None else None,
             "ladder_complete": ladder_complete, "core_midcap_support": core_support,
-            "leader_nuked": bool(previous_sentiment and _num(previous_sentiment.max_streak_height) is not None and previous_sentiment.max_streak_height >= 4 and max_height <= 2 and limit_down_count >= 10),
-            "mid_level_limit_down_spread": limit_down_count >= 10,
-            "first_divergence": bool(max_height >= 4 and failed_rows),
-            "one_word_limit_count": one_word, "leader_volume_acceleration": max_height >= 4 and one_word > 0,
-            "rear_all_red": len(up_rows) >= 50, "leader_broken": max_height >= 4 and bool(failed_rows),
-            "cold_rear_supplement": len(up_rows) >= 60,
+            "leader_nuked": bool(prior_max >= 4 and prior_leader_codes & down_codes) if previous_valid and down_valid else None,
+            "mid_level_limit_down_spread": sum(1 for item in previous_rows if 2 <= int(_num(item.get("continuous_days")) or 1) < prior_max and _normalize_code(item.get("code")) in down_codes) >= 2 if previous_valid and down_valid else None,
+            "first_divergence": None,
+            "one_word_limit_count": one_word if up_valid else None, "leader_volume_acceleration": None,
+            "rear_all_red": None, "leader_broken": bool(prior_max >= 4 and prior_leader_codes & (failed_codes | down_codes)) if previous_valid and failed_valid and down_valid else None,
+            "cold_rear_supplement": None,
         }
-        return {"market": market, "themes": theme_facts, "up_rows": up_rows, "down_rows": down_rows, "failed_rows": failed_rows, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "universe_metadata": "stock_universe_snapshots", "universe_metadata_hits": metadata_hits, "data_date": up_pool.get("trade_date") or target.isoformat()}}
+        current_codes = {_normalize_code(item.get("code")) for item in up_rows}
+        prior_candidates = [{**item, "continuous_days": 0, "failed_attempts": None, "previous_limit": previous_by_code.get(_normalize_code(item.get("code")))} for item in previous_rows if _normalize_code(item.get("code")) not in current_codes]
+        return {"market": market, "themes": theme_facts, "up_rows": up_rows, "previous_rows": prior_candidates, "down_rows": down_rows, "failed_rows": failed_rows, "bars": bars, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "universe_metadata": sorted({str(row.get("source") or "unknown") for row in metadata.values()}), "universe_metadata_hits": metadata_hits, "data_date": up_pool.get("trade_date"), "previous_date": previous_date.isoformat() if previous_valid else None, "same_day_pools": {"limit_up": up_valid, "limit_down": down_valid, "failed": failed_valid}, "theme_basis": "行业归类代理；跨行业概念及因果带动需题材历史映射确认"}}
 
     async def dashboard(self, requested: date | None = None, *, refresh: bool = False, exclude_star_market: bool = True, exclude_gem: bool = True) -> dict[str, Any]:
         target = await self._target_date(requested)
         cache_key = self._cache_key(exclude_star_market, exclude_gem)
         cached = await self._cached(cache_key)
-        if not refresh and requested is None and cached and cached.get("trade_date") == target.isoformat():
+        if not refresh and self._cache_fresh(cached, target):
             return {**cached, "cache_hit": True}
         async with self._lock:
+            cached = await self._cached(cache_key)
+            if not refresh and self._cache_fresh(cached, target):
+                return {**cached, "cache_hit": True}
             snapshot = await self._snapshot(target, refresh)
             cycle = self.rules.market_cycle.detect(snapshot["market"])
             theme_results = []
@@ -325,7 +379,9 @@ class WildmanService:
                 item = {key: value for key, value in theme.items() if key != "rows"} | result
                 theme_results.append(item)
                 theme_map[theme["theme_id"]] = item
-            raw_candidates = [item for theme in snapshot["themes"][:12] for item in theme.get("rows", [])]
+            raw_candidates = [item for theme in snapshot["themes"][:20] for item in theme.get("rows", [])]
+            raw_candidates.extend(snapshot.get("failed_rows") or [])
+            raw_candidates.extend(snapshot.get("previous_rows") or [])
             unique: dict[str, dict[str, Any]] = {}
             for item in raw_candidates:
                 code = _normalize_code(item.get("code"))
@@ -334,8 +390,8 @@ class WildmanService:
                 if exclude_star_market and code.startswith(("688", "689")): continue
                 if exclude_gem and code.startswith(("300", "301", "302")): continue
                 unique.setdefault(code, item)
-            symbols = list(unique)[:80]
-            bars_by_symbol, auctions = await asyncio.gather(self._bars(symbols, target), self._auctions(symbols, target))
+            symbols = list(unique)[:160]
+            bars_by_symbol, auctions = await asyncio.gather(self._bars(symbols, target) if not snapshot.get("bars") else asyncio.sleep(0, result=snapshot["bars"]), self._auctions(symbols, target))
             candidates = []
             for code in symbols:
                 raw = unique[code]
@@ -345,7 +401,7 @@ class WildmanService:
                 result = self.rules.evaluate(snapshot["market"], theme, facts, {}, None)
                 candidates.append({
                     "symbol": code, "name": raw.get("name") or code, "theme_id": theme_name, "theme_name": theme_name,
-                    "price": facts.get("close_price"), "change_pct": _num(raw.get("change_pct")),
+                    "price": facts.get("close_price"), "change_pct": _num(getattr((bars_by_symbol.get(code) or [None])[-1], "change_pct", None)),
                     "continuous_days": facts.get("consecutive_limit_days"),
                     "stock_facts": facts,
                     "theme_facts": {key: value for key, value in theme.items() if key != "rows"},
@@ -367,7 +423,7 @@ class WildmanService:
                     {"id": "WM_CLASSIC_T", "name": "老太太扶楼梯", "status": "主动启用"},
                     {"id": "WM_CLASSIC_75A", "name": "圆弧底75A", "status": "可用"},
                 ],
-                "source_status": snapshot["source"],
+                "source_status": {**snapshot["source"], "preferred_provider": "numcat", "daily_sources": sorted({str(getattr(row, "source", "unknown")) for code in symbols for row in bars_by_symbol.get(code, [])}), "candidate_scope": "当日涨停、炸板及前一交易日涨停观察池", "candidate_total": len(unique), "candidate_evaluated": len(symbols)},
                 "filters": {"exclude_star_market": exclude_star_market, "exclude_gem": exclude_gem},
                 "constraints": {"ai_can_override": False, "automatic_trade": False, "raw_level2_persisted_here": False},
                 "cache_hit": False,
@@ -415,19 +471,35 @@ class WildmanService:
         if candidate is None:
             raise ValueError("该股票不在当日野人哥核心/排除池中")
         target = date.fromisoformat(payload["trade_date"])
-        l2 = await level2_service.summary(code, trade_date=target, refresh=refresh)
-        intraday = {}
-        timeline = (l2.get("summary") or {}).get("timeline") or []
-        if timeline:
-            closes = [_num(row.get("close_price")) for row in timeline]
-            closes = [value for value in closes if value is not None]
-            intraday = {"lows_rising": len(closes) >= 3 and closes[-1] >= min(closes[-3:]), "two_pullbacks_hold": len(closes) >= 3 and closes[-1] >= closes[-3], "vertical_drop": False, "down_volume_expands": False}
-        stock_facts = candidate.get("stock_facts") or {
+        l2, minutes = await asyncio.gather(
+            level2_service.summary(code, trade_date=target, refresh=refresh),
+            self._safe(numcat_market_provider.minute(code, tradedate=target), []) if numcat_market_provider.configured else asyncio.sleep(0, result=[]),
+        )
+        minutes = [row for row in minutes if str(row.get("tradedate") or "")[:10] == target.isoformat()]
+        timeline = [{**row, "volume": row.get("vol")} for row in minutes] or (l2.get("summary") or {}).get("timeline") or []
+        intraday = intraday_facts(timeline)
+        stock_facts = dict(candidate.get("stock_facts") or {
             "symbol": code,
             "name": candidate["name"],
             "close_price": candidate.get("price"),
             "consecutive_limit_days": candidate.get("continuous_days"),
-        }
+        })
+        if minutes:
+            from wildman.facts import minute_key
+            minutes = [row for row in minutes if minute_key(row.get("trademin") or row.get("time"))]
+            minutes.sort(key=lambda row: minute_key(row.get("trademin") or row.get("time")) or "")
+            intraday = intraday_facts([{**row, "volume": row.get("vol")} for row in minutes])
+            early = [row for row in minutes if "0930" <= (minute_key(row.get("trademin") or row.get("time")) or "") <= "0940"]
+            if len(early) >= 5:
+                opening, last = _num(early[0].get("open")), _num(early[-1].get("close"))
+                earlier_vol = sum(_num(row.get("vol")) or 0 for row in early[:2]) / 2
+                later_vol = sum(_num(row.get("vol")) or 0 for row in early[-2:]) / 2
+                stock_facts["open_volume_attack"] = last > opening and later_vol > earlier_vol if opening and last and earlier_vol > 0 else None
+                stock_facts["intraday_anchor"] = min((_num(row.get("low")) for row in early if _num(row.get("low")) is not None), default=None)
+            if minutes and intraday.get("two_pullbacks_hold") is True:
+                stock_facts["support_recovered"] = True
+                last, vwap = _num(minutes[-1].get("close")), _num(minutes[-1].get("vwap"))
+                stock_facts["reversal_confirmed"] = last > vwap if last and vwap else None
         theme_facts = candidate.get("theme_facts") or {
             "theme_id": candidate["theme_id"],
             "theme_name": candidate["theme_name"],
@@ -437,14 +509,15 @@ class WildmanService:
             key: l2.get(key)
             for key in ("available", "pending", "provider", "data_quality", "summary", "sync", "capabilities")
         }
-        return {**candidate, **refined, "level2": level2_payload, "trade_date": payload["trade_date"]}
+        return {**candidate, **refined, "stock_facts": stock_facts, "intraday_source": "numcat_minute" if minutes else f"{l2.get('provider')}_level2_features" if timeline and l2.get("provider") else None, "level2": level2_payload, "trade_date": payload["trade_date"]}
 
     async def review(self, period: str = "daily", requested: date | None = None) -> dict[str, Any]:
         target = await self._target_date(requested)
         days = {"daily": 1, "weekly": 7, "monthly": 31}.get(period, 1)
         start = target - timedelta(days=days - 1)
         async with async_session() as session:
-            rows = list((await session.execute(select(WildmanTradeReview).where(WildmanTradeReview.entry_date >= start, WildmanTradeReview.entry_date <= target).order_by(desc(WildmanTradeReview.entry_date)))).scalars().all())
+            review_date = func.coalesce(WildmanTradeReview.exit_date, WildmanTradeReview.entry_date)
+            rows = list((await session.execute(select(WildmanTradeReview).where(review_date >= start, review_date <= target).order_by(desc(review_date)))).scalars().all())
         items = [{"trade_id": row.trade_id, "symbol": row.symbol, "stock_name": row.stock_name, "entry_date": row.entry_date.isoformat(), "exit_date": _iso(row.exit_date), "setup_type": row.setup_type, "cycle_at_entry": row.cycle_at_entry, "role_at_entry": row.role_at_entry, "mode_inside": row.mode_inside, "entry_price": row.entry_price, "exit_price": row.exit_price, "pnl_pct": row.pnl_pct, "anchor_broken": row.anchor_broken, "stop_executed": row.stop_executed, "expectation_state": row.expectation_state, "violation_tags": row.violation_tags_json or [], "review_text": row.review_text} for row in rows]
         dashboard = await self.dashboard(target)
         return {"period": period, "start_date": start.isoformat(), "end_date": target.isoformat(), "metrics": review_metrics(items), "trades": items, "cycle": dashboard["cycle"], "tomorrow_plan": {"allowed": dashboard["cycle"]["allowed_actions"], "forbidden": dashboard["cycle"]["forbidden_actions"], "focus_mainlines": [row["theme_name"] for row in dashboard["mainlines"] if row["state"] in {"核心主线确认", "高质量候选"}][:5]}}
@@ -456,6 +529,11 @@ class WildmanService:
         values = {"symbol": _normalize_code(payload.get("symbol")), "stock_name": payload.get("stock_name"), "entry_date": entry_date, "exit_date": exit_date, "setup_type": str(payload.get("setup_type") or "NONE"), "cycle_at_entry": payload.get("cycle_at_entry"), "role_at_entry": payload.get("role_at_entry"), "mode_inside": bool(payload.get("mode_inside", True)), "entry_price": _num(payload.get("entry_price")), "exit_price": _num(payload.get("exit_price")), "pnl_pct": _num(payload.get("pnl_pct")), "max_favorable_excursion": _num(payload.get("max_favorable_excursion")), "max_adverse_excursion": _num(payload.get("max_adverse_excursion")), "anchor_price": _num(payload.get("anchor_price")), "anchor_broken": payload.get("anchor_broken"), "stop_executed": payload.get("stop_executed"), "expectation_state": payload.get("expectation_state"), "violation_tags_json": list(payload.get("violation_tags") or []), "review_text": payload.get("review_text")}
         if not values["symbol"]:
             raise ValueError("symbol不能为空")
+        if exit_date and exit_date < entry_date:
+            raise ValueError("卖出日期不能早于买入日期")
+        for field in ("entry_price", "exit_price"):
+            if payload.get(field) not in (None, "") and (values[field] is None or values[field] <= 0):
+                raise ValueError("成交价格必须是正数")
         async with async_session() as session:
             row = (await session.execute(select(WildmanTradeReview).where(WildmanTradeReview.trade_id == trade_id))).scalar_one_or_none()
             if row:
