@@ -22,6 +22,7 @@ from wildman.history import (
     MAX_HISTORY_TRADING_DAYS,
     bounded_trade_dates,
     derive_historical_overrides,
+    normalize_code,
     normalize_trade_date,
 )
 
@@ -133,7 +134,7 @@ class WildmanHistoryService:
             return None
         except Exception:
             return None
-        if result is not None:
+        if result is not None and cache_ttl > 0:
             if len(self._cache) >= 64:
                 self._cache.pop(next(iter(self._cache)))
             self._cache[cache_key] = (time.monotonic(), result)
@@ -328,15 +329,22 @@ class WildmanHistoryService:
 
         member_rows: list[dict[str, Any]] = []
         member_dates = dates or [target_date]
+        relevant_codes = {
+            normalize_code(row.get("code") or row.get("symbol"))
+            for row in [*current, *up_rows, *failed_rows]
+        }
         async def fetch_members(day: date) -> list[dict[str, Any]]:
             kwargs: dict[str, Any] = {"level": "parent", "tradedate": day}
             # Never send an industry/display label as theme_symbols. Without
             # a verified symbol, an unfiltered dated response is safer.
             if query_symbols:
                 kwargs["theme_symbols"] = query_symbols
-            rows = await self._provider_call("theme_members", **kwargs)
+            rows = await self._provider_call("theme_members", cache_ttl=0, cache_result=False, **kwargs)
             output = []
             for row in _rows(rows):
+                # Membership outside the current and historical limit pools
+                # cannot participate in any leadership calculation below.
+                row = {**row, "symbols": [code for code in row.get("symbols", []) if normalize_code(code) in relevant_codes]}
                 if row.get("trade_date") or row.get("tradedate"):
                     output.append({
                         **row,

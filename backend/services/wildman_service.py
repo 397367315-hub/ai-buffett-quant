@@ -149,34 +149,42 @@ class WildmanService:
     async def _bars(self, symbols: list[str], target: date) -> dict[str, list[StockDailyBar]]:
         if not symbols:
             return {}
-        start = target - timedelta(days=420)
-        async with async_session() as session:
-            rows = list((await session.execute(
-                select(StockDailyBar).where(
-                    StockDailyBar.stock_code.in_(symbols),
-                    StockDailyBar.trade_date >= start,
-                    StockDailyBar.trade_date <= target,
-                ).order_by(StockDailyBar.stock_code, StockDailyBar.trade_date)
-            )).scalars().all())
         grouped: dict[str, list[StockDailyBar]] = defaultdict(list)
-        for row in rows:
-            grouped[row.stock_code].append(row)
         if numcat_market_provider.configured:
             from services.wildman_classic_service import fetch_numcat_history_batch
-            semaphore = asyncio.Semaphore(3)
-            async def primary_batch(codes: list[str]) -> dict:
-                async with semaphore:
-                    return await self._safe(fetch_numcat_history_batch(codes, days=min(800, 260 + max(0, (shanghai_now().date() - target).days)), end_date=target), {})
-            primary = await asyncio.gather(*(primary_batch(symbols[start:start + 16]) for start in range(0, len(symbols), 16)))
-            for batch in primary:
-                for code, history in batch.items():
-                    if not history or str(history[-1].get("date") or "") != target.isoformat():
-                        continue
-                    grouped[code] = [SimpleNamespace(
-                        stock_code=code, trade_date=date.fromisoformat(row["date"]),
-                        open_price=row.get("open"), close_price=row.get("close"), high_price=row.get("high"), low_price=row.get("low"),
-                        volume=row.get("volume"), change_pct=row.get("change_pct"), source=row.get("source") or "numcat",
-                    ) for row in history]
+            # Release each pair of raw batches before requesting the next pair.
+            # Loading the full ORM fallback first doubled peak resident memory.
+            for offset in range(0, len(symbols), 32):
+                primary = await asyncio.gather(*(
+                    self._safe(fetch_numcat_history_batch(
+                        symbols[index:index + 16],
+                        days=min(800, 260 + max(0, (shanghai_now().date() - target).days)), end_date=target,
+                    ), {}) for index in range(offset, min(offset + 32, len(symbols)), 16)
+                ))
+                for batch in primary:
+                    for code, history in batch.items():
+                        if not history or str(history[-1].get("date") or "") != target.isoformat():
+                            continue
+                        grouped[code] = [SimpleNamespace(
+                            stock_code=code, trade_date=date.fromisoformat(row["date"]),
+                            open_price=row.get("open"), close_price=row.get("close"), high_price=row.get("high"), low_price=row.get("low"),
+                            volume=row.get("volume"), change_pct=row.get("change_pct"), source=row.get("source") or "numcat",
+                        ) for row in history]
+                del primary
+        missing = [code for code in symbols if code not in grouped]
+        if missing:
+            async with async_session() as session:
+                result = await session.execute(select(
+                    StockDailyBar.stock_code, StockDailyBar.trade_date, StockDailyBar.open_price,
+                    StockDailyBar.close_price, StockDailyBar.high_price, StockDailyBar.low_price,
+                    StockDailyBar.volume, StockDailyBar.change_pct, StockDailyBar.source,
+                ).where(
+                    StockDailyBar.stock_code.in_(missing),
+                    StockDailyBar.trade_date >= target - timedelta(days=420),
+                    StockDailyBar.trade_date <= target,
+                ).order_by(StockDailyBar.stock_code, StockDailyBar.trade_date))
+                for row in result.mappings():
+                    grouped[row["stock_code"]].append(SimpleNamespace(**row))
         return grouped
 
     async def _auctions(self, symbols: list[str], target: date) -> dict[str, StockAuctionSnapshot]:
@@ -408,13 +416,14 @@ class WildmanService:
     async def dashboard(self, requested: date | None = None, *, refresh: bool = False, exclude_star_market: bool = True, exclude_gem: bool = True) -> dict[str, Any]:
         target = await self._target_date(requested)
         cache_key = self._cache_key(exclude_star_market, exclude_gem)
-        cached = await self._cached(cache_key)
+        cached = None if refresh else await self._cached(cache_key)
         if not refresh and self._cache_fresh(cached, target):
             return {**cached, "cache_hit": True}
         async with self._lock:
-            cached = await self._cached(cache_key)
+            cached = None if refresh else await self._cached(cache_key)
             if not refresh and self._cache_fresh(cached, target):
                 return {**cached, "cache_hit": True}
+            cached = None
             snapshot = await self._snapshot(target, refresh)
             cycle = self.rules.market_cycle.detect(snapshot["market"])
             theme_results = []

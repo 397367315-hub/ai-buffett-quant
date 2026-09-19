@@ -157,6 +157,18 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["001216"]["market_cap"], 4_200_000_000)
         self.assertEqual(metadata["001216"]["trade_date"], "2026-09-10")
 
+    async def test_primary_bars_do_not_load_unused_database_history(self):
+        target = date(2026, 9, 18)
+        primary = {"600001": [{"date": target.isoformat(), "close": 10, "source": "numcat_daily"}]}
+        with (
+            patch("services.wildman_service.numcat_market_provider", SimpleNamespace(configured=True)),
+            patch("services.wildman_classic_service.fetch_numcat_history_batch", new=AsyncMock(return_value=primary)),
+            patch("services.wildman_service.async_session", side_effect=AssertionError("unused fallback must not load")),
+        ):
+            rows = await WildmanService()._bars(["600001"], target)
+        self.assertEqual(rows["600001"][0].source, "numcat_daily")
+        self.assertEqual(rows["600001"][0].trade_date, target)
+
     async def test_review_includes_old_entry_closed_in_selected_period(self):
         service = WildmanService()
         await service.save_review({"trade_id": "closed", "symbol": "600001", "entry_date": "2026-09-01", "exit_date": "2026-09-18", "entry_price": 10, "exit_price": 11, "pnl_pct": 10})

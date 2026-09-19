@@ -439,6 +439,7 @@ class NumCatMarketProvider:
         level: str = "parent",
         tag: str | None = None,
         tradedate: date | None = None,
+        cache_result: bool = True,
     ) -> list[dict[str, Any]]:
         """Return the official selected-theme constituent groups.
 
@@ -463,7 +464,7 @@ class NumCatMarketProvider:
             "thememembers_jx",
             fields=THEME_MEMBERS_FIELDS,
             params=params,
-            cache_ttl=900 if tag == "long" or tradedate else 300,
+            cache_ttl=(900 if tag == "long" or tradedate else 300) if cache_result else 0,
             affinity_key=f"theme-members:{tag or 'selected'}:{level}:{params.get('theme_symbols', 'all')}:{params.get('tradedate', 'latest')}",
         )
         output = []
