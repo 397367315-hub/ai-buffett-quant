@@ -16,6 +16,7 @@ from models import (
     MarketSentimentDaily,
     StockAuctionSnapshot,
     StockDailyBar,
+    StockUniverseSnapshot,
     WildmanCandidate,
     WildmanMainline,
     WildmanMarketCycle,
@@ -27,7 +28,7 @@ from services.level2_service import level2_service
 from wildman.rules import RULE_VERSION, WildmanRuleCore, review_metrics
 
 
-CACHE_KEY = "wildman_dashboard_v2"
+CACHE_KEY = "wildman_dashboard_v3"
 
 
 def _num(value: Any) -> float | None:
@@ -128,6 +129,41 @@ class WildmanService:
             ))).scalars().all())
         return {row.stock_code: row for row in rows}
 
+    async def _universe_metadata(self, symbols: list[str], target: date) -> dict[str, dict[str, Any]]:
+        """Load the latest PIT industry and market cap known by the target date."""
+        if not symbols:
+            return {}
+        latest_dates = (
+            select(
+                StockUniverseSnapshot.stock_code.label("stock_code"),
+                func.max(StockUniverseSnapshot.trade_date).label("trade_date"),
+            )
+            .where(
+                StockUniverseSnapshot.stock_code.in_(symbols),
+                StockUniverseSnapshot.trade_date <= target,
+            )
+            .group_by(StockUniverseSnapshot.stock_code)
+            .subquery()
+        )
+        async with async_session() as session:
+            rows = list((await session.execute(
+                select(StockUniverseSnapshot).join(
+                    latest_dates,
+                    (StockUniverseSnapshot.stock_code == latest_dates.c.stock_code)
+                    & (StockUniverseSnapshot.trade_date == latest_dates.c.trade_date),
+                )
+            )).scalars().all())
+        return {
+            row.stock_code: {
+                "name": row.stock_name,
+                "sector": str(row.industry or "").strip(),
+                "market_cap": _num(row.market_cap),
+                "trade_date": row.trade_date.isoformat(),
+                "source": row.source,
+            }
+            for row in rows
+        }
+
     @staticmethod
     def _ma(rows: list[StockDailyBar], period: int) -> float | None:
         values = [_num(row.close_price) for row in rows[-period:]]
@@ -209,6 +245,20 @@ class WildmanService:
         up_rows = list(up_pool.get("stocks") or [])
         down_rows = list(down_pool.get("stocks") or [])
         failed_rows = list(failed_pool.get("stocks") or [])
+        metadata = await self._universe_metadata(
+            [_normalize_code(item.get("code")) for item in up_rows],
+            target,
+        )
+        metadata_hits = 0
+        for item in up_rows:
+            row = metadata.get(_normalize_code(item.get("code"))) or {}
+            if not str(item.get("sector") or "").strip() and row.get("sector"):
+                item["sector"] = row["sector"]
+                metadata_hits += 1
+            if _num(item.get("market_cap")) is None and row.get("market_cap") is not None:
+                item["market_cap"] = row["market_cap"]
+            if not str(item.get("name") or "").strip() and row.get("name"):
+                item["name"] = row["name"]
         latest_sentiment = sentiments[0] if sentiments else None
         previous_sentiment = sentiments[1] if len(sentiments) > 1 else None
 
@@ -254,7 +304,7 @@ class WildmanService:
             "rear_all_red": len(up_rows) >= 50, "leader_broken": max_height >= 4 and bool(failed_rows),
             "cold_rear_supplement": len(up_rows) >= 60,
         }
-        return {"market": market, "themes": theme_facts, "up_rows": up_rows, "down_rows": down_rows, "failed_rows": failed_rows, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "data_date": up_pool.get("trade_date") or target.isoformat()}}
+        return {"market": market, "themes": theme_facts, "up_rows": up_rows, "down_rows": down_rows, "failed_rows": failed_rows, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "universe_metadata": "stock_universe_snapshots", "universe_metadata_hits": metadata_hits, "data_date": up_pool.get("trade_date") or target.isoformat()}}
 
     async def dashboard(self, requested: date | None = None, *, refresh: bool = False, exclude_star_market: bool = True, exclude_gem: bool = True) -> dict[str, Any]:
         target = await self._target_date(requested)

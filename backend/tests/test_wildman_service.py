@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from database import Base
 from models import (
     MarketDataCache,
+    StockUniverseSnapshot,
     WildmanCandidate,
     WildmanMainline,
     WildmanMarketCycle,
@@ -25,6 +26,7 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
         tables = [
             MarketDataCache.__table__,
+            StockUniverseSnapshot.__table__,
             WildmanMarketCycle.__table__,
             WildmanMainline.__table__,
             WildmanStockRole.__table__,
@@ -131,6 +133,21 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
         compact_snapshot = json.dumps(candidate.source_snapshot_json, ensure_ascii=False)
         self.assertNotIn("timeline", compact_snapshot)
         self.assertNotIn("raw_trades", compact_snapshot)
+
+    async def test_universe_metadata_uses_latest_pit_row_on_or_before_target(self):
+        service = WildmanService()
+        async with self.session_factory() as session:
+            session.add_all([
+                StockUniverseSnapshot(stock_code="001216", stock_name="华瓷股份", exchange="SZ", trade_date=date(2026, 9, 10), industry="家居用品", market_cap=4_200_000_000, source="numcat"),
+                StockUniverseSnapshot(stock_code="001216", stock_name="华瓷股份", exchange="SZ", trade_date=date(2026, 9, 20), industry="未来行业", market_cap=9_900_000_000, source="future"),
+            ])
+            await session.commit()
+
+        metadata = await service._universe_metadata(["001216"], date(2026, 9, 18))
+
+        self.assertEqual(metadata["001216"]["sector"], "家居用品")
+        self.assertEqual(metadata["001216"]["market_cap"], 4_200_000_000)
+        self.assertEqual(metadata["001216"]["trade_date"], "2026-09-10")
 
 
 if __name__ == "__main__":
