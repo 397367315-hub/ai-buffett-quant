@@ -151,9 +151,10 @@ async def fetch_numcat_history_batch(symbols: list[str], *, days: int = HISTORY_
     if not codes:
         return {}
     # Respect the upstream row cap while retaining enough history for MA75.
-    if len(codes) > HISTORY_BATCH_SIZE:
+    batch_size = 32 if days <= 60 else HISTORY_BATCH_SIZE
+    if len(codes) > batch_size:
         combined = {}
-        for batch in _chunks(codes, HISTORY_BATCH_SIZE):
+        for batch in _chunks(codes, batch_size):
             combined.update(await fetch_numcat_history_batch(batch, days=days, end_date=end_date, _market_hint=_market_hint))
         return combined
     if _market_hint is None:
@@ -493,12 +494,12 @@ class WildmanClassicService:
         updated = max((str(item.get("source_updated_at")) for item in bars if item.get("source_updated_at")), default=None)
         return source, basis, updated
 
-    async def _numcat_history_batches(self, codes: list[str], target: date, diagnostics: list[dict[str, Any]] | None = None) -> dict[str, list[dict[str, Any]]]:
+    async def _numcat_history_batches(self, codes: list[str], target: date, diagnostics: list[dict[str, Any]] | None = None, *, days: int = HISTORY_RECENT_DAYS) -> dict[str, list[dict[str, Any]]]:
         """Fetch at most 32 same-market symbols per request with per-batch deadlines."""
         if not codes:
             return {}
         batches: list[list[str]] = []
-        for batch in _chunks(codes, HISTORY_BATCH_SIZE):
+        for batch in _chunks(codes, 32 if days <= 60 else HISTORY_BATCH_SIZE):
             grouped: dict[str | None, list[str]] = defaultdict(list)
             for code in batch:
                 grouped[_market(code)].append(code)
@@ -512,7 +513,7 @@ class WildmanClassicService:
                 return await asyncio.wait_for(
                     fetch_numcat_history_batch(
                         batch,
-                        days=HISTORY_RECENT_DAYS,
+                        days=days,
                         end_date=target,
                         _market_hint=_market(batch[0]) if batch else None,
                     ),
@@ -547,7 +548,7 @@ class WildmanClassicService:
                 merged.update(result)
         return merged
 
-    async def _history_batch(self, codes: list[str], target: date, *, refresh: bool, minimum_bars: int, topup_budget: list[int] | None = None, diagnostics: list[dict[str, Any]] | None = None) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    async def _history_batch(self, codes: list[str], target: date, *, refresh: bool, minimum_bars: int, topup_budget: list[int] | None = None, diagnostics: list[dict[str, Any]] | None = None, history_days: int = HISTORY_RECENT_DAYS) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
         result: dict[str, list[dict[str, Any]]] = {}
         source_counts: Counter[str] = Counter()
         history_updated: list[str] = []
@@ -558,7 +559,7 @@ class WildmanClassicService:
         if numcat_market_provider is not None and numcat_market_provider.configured:
             numcat_attempted = True
             try:
-                numcat = await self._numcat_history_batches(codes, target, diagnostics=diagnostics)
+                numcat = await self._numcat_history_batches(codes, target, diagnostics=diagnostics, days=history_days)
                 for code, bars in numcat.items():
                     latest_numcat_date = max((_date(item.get("date")) for item in bars), default=None)
                     if bars and latest_numcat_date != target:
@@ -659,12 +660,14 @@ class WildmanClassicService:
         history_updated: list[str] = []
         numcat_batches: list[dict[str, Any]] = []
         minimum = self._minimum_bars(strategy_id)
+        lookback = {"WM_CLASSIC_520": 45, "WM_CLASSIC_T": 30, "WM_CLASSIC_75A": HISTORY_RECENT_DAYS}[strategy_id]
+        history_days = min(800, lookback + max(0, (shanghai_now().date() - target).days))
         topup_budget = [HISTORY_TOPUP_LIMIT]
         fundamentals_by_code: dict[str, dict[str, Any]] = {}
         for batch in _chunks([_code(item["code"]) for item in eligible], DB_BATCH_SIZE):
             if strategy_id == "WM_CLASSIC_T":
                 fundamentals_by_code.update(await self._load_fundamentals(batch, target))
-            histories, history_meta = await self._history_batch(batch, target, refresh=refresh, minimum_bars=minimum, topup_budget=topup_budget, diagnostics=numcat_batches)
+            histories, history_meta = await self._history_batch(batch, target, refresh=refresh, minimum_bars=minimum, topup_budget=topup_budget, diagnostics=numcat_batches, history_days=history_days)
             history_sources.update(history_meta["sources"])
             if history_meta.get("numcat_error"):
                 history_errors[history_meta["numcat_error"]] += 1
