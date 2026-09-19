@@ -15,7 +15,6 @@ from typing import Any, Iterable
 
 from sqlalchemy import func, select
 
-from config import settings
 from database import async_session
 from models import Level2Feature1m, StockDailyBar
 from engines.microstructure import build_feature_series, build_summary, detect_events
@@ -24,6 +23,7 @@ from market_data.level2.providers.base import Level2DataType
 from market_data.level2.providers.numcat import NumCatProvider
 from market_data.level2.repository import Level2Repository
 from market_data.level2.fetcher import FetchResult, Level2Fetcher
+from market_data.level2.spool import Level2Spool
 from market_data.numcat.gateway import numcat_gateway
 
 
@@ -44,6 +44,7 @@ class Level2Service:
         self.fetcher = Level2Fetcher(self.provider, self.repository)
         self._tasks: dict[tuple[str, date], asyncio.Task] = {}
         self._locks: dict[tuple[str, date], asyncio.Lock] = {}
+        self._sync_slots = asyncio.Semaphore(1)
 
     @staticmethod
     def _lock_for(key: tuple[str, date], locks: dict[tuple[str, date], asyncio.Lock]) -> asyncio.Lock:
@@ -74,7 +75,7 @@ class Level2Service:
             "message": "服务端已配置Level-2历史数据源，可按股票和交易日同步。" if configured else "服务端尚未配置Level-2供应商API密钥；普通行情、K线和个股决策不受影响。",
             "realtime_message": "当前供应商适配器只声明历史逐笔/委托/十档能力，未声明实时流式能力。",
             "gateway": numcat_gateway.status(),
-            "storage_policy": "V2.0 API优先：原始行情和Level-2不作为全市场历史镜像；现有按股票同步任务仅用于兼容已启用的历史研究流程。",
+            "storage_policy": "API优先：逐页临时处理Level-2，数据库只保存分钟特征与质量记录，不新增原始逐笔、委托或盘口副本。",
         }
 
     def _task_running(self, key: tuple[str, date]) -> bool:
@@ -109,6 +110,12 @@ class Level2Service:
                 "provider": self.provider.name,
                 "message": "Level-2历史数据正在后台同步。",
             }
+        if sum(not task.done() for task in self._tasks.values()) >= 8:
+            return {
+                "status": "busy", "pending": False, "started": False,
+                "provider": self.provider.name,
+                "message": "Level-2研究队列已满，请稍后刷新；已有分析继续可用。",
+            }
         try:
             task = asyncio.create_task(self.sync(
                 normalized,
@@ -141,6 +148,7 @@ class Level2Service:
 
     def _finish_task(self, key: tuple[str, date], task: asyncio.Task) -> None:
         self._tasks.pop(key, None)
+        self._locks.pop(key, None)
         try:
             task.result()
         except asyncio.CancelledError:
@@ -161,41 +169,66 @@ class Level2Service:
         normalized = normalize_symbol(symbol)
         key = (normalized, trade_date)
         lock = self._lock_for(key, self._locks)
-        async with lock:
-            fetch_result = await self.fetcher.run(
-                normalized,
-                trade_date,
-                data_types=data_types,
-                force=force,
-                start_time=start_time,
-                end_time=end_time,
-            )
-            return await self._rebuild_features(normalized, trade_date, fetch_result)
+        async with lock, self._sync_slots:
+            # The spool is disposable and cannot resume an older process's
+            # cursor. Only small jobs and final features enter PostgreSQL.
+            with Level2Spool(self.repository, normalized, trade_date) as spool:
+                fetch_result = await Level2Fetcher(self.provider, spool).run(
+                    normalized, trade_date, data_types=data_types, force=True,
+                    start_time=start_time, end_time=end_time,
+                )
+                return await self._rebuild_features(normalized, trade_date, fetch_result, spool)
 
     async def _rebuild_features(
         self,
         symbol: str,
         trade_date: date,
-        fetch_result: FetchResult | None = None,
+        fetch_result: FetchResult,
+        spool: Level2Spool,
     ) -> dict[str, Any]:
-        # Keep the in-process working set bounded. The raw tables remain the
-        # source of truth and can be processed in a future SQL streaming pass.
-        try:
-            max_rows = min(max(int(settings.level2_max_rows), 1_000), 2_000_000)
-        except (TypeError, ValueError):
-            max_rows = 500_000
-        trades = await self.repository.load_trades(symbol, trade_date, limit=max_rows)
-        orders = await self.repository.load_orders(symbol, trade_date, limit=max_rows)
-        quotes = await self.repository.load_quotes(symbol, trade_date, limit=max_rows)
-        features = build_feature_series(trades, orders, quotes)
+        threshold = spool.amount_threshold()
+        features: list[dict[str, Any]] = []
+        previous_price = None
+        previous_quote = None
+        for _, trades, orders, quotes in spool.iter_minutes():
+            features.extend(build_feature_series(
+                trades, orders, quotes, previous_price=previous_price,
+                previous_quote=previous_quote, large_trade_threshold=threshold,
+            ))
+            for row in reversed(trades):
+                if row.price is not None and row.price > 0:
+                    previous_price = row.price
+                    break
+            if quotes:
+                previous_quote = quotes[-1]
+            await asyncio.sleep(0)
         for row in features:
             row["symbol"] = symbol
             row["trade_date"] = trade_date
             row.setdefault("source", "numcat")
-        if features:
-            await self.repository.save_features(features)
-        quality = self._quality(trade_date, trades, orders, quotes, fetch_result)
-        await self.repository.save_quality({
+        quality = self._quality_from_stats(spool.stats(), fetch_result)
+        if spool.truncated_minutes or spool.rejected_rows:
+            quality["status"] = "partial"
+            quality["confidence"] = min(quality["confidence"], 55)
+            quality["warnings"].append("超密集分钟样本或日期/股票不符的记录已排除，分析仅覆盖有效样本。")
+        quality["checks"].update({
+            "storage_mode": "features_only", "truncated_minutes": spool.truncated_minutes,
+            "rejected_rows": spool.rejected_rows,
+        })
+        for row in features:
+            if quality["status"] != "complete":
+                row["data_quality"] = quality["status"]
+                row["confidence"] = min(row["confidence"], quality["confidence"])
+        if not features and fetch_result.errors:
+            cached = await self.repository.load_features(symbol, trade_date)
+            if cached:
+                return {
+                    "symbol": symbol, "trade_date": trade_date.isoformat(),
+                    "status": "refresh_failed", "quality": quality,
+                    "feature_count": len(cached), "cache_preserved": True,
+                    "fetch": self._fetch_payload(fetch_result),
+                }
+        await self.repository.save_analysis(symbol, trade_date, features, {
             "symbol": symbol,
             "trade_date": trade_date,
             "status": quality["status"],
@@ -233,21 +266,12 @@ class Level2Service:
         }
 
     @staticmethod
-    def _quality(
-        trade_date: date,
-        trades: list[Any],
-        orders: list[Any],
-        quotes: list[Any],
+    def _quality_from_stats(
+        stats: dict[str, Any],
         fetch_result: FetchResult | None,
     ) -> dict[str, Any]:
-        timestamps = [
-            item.timestamp
-            for collection in (trades, orders, quotes)
-            for item in collection
-            if getattr(item, "timestamp", None) is not None
-        ]
-        first = min(timestamps) if timestamps else None
-        last = max(timestamps) if timestamps else None
+        first, last = stats.get("first_timestamp"), stats.get("last_timestamp")
+        trades, orders, quotes = (int(stats.get(f"{kind}_count") or 0) for kind in ("trade", "order", "quote"))
         complete_by_jobs = bool(fetch_result and fetch_result.complete)
         if fetch_result is None:
             pagination_complete = True
@@ -255,15 +279,9 @@ class Level2Service:
         else:
             pagination_complete = bool(fetch_result.statuses) and all(fetch_result.pagination_complete.values())
             job_errors = fetch_result.errors
-        depth_observations = 0
-        full_depth = 0
-        for quote in quotes:
-            levels = list(getattr(quote, "bids", []) or []) + list(getattr(quote, "asks", []) or [])
-            observed = sum(level.price is not None and level.volume is not None for level in levels)
-            depth_observations += observed
-            if observed >= 16:
-                full_depth += 1
-        depth_coverage = full_depth / len(quotes) * 100 if quotes else 0.0
+        depth_observations = int(stats.get("quote_depth_observations") or 0)
+        full_depth = int(stats.get("full_depth_quote_count") or 0)
+        depth_coverage = full_depth / quotes * 100 if quotes else 0.0
         warnings: list[str] = []
         if not trades:
             warnings.append("未获得逐笔成交样本")
@@ -273,7 +291,7 @@ class Level2Service:
             warnings.append("未获得十档盘口样本，OBI和盘口质量特征受限")
         if job_errors:
             warnings.append("至少一种Level-2数据分页未完整结束")
-        if timestamps and any(item.date() != trade_date for item in timestamps):
+        if not stats.get("trade_date_consistent", True):
             warnings.append("检测到跨交易日时间戳，已排除出高置信解释")
         if quotes and depth_coverage < 60:
             warnings.append("十档深度字段覆盖不足")
@@ -288,9 +306,9 @@ class Level2Service:
         else:
             status = "degraded"
         # Confidence is a quality indicator, never a model certainty claim.
-        coverage_parts = [min(1.0, len(trades) / 100), min(1.0, len(quotes) / 100)]
+        coverage_parts = [min(1.0, trades / 100), min(1.0, quotes / 100)]
         if orders:
-            coverage_parts.append(min(1.0, len(orders) / 100))
+            coverage_parts.append(min(1.0, orders / 100))
         if not pagination_complete:
             coverage_parts.append(0.25)
         confidence = sum(coverage_parts) / len(coverage_parts) * 100 if coverage_parts else 0.0
@@ -302,9 +320,9 @@ class Level2Service:
             # columns. FastAPI serializes them when the result is returned.
             "first_timestamp": first,
             "last_timestamp": last,
-            "trade_count": len(trades),
-            "order_count": len(orders),
-            "quote_count": len(quotes),
+            "trade_count": trades,
+            "order_count": orders,
+            "quote_count": quotes,
             "pagination_complete": pagination_complete,
             "quote_depth_coverage_pct": round(depth_coverage, 1),
             "confidence": round(confidence, 1),

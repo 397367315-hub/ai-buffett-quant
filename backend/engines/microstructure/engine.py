@@ -83,13 +83,17 @@ def _quote_at(
 def _annotate_trades(
     trades: list[TradeTick],
     quotes: list[OrderBookSnapshot],
+    *,
+    previous_price: float | None = None,
+    previous_quote: OrderBookSnapshot | None = None,
 ) -> list[dict[str, Any]]:
     timestamps, ordered_quotes = _quote_index(quotes)
     ordered = sorted(trades, key=lambda item: item.timestamp)
-    previous_price: float | None = None
     result: list[dict[str, Any]] = []
     for trade in ordered:
         quote = _quote_at(timestamps, ordered_quotes, trade.timestamp) if ordered_quotes else None
+        if quote is None and previous_quote is not None and previous_quote.timestamp <= trade.timestamp:
+            quote = previous_quote
         side, method, confidence = classify_trade(trade, quote, previous_price)
         result.append({
             "trade": trade,
@@ -313,15 +317,25 @@ def build_feature_series(
     quotes: list[OrderBookSnapshot] | None = None,
     *,
     hfi_weights: Mapping[str, float] | None = None,
+    previous_price: float | None = None,
+    previous_quote: OrderBookSnapshot | None = None,
+    large_trade_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     """Aggregate normalized records into one row per local trading minute."""
     orders = orders or []
     quotes = quotes or []
-    annotated = _annotate_trades(trades, quotes)
+    annotated = _annotate_trades(
+        trades,
+        quotes,
+        previous_price=previous_price,
+        previous_quote=previous_quote,
+    )
     if not annotated and not quotes and not orders:
         return []
     amounts = [item["amount"] for item in annotated if item["amount"] > 0]
-    threshold = _percentile(amounts, 85) or (median(amounts) * 3 if amounts else None)
+    threshold = large_trade_threshold
+    if threshold is None:
+        threshold = _percentile(amounts, 85) or (median(amounts) * 3 if amounts else None)
     trade_groups: dict[datetime, list[dict[str, Any]]] = defaultdict(list)
     order_groups: dict[datetime, list[OrderTick]] = defaultdict(list)
     quote_groups: dict[datetime, list[OrderBookSnapshot]] = defaultdict(list)

@@ -7,7 +7,7 @@ import json
 from datetime import date, datetime
 from typing import Any, Iterable
 
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -170,6 +170,25 @@ class Level2Repository:
 
     async def save_quality(self, values: dict[str, Any]) -> int:
         return await self._upsert(Level2QualitySnapshot, [{**values, "generated_at": datetime.utcnow()}], ["symbol", "trade_date"], batch_size=1)
+
+    async def save_analysis(self, symbol: str, trade_date: date, features: list[dict[str, Any]], quality: dict[str, Any]) -> None:
+        """Replace the dated feature set and its coverage atomically."""
+        async with async_session() as session:
+            await session.execute(delete(Level2Feature1m).where(
+                Level2Feature1m.symbol == symbol, Level2Feature1m.trade_date == trade_date,
+            ))
+            for start in range(0, len(features), 100):
+                payload = [{
+                    **{key: _json_safe(value) if key in {"hfi_components", "components", "explanation"} else value for key, value in row.items()},
+                    "created_at": datetime.utcnow(),
+                } for row in features[start:start + 100]]
+                await session.execute(self._insert(session, Level2Feature1m).values(payload))
+            statement = self._insert(session, Level2QualitySnapshot).values({**quality, "generated_at": datetime.utcnow()})
+            await session.execute(statement.on_conflict_do_update(
+                index_elements=["symbol", "trade_date"],
+                set_={column.name: getattr(statement.excluded, column.name) for column in Level2QualitySnapshot.__table__.columns if column.name not in {"id", "symbol", "trade_date"}},
+            ))
+            await session.commit()
 
     async def load_trades(self, symbol: str, trade_date: date, limit: int | None = None) -> list[TradeTick]:
         async with async_session() as session:

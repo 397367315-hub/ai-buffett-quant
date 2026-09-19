@@ -571,6 +571,23 @@ export default function WildmanPage() {
     finally { if (!controller.signal.aborted) setDetailLoading(false); }
   }, []);
 
+  useEffect(() => {
+    if (!selected?.level2?.pending || detailLoading) return;
+    const controller = new AbortController();
+    const symbol = selected.symbol;
+    const date = selected.trade_date;
+    const timer = window.setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ date, refresh: 'false' });
+        const response = await apiFetch<{ data: AnyMap }>(`/wildman/candidates/${encodeURIComponent(symbol)}?${params}`, { timeoutMs: 45000, signal: controller.signal, cache: 'no-store' });
+        if (!controller.signal.aborted) setSelected((current) => current?.symbol === symbol && current?.trade_date === date ? response.data : current);
+      } catch (caught) {
+        if (!controller.signal.aborted) setError(friendlyApiError(caught, '盘口同步查询暂时失败，可重新打开详情查看'));
+      }
+    }, 10000);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [selected, detailLoading]);
+
   const loadReview = useCallback(async () => {
     try { const response = await apiFetch<{ data: AnyMap }>(`/wildman/review/${reviewPeriod}`, { timeoutMs: 45000 }); setReview(response.data); }
     catch (caught) { setError(friendlyApiError(caught, '复盘记录暂时不可用')); }
