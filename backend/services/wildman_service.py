@@ -30,9 +30,11 @@ from services.level2_service import level2_service
 from market_data.numcat.market_provider import numcat_market_provider
 from wildman.rules import RULE_VERSION, WildmanRuleCore, review_metrics
 from wildman.facts import daily_facts, intraday_facts
+from services.wildman_risk_service import risk_facts
+from services.wildman_history_service import build_history_context
 
 
-CACHE_KEY = "wildman_dashboard_v4"
+CACHE_KEY = "wildman_dashboard_v5"
 
 
 def _num(value: Any) -> float | None:
@@ -53,6 +55,25 @@ def _iso(value: Any) -> str | None:
 
 def _normalize_code(value: Any) -> str:
     return str(value or "").split(".", 1)[0].strip()
+
+
+def candidate_card(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep evidence in the detail record, not in every dashboard grouping."""
+    card = {key: row.get(key) for key in (
+        "symbol", "name", "theme_id", "theme_name", "price", "change_pct",
+        "continuous_days", "candidate_status", "risk_reward", "setup",
+    )}
+    card["role"] = {"role": (row.get("role") or {}).get("role")}
+    return card
+
+
+def dashboard_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **payload,
+        "candidates": [candidate_card(row) for row in payload.get("candidates", [])],
+        "candidate_groups": {key: [candidate_card(row) for row in rows] for key, rows in payload.get("candidate_groups", {}).items()},
+        "reject_pool": [candidate_card(row) for row in payload.get("reject_pool", [])],
+    }
 
 
 class WildmanService:
@@ -116,13 +137,13 @@ class WildmanService:
             rows = await self._safe(numcat_market_provider.market_emotion(recentdays=30), [])
             matched = [row for row in rows if str(row.get("trade_date") or "") <= target.isoformat()]
             if matched and any(row.get("trade_date") == target.isoformat() for row in matched):
-                return [SimpleNamespace(**{**row, "trade_date": date.fromisoformat(row["trade_date"])}) for row in sorted(matched, key=lambda row: row["trade_date"], reverse=True)[:5]]
+                return [SimpleNamespace(**{**row, "trade_date": date.fromisoformat(row["trade_date"])}) for row in sorted(matched, key=lambda row: row["trade_date"], reverse=True)[:30]]
         async with async_session() as session:
             return list((await session.execute(
                 select(MarketSentimentDaily)
                 .where(MarketSentimentDaily.trade_date <= target)
                 .order_by(desc(MarketSentimentDaily.trade_date))
-                .limit(5)
+                .limit(30)
             )).scalars().all())
 
     async def _bars(self, symbols: list[str], target: date) -> dict[str, list[StockDailyBar]]:
@@ -145,11 +166,11 @@ class WildmanService:
             semaphore = asyncio.Semaphore(3)
             async def primary_batch(codes: list[str]) -> dict:
                 async with semaphore:
-                    return await self._safe(fetch_numcat_history_batch(codes, days=420, end_date=target), {})
-            primary = await asyncio.gather(*(primary_batch(symbols[start:start + 32]) for start in range(0, len(symbols), 32)))
+                    return await self._safe(fetch_numcat_history_batch(codes, days=min(800, 260 + max(0, (shanghai_now().date() - target).days)), end_date=target), {})
+            primary = await asyncio.gather(*(primary_batch(symbols[start:start + 16]) for start in range(0, len(symbols), 16)))
             for batch in primary:
                 for code, history in batch.items():
-                    if len(history) < 21 or str(history[-1].get("date") or "") != target.isoformat():
+                    if not history or str(history[-1].get("date") or "") != target.isoformat():
                         continue
                     grouped[code] = [SimpleNamespace(
                         stock_code=code, trade_date=date.fromisoformat(row["date"]),
@@ -220,6 +241,12 @@ class WildmanService:
     def _stock_facts(self, item: dict[str, Any], rows: list[StockDailyBar], auction: StockAuctionSnapshot | None, theme: dict[str, Any], market: dict[str, Any]) -> dict[str, Any]:
         return daily_facts(item, rows, auction, theme, market)
 
+    async def _risk_facts(self, symbols: list[str], target: date, refresh: bool = False) -> dict:
+        try:
+            return await asyncio.wait_for(risk_facts(symbols, target, refresh=refresh), timeout=40)
+        except Exception as exc:
+            return {code: {"major_risk": None, "fundamentals_clear": None, "coverage": {"status": "failed", "checked_to": target.isoformat(), "error": type(exc).__name__}, "risk_evidence": []} for code in symbols}
+
     async def _snapshot(self, target: date, refresh: bool) -> dict[str, Any]:
         sentiments_task = self._sentiments(target)
         up_task = self._safe(collector.fetch_limit_up_pool(page_size=500, target_date=target), {"stocks": [], "total": 0, "trade_date": None})
@@ -277,7 +304,21 @@ class WildmanService:
                 item["name"] = row["name"]
         latest_sentiment = next((row for row in sentiments if row.trade_date == target), None)
         previous_sentiment = next((row for row in sentiments if row.trade_date == previous_date), None)
-        bars = await self._bars(list({_normalize_code(item.get("code")) for item in all_rows if _normalize_code(item.get("code"))}), target)
+        symbols = list(dict.fromkeys(_normalize_code(item.get("code")) for item in all_rows if _normalize_code(item.get("code"))))
+        bars, risks = await asyncio.gather(self._bars(symbols, target), self._risk_facts(symbols[:160], target, refresh))
+        history_rows = {}
+        for item in all_rows:
+            history_rows.setdefault(_normalize_code(item.get("code")), item)
+        try:
+            history = await asyncio.wait_for(build_history_context(target, list(history_rows.values()), bars, sentiments), timeout=35) if numcat_market_provider.configured else {}
+        except Exception as exc:
+            history = {"source": {"status": "failed", "error": type(exc).__name__, "observed_dates": []}}
+        overrides = history.get("stock_overrides") or {}
+        for item in all_rows:
+            historical = overrides.get(_normalize_code(item.get("code"))) or {}
+            if historical.get("primary_theme_name"):
+                item["industry"] = item.get("sector")
+                item["sector"] = historical["primary_theme_name"]
         for item in [*up_rows, *failed_rows]:
             item["previous_limit"] = previous_by_code.get(_normalize_code(item.get("code")))
         def current_bar(code: str):
@@ -328,6 +369,8 @@ class WildmanService:
                 "fund_return": None, "reversal": None, "supplement_started": prior_height >= 4 and any(int(_num(item.get("continuous_days")) or 1) == 1 for item in rows) if previous_valid else None,
                 "resists_market_drop": None, "rows": rows,
             })
+        for theme in theme_facts:
+            theme.update({key: value for key, value in (history.get("theme_overrides", {}).get(theme["theme_name"]) or {}).items() if value is not None})
         theme_facts.sort(key=lambda row: (row["max_limit_height"], row["limit_up_count"]), reverse=True)
         all_heights = [int(_num(item.get("continuous_days")) or 1) for item in up_rows]
         max_height = max(all_heights, default=int(_num(getattr(latest_sentiment, "max_streak_height", None)) or 0))
@@ -356,9 +399,11 @@ class WildmanService:
             "rear_all_red": None, "leader_broken": bool(prior_max >= 4 and prior_leader_codes & (failed_codes | down_codes)) if previous_valid and failed_valid and down_valid else None,
             "cold_rear_supplement": None,
         }
+        market.update({key: value for key, value in (history.get("market_overrides") or {}).items() if value is not None})
         current_codes = {_normalize_code(item.get("code")) for item in up_rows}
         prior_candidates = [{**item, "continuous_days": 0, "failed_attempts": None, "previous_limit": previous_by_code.get(_normalize_code(item.get("code")))} for item in previous_rows if _normalize_code(item.get("code")) not in current_codes]
-        return {"market": market, "themes": theme_facts, "up_rows": up_rows, "previous_rows": prior_candidates, "down_rows": down_rows, "failed_rows": failed_rows, "bars": bars, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "universe_metadata": sorted({str(row.get("source") or "unknown") for row in metadata.values()}), "universe_metadata_hits": metadata_hits, "data_date": up_pool.get("trade_date"), "previous_date": previous_date.isoformat() if previous_valid else None, "same_day_pools": {"limit_up": up_valid, "limit_down": down_valid, "failed": failed_valid}, "theme_basis": "行业归类代理；跨行业概念及因果带动需题材历史映射确认"}}
+        mapped_count = sum(bool(item.get("primary_theme_name")) and item.get("industry_theme_proxy") is False for item in overrides.values())
+        return {"market": market, "themes": theme_facts, "up_rows": up_rows, "previous_rows": prior_candidates, "down_rows": down_rows, "failed_rows": failed_rows, "bars": bars, "risk_facts": risks, "history_facts": overrides, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "universe_metadata": sorted({str(row.get("source") or "unknown") for row in metadata.values()}), "universe_metadata_hits": metadata_hits, "data_date": up_pool.get("trade_date"), "previous_date": previous_date.isoformat() if previous_valid else None, "same_day_pools": {"limit_up": up_valid, "limit_down": down_valid, "failed": failed_valid}, "history": history.get("source") or {}, "concept_mapped_count": mapped_count, "theme_basis": f"猫爪当日题材成分匹配{mapped_count}只；其余明确使用行业代理，多日关联不代表因果"}}
 
     async def dashboard(self, requested: date | None = None, *, refresh: bool = False, exclude_star_market: bool = True, exclude_gem: bool = True) -> dict[str, Any]:
         target = await self._target_date(requested)
@@ -398,6 +443,11 @@ class WildmanService:
                 theme_name = str(raw.get("sector") or "未归类")
                 theme = theme_map.get(theme_name) or {"theme_id": theme_name, "theme_name": theme_name, "state": "观察", "limit_up_count": 1, "max_limit_height": 1}
                 facts = self._stock_facts(raw, bars_by_symbol.get(code, []), auctions.get(code), theme, snapshot["market"])
+                historical = (snapshot.get("history_facts") or {}).get(code) or {}
+                original_basis = facts.get("fact_basis") or {}
+                facts.update({key: value for key, value in historical.items() if value is not None})
+                facts["fact_basis"] = {**original_basis, **(historical.get("fact_basis") or {})}
+                facts.update((snapshot.get("risk_facts") or {}).get(code) or {})
                 result = self.rules.evaluate(snapshot["market"], theme, facts, {}, None)
                 candidates.append({
                     "symbol": code, "name": raw.get("name") or code, "theme_id": theme_name, "theme_name": theme_name,
@@ -411,13 +461,13 @@ class WildmanService:
             candidates.sort(key=lambda row: (order.get(row["candidate_status"], 9), -(row.get("continuous_days") or 0)))
             grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
             for row in candidates:
-                grouped[row["role"]["role"]].append(row)
+                grouped[row["role"]["role"]].append(candidate_card(row))
             payload = {
                 "module_id": "WILDMAN_DECISION_V1", "rule_version": RULE_VERSION,
                 "mode": "DECISION_SUPPORT", "trade_date": target.isoformat(), "updated_at": shanghai_now().isoformat(),
                 "cycle": cycle, "market_facts": snapshot["market"], "mainlines": theme_results,
                 "candidates": candidates, "candidate_groups": dict(grouped),
-                "reject_pool": [row for row in candidates if row["candidate_status"] == "风险否决"],
+                "reject_pool": [candidate_card(row) for row in candidates if row["candidate_status"] == "风险否决"],
                 "classic_toolbox": [
                     {"id": "WM_CLASSIC_520", "name": "520战法", "status": "可用"},
                     {"id": "WM_CLASSIC_T", "name": "老太太扶楼梯", "status": "主动启用"},
@@ -464,7 +514,31 @@ class WildmanService:
                 else: session.add(WildmanCandidate(trade_date=target, symbol=candidate["symbol"], setup_type=setup["type"], rule_version=RULE_VERSION, **candidate_values))
             await session.commit()
 
-    async def candidate(self, symbol: str, requested: date | None = None, *, refresh: bool = False) -> dict[str, Any]:
+    async def _account_rules(self, account: dict | None, target: date) -> dict:
+        if not account:
+            return {}
+        today = shanghai_now().date()
+        nav = account.get("nav_metrics") or {}
+        current = str(account.get("as_of") or "") == today.isoformat() and target == today
+        nav_current = current and str(nav.get("as_of") or "") == today.isoformat() and nav.get("quality") == "complete"
+        async with async_session() as session:
+            rows = list((await session.execute(select(WildmanTradeReview).where(
+                WildmanTradeReview.exit_date.is_not(None), WildmanTradeReview.exit_date <= target,
+            ).order_by(desc(WildmanTradeReview.exit_date), desc(WildmanTradeReview.id)).limit(30))).scalars().all())
+        stops = 0
+        for row in rows:
+            pnl = _num(row.pnl_pct)
+            if pnl is None or pnl >= 0:
+                break
+            stops += 1
+        return {
+            "consecutive_stops": stops,
+            "verified_drawdown_pct": nav.get("current_drawdown_pct") if nav_current else None,
+            "source": "用户手工核对账户与已结算复盘；非券商同步",
+            "as_of": account.get("as_of"), "current": current, "scan_blocked": False,
+        }
+
+    async def candidate(self, symbol: str, requested: date | None = None, *, refresh: bool = False, account: dict | None = None) -> dict[str, Any]:
         code = _normalize_code(symbol)
         payload = await self.dashboard(requested, refresh=refresh, exclude_star_market=False, exclude_gem=False)
         candidate = next((row for row in payload["candidates"] if row["symbol"] == code), None)
@@ -504,12 +578,13 @@ class WildmanService:
             "theme_id": candidate["theme_id"],
             "theme_name": candidate["theme_name"],
         }
-        refined = self.rules.evaluate(payload["market_facts"], theme_facts, stock_facts, intraday, l2)
+        account_rules = await self._account_rules(account, target)
+        refined = self.rules.evaluate(payload["market_facts"], theme_facts, stock_facts, intraday, l2, account=account_rules)
         level2_payload = {
             key: l2.get(key)
             for key in ("available", "pending", "provider", "data_quality", "summary", "sync", "capabilities")
         }
-        return {**candidate, **refined, "stock_facts": stock_facts, "intraday_source": "numcat_minute" if minutes else f"{l2.get('provider')}_level2_features" if timeline and l2.get("provider") else None, "level2": level2_payload, "trade_date": payload["trade_date"]}
+        return {**candidate, **refined, "stock_facts": stock_facts, "account_context": account_rules, "intraday_source": "numcat_minute" if minutes else f"{l2.get('provider')}_level2_features" if timeline and l2.get("provider") else None, "level2": level2_payload, "trade_date": payload["trade_date"]}
 
     async def review(self, period: str = "daily", requested: date | None = None) -> dict[str, Any]:
         target = await self._target_date(requested)

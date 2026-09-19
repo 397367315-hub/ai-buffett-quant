@@ -55,11 +55,20 @@ def test_t_checks_5v10_before_unheld_status_and_unknown_fundamentals_are_not_saf
     amounts = [None, None, 20_000_000, 20_000_000, 20_000_000] + [20_000_000] * 6
     result = evaluate_classic("WM_CLASSIC_T", bars(list(range(20, 10, -1)) + [10], amounts=amounts), meta={"symbol": "000001", "holding": False})
     assert result["status"] == "等待确认"
-    assert "不产生新买入" in result["reason"]
+    assert "不产生新建仓" in result["reason"]
     liquidity = next(item for item in result["evidence"] if item["rule_id"] == "T_LIQUIDITY")
     assert liquidity["actual"] is not None
     fundamental = next(item for item in result["evidence"] if item["rule_id"] == "T_FUNDAMENTAL")
     assert fundamental["passed"] is None
+
+
+def test_t_requires_current_sellable_inventory_and_rejects_known_risks():
+    history = bars(list(range(20, 9, -1)))
+    meta = {"symbol": "000001", "fundamental_safe": True, "inventory_current": True, "sellable_shares": 100}
+    assert evaluate_classic("WM_CLASSIC_T", history, meta=meta)["status"] == "已确认"
+    for override in ({"inventory_current": False}, {"sellable_shares": 0}, {"fundamental_safe": None}):
+        assert evaluate_classic("WM_CLASSIC_T", history, meta={**meta, **override})["status"] == "等待确认"
+    assert evaluate_classic("WM_CLASSIC_T", history, meta={**meta, "fundamental_safe": False})["status"] == "风险排除"
 
 
 def test_75a_requires_geometry_not_history_length_alone():

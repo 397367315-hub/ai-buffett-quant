@@ -167,6 +167,24 @@ class WildmanRuleCoreTests(unittest.TestCase):
         self.assertEqual(result["state"], "待确认")
         self.assertFalse(result["confirmed"])
 
+    def test_normal_premium_and_flat_divergence_match_expectation(self):
+        for facts in ({"yesterday_strong": True, "auction_pct": 2},
+                      {"yesterday_divergence": True, "auction_pct": 0.1}):
+            self.assertEqual(self.core.expectation.evaluate(facts)["state"], "符合预期")
+        self.assertNotEqual(self.core.expectation.evaluate({"yesterday_strong": True, "auction_pct": 2, "no_support": True})["state"], "符合预期")
+
+    def test_announcement_risk_veto_and_missing_check_do_not_allow_opening(self):
+        for major_risk in (True, None):
+            result = self.core.evaluate(
+                self.main_rise_market(), self.confirmed_theme(), self.space_dragon(major_risk=major_risk),
+                {"two_pullbacks_hold": True, "lows_rising": True},
+            )
+            self.assertFalse(result["position"]["opening_recommendation"])
+            self.assertIn("MAJOR_DISCLOSURE_RISK" if major_risk else "DISCLOSURE_UNCONFIRMED", result["risk"]["flags"])
+
+    def test_nonfinite_price_cannot_produce_risk_reward(self):
+        self.assertIsNone(self.core.risk_reward(float("inf"), 20, 9))
+
     def test_weak_to_strong_is_restricted_to_main_rise_core(self):
         stock = self.space_dragon(
             yesterday_divergence=True, auction_pct=3, auction_volume_strength=True,
@@ -249,7 +267,7 @@ class WildmanRuleCoreTests(unittest.TestCase):
         self.assertEqual(result["expectancy"], -0.5)
         self.assertEqual(result["per_setup"]["WTS"]["sample_count"], 3)
         self.assertIn("不阻断扫描", result["per_setup"]["WTS"]["guidance"])
-        self.assertEqual(RULE_VERSION, "WM_RULE_CORE_V1_1")
+        self.assertEqual(RULE_VERSION, "WM_RULE_CORE_V1_2")
 
 
 if __name__ == "__main__":

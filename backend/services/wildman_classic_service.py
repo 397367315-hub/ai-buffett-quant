@@ -96,6 +96,8 @@ def _is_special(name: Any) -> bool:
 
 
 def _market_exclusion(code: str, meta: dict[str, Any], *, exclude_star_market: bool, exclude_gem: bool) -> str | None:
+    if code.startswith(("200", "201", "900")):
+        return "B股（非A股）过滤"
     if exclude_star_market and code.startswith(("688", "689")):
         return "科创板过滤"
     if exclude_gem and code.startswith(("300", "301", "302")):
@@ -320,10 +322,11 @@ class WildmanClassicService:
     async def _load_numcat_universe(self, target: date) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if numcat_market_provider is None or not numcat_market_provider.configured:
             return [], {}
+        historical = (shanghai_now().date() - target).days > 3
         try:
             rows, listed = await asyncio.gather(
                 numcat_market_provider.screening(tradedate=target, enrichment_limit=0),
-                numcat_market_provider.stock_basic(list_status="L"),
+                numcat_market_provider.security_directory() if historical else numcat_market_provider.stock_basic(list_status="L"),
             )
         except Exception as exc:
             return [], {"provider": "numcat", "status": "failed", "error": type(exc).__name__}
@@ -333,7 +336,11 @@ class WildmanClassicService:
             if not code or _date(row.get("trade_date")) != target:
                 continue
             quote_by_code[code] = row
-        listing_by_code = {_code(row.get("code")): row for row in listed if _code(row.get("code"))}
+        listing_by_code = {
+            _code(row.get("code")): row for row in listed if _code(row.get("code"))
+            and (_date(row.get("list_date")) is None or _date(row.get("list_date")) <= target)
+            and (_date(row.get("delist_date")) is None or _date(row.get("delist_date")) > target)
+        }
         if not listing_by_code:
             return [], {"provider": "numcat_stockbasic", "status": "empty", "quote_count": len(quote_by_code)}
         universe = []
@@ -350,6 +357,7 @@ class WildmanClassicService:
                 "price": _number(quote.get("price")),
                 "change_pct": _number(quote.get("change_pct")),
                 "is_st": quote.get("is_st"),
+                "list_date": listing.get("list_date"),
                 "trade_date": target.isoformat(),
                 "source": "numcat_stockbasic+numcat_screening",
                 "source_updated_at": quote.get("quote_timestamp") or target.isoformat(),
@@ -363,6 +371,25 @@ class WildmanClassicService:
             "quote_count": len(quote_by_code),
             "exact_quote_date_count": len(quote_by_code),
             "quote_coverage": round(len(quote_by_code) / len(listing_by_code), 4) if listing_by_code else 0,
+            "historical_directory": historical,
+            "classification_basis": "按上市/退市日期过滤证券目录；历史名称与行业仅作检索参考",
+        }
+
+    async def _suspensions(self, target: date) -> set[str]:
+        if numcat_market_provider is None or not numcat_market_provider.configured:
+            return set()
+        from market_data.numcat.extended_provider import numcat_extended_provider
+        try:
+            rows = await asyncio.wait_for(numcat_extended_provider.suspend({"tradedate": target.strftime("%Y%m%d")}), timeout=12)
+        except Exception:
+            return set()
+        exact = [row for row in rows if _date(row.get("tradedate")) == target]
+        resumed = {_code(row.get("symbol")) for row in exact if str(row.get("suspend_type") or "").upper() == "R"}
+        return {
+            _code(row.get("symbol")) for row in exact
+            if str(row.get("suspend_type") or "").upper() == "S"
+            and str(row.get("suspend_timing") or "").strip() in {"", "全天", "全天停牌"}
+            and _code(row.get("symbol")) not in resumed
         }
 
     async def _load_db_universe(self, target: date) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -463,28 +490,26 @@ class WildmanClassicService:
     async def _load_fundamentals(self, codes: list[str], target: date) -> dict[str, dict[str, Any]]:
         if not codes:
             return {}
-        async with async_session() as session:
-            statement = select(FinancialPITSnapshot).where(
-                FinancialPITSnapshot.stock_code.in_(codes),
-                FinancialPITSnapshot.disclosed_at <= target,
-            ).order_by(
-                FinancialPITSnapshot.stock_code,
-                desc(FinancialPITSnapshot.disclosed_at),
-                desc(FinancialPITSnapshot.report_date),
-            )
-            rows = list((await session.execute(statement)).scalars().all())
-        result = {}
-        for row in rows:
-            code = _code(row.stock_code)
-            if code in result:
-                continue
-            known_risk = (row.net_profit is not None and row.net_profit <= 0) or (row.operating_cf is not None and row.operating_cf < 0) or (row.debt_ratio is not None and row.debt_ratio > 80)
-            result[code] = {
-                "fundamental_safe": False if known_risk else None,
-                "financial_screen": {"net_profit": row.net_profit, "operating_cf": row.operating_cf, "debt_ratio": row.debt_ratio},
-                "fundamental_source": "已披露财务快照：亏损、经营现金流为负或负债率>80%为风险代理；其余不等于全面基本面安全认证",
+        # Keep this adapter narrow: the risk service owns PIT source
+        # precedence and coverage states; T only receives its auditable facts.
+        from services.wildman_risk_service import risk_facts
+
+        facts = await risk_facts(codes, target)
+        return {
+            code: {
+                "fundamental_safe": fact.get("fundamentals_clear"),
+                "financial_safe": fact.get("financial_safe"),
+                "financial_screen": fact.get("financial_screen") or {},
+                "fundamental_risk": fact.get("major_risk"),
+                "major_risk": fact.get("major_risk"),
+                "fundamental_source": "; ".join(
+                    str(source) for source in (fact.get("coverage") or {}).get("sources") or []
+                ) or "PIT公告/财务源未覆盖",
+                "fundamental_coverage": fact.get("coverage") or {},
+                "risk_evidence": fact.get("risk_evidence") or [],
             }
-        return result
+            for code, fact in facts.items()
+        }
 
     @staticmethod
     def _history_source(bars: list[dict[str, Any]]) -> tuple[str, str | None, str | None]:
@@ -555,13 +580,19 @@ class WildmanClassicService:
         missing = list(codes)
         topup_budget = topup_budget if topup_budget is not None else [HISTORY_TOPUP_LIMIT]
         stale_codes: set[str] = set()
+        current_codes: set[str] = set()
+        insufficient: dict[str, int] = {}
         numcat_attempted = False
         if numcat_market_provider is not None and numcat_market_provider.configured:
             numcat_attempted = True
             try:
                 numcat = await self._numcat_history_batches(codes, target, diagnostics=diagnostics, days=history_days)
                 for code, bars in numcat.items():
+                    if len(bars) < minimum_bars:
+                        insufficient[code] = len(bars)
                     latest_numcat_date = max((_date(item.get("date")) for item in bars), default=None)
+                    if latest_numcat_date == target:
+                        current_codes.add(code)
                     if bars and latest_numcat_date != target:
                         stale_codes.add(code)
                     if (
@@ -586,7 +617,11 @@ class WildmanClassicService:
             numcat_error = None
         db_rows = await self._load_db_bars(missing, target)
         for code, bars in db_rows.items():
+            if len(bars) < minimum_bars:
+                insufficient[code] = max(insufficient.get(code, 0), len(bars))
             latest_db_date = max((_date(item["date"]) for item in bars), default=None)
+            if latest_db_date == target:
+                current_codes.add(code)
             if bars and latest_db_date != target:
                 stale_codes.add(code)
             if len(bars) >= minimum_bars and max((_date(item["date"]) for item in bars), default=None) == target:
@@ -616,7 +651,8 @@ class WildmanClassicService:
             "numcat_attempted": numcat_attempted,
             "numcat_error": numcat_error,
             "numcat_batches": diagnostics or [],
-            "stale_codes": sorted(stale_codes),
+            "stale_codes": sorted(stale_codes - current_codes),
+            "insufficient_bars": {code: count for code, count in insufficient.items() if code not in result},
             "topup": topup,
         }
 
@@ -635,8 +671,9 @@ class WildmanClassicService:
 
     async def _scan_uncached(self, strategy_id: str, target: date, *, refresh: bool, exclude_star_market: bool, exclude_gem: bool, progress: dict[str, int] | None = None, cache_hit: bool = False) -> dict[str, Any]:
         definition = strategy_card(strategy_id)
-        universe, universe_source = await self._universe(target)
-        held = await self._held_symbols() if strategy_id == "WM_CLASSIC_T" else set()
+        (universe, universe_source), suspended = await asyncio.gather(self._universe(target), self._suspensions(target))
+        # Shared research caches must never include private account holdings.
+        held: set[str] = set()
         if progress is None:
             progress = {"total": 0, "scanned": 0, "eligible": 0, "excluded": 0, "missing_history": 0, "stale_history": 0}
         progress.update({"total": len(universe), "scanned": 0, "eligible": 0, "excluded": 0, "missing_history": 0, "stale_history": 0})
@@ -644,6 +681,8 @@ class WildmanClassicService:
         excluded_reasons: Counter[str] = Counter()
         for item in universe:
             code = _code(item.get("code"))
+            if code in suspended:
+                item = {**item, "is_suspended": True}
             reason = _market_exclusion(code, item, exclude_star_market=exclude_star_market, exclude_gem=exclude_gem)
             if reason:
                 progress["excluded"] += 1
@@ -659,15 +698,17 @@ class WildmanClassicService:
         history_errors: Counter[str] = Counter()
         history_updated: list[str] = []
         numcat_batches: list[dict[str, Any]] = []
+        coverage_gaps: list[dict[str, Any]] = []
         minimum = self._minimum_bars(strategy_id)
         lookback = {"WM_CLASSIC_520": 45, "WM_CLASSIC_T": 30, "WM_CLASSIC_75A": HISTORY_RECENT_DAYS}[strategy_id]
         history_days = min(800, lookback + max(0, (shanghai_now().date() - target).days))
         topup_budget = [HISTORY_TOPUP_LIMIT]
         fundamentals_by_code: dict[str, dict[str, Any]] = {}
         for batch in _chunks([_code(item["code"]) for item in eligible], DB_BATCH_SIZE):
-            if strategy_id == "WM_CLASSIC_T":
-                fundamentals_by_code.update(await self._load_fundamentals(batch, target))
             histories, history_meta = await self._history_batch(batch, target, refresh=refresh, minimum_bars=minimum, topup_budget=topup_budget, diagnostics=numcat_batches, history_days=history_days)
+            if strategy_id == "WM_CLASSIC_T":
+                triggered = [code for code in batch if histories.get(code) and evaluate_classic(strategy_id, histories[code], meta={"symbol": code})["status"] != "NO_MATCH"]
+                fundamentals_by_code.update(await self._load_fundamentals(triggered, target))
             history_sources.update(history_meta["sources"])
             if history_meta.get("numcat_error"):
                 history_errors[history_meta["numcat_error"]] += 1
@@ -678,6 +719,12 @@ class WildmanClassicService:
                 progress["scanned"] += 1
                 bars = histories.get(code)
                 if not bars:
+                    count = history_meta.get("insufficient_bars", {}).get(code)
+                    listed = _date(item.get("list_date"))
+                    new_listing = count is not None and listed is not None and 0 <= (target - listed).days < minimum * 2
+                    gap_reason = "上市时间不足所需日线" if new_listing else "历史不足" if count is not None else "行情日期滞后" if code in history_meta.get("stale_codes", []) else "接口未返回有效行情"
+                    if len(coverage_gaps) < 200:
+                        coverage_gaps.append({"symbol": code, "name": item.get("name"), "reason": gap_reason, "history_rows": count, "required_rows": minimum, "list_date": item.get("list_date")})
                     if code in history_meta.get("stale_codes", []):
                         progress["stale_history"] += 1
                     else:
@@ -711,7 +758,7 @@ class WildmanClassicService:
             f"实际历史来源={dict(history_sources) or {'none': 0}}；NumCat错误={dict(history_errors) or {'none': 0}}；无历史不计为无匹配。"
         )
         if strategy_id == "WM_CLASSIC_T" and not held:
-            coverage_note += " 当前没有PersonalPoolItem可卖底仓，因此T不生成新买入建议。"
+            coverage_note += " 此处为全市场形态研究；个股详情结合本人当日可卖底仓核对，不产生新建仓建议。"
         return {
             "strategy": definition,
             "status": "completed",
@@ -719,6 +766,7 @@ class WildmanClassicService:
             "updated_at": shanghai_now().isoformat(),
             "progress": progress,
             "rows": rows,
+            "coverage_gaps": coverage_gaps,
             "coverage_note": coverage_note,
             "cache_hit": cache_hit,
             "data_sources": {
@@ -830,7 +878,7 @@ class WildmanClassicService:
             task.add_done_callback(finalize)
             return self._running_payload(strategy_id, target, progress, started_at)
 
-    async def detail(self, strategy_id: str, symbol: str, requested_date: date | None = None, *, refresh: bool = False) -> dict[str, Any]:
+    async def detail(self, strategy_id: str, symbol: str, requested_date: date | None = None, *, refresh: bool = False, account: dict | None = None) -> dict[str, Any]:
         strategy_id = self._validate_strategy(strategy_id)
         code = _code(symbol)
         if not code or len(code) != 6 or not code.isdigit():
@@ -845,7 +893,15 @@ class WildmanClassicService:
             ).order_by(StockUniverseSnapshot.trade_date.desc()).limit(1))).scalar_one_or_none()
         meta = {"symbol": code, "name": universe_row.stock_name if universe_row else "", "sector": universe_row.industry if universe_row else ""}
         if strategy_id == "WM_CLASSIC_T":
-            meta["holding"] = code in await self._held_symbols()
+            position = (account or {}).get("target") or {}
+            inventory_current = position.get("as_of") == target.isoformat() and target == shanghai_now().date() and position.get("t_allowed") is True
+            meta.update({
+                "holding": position.get("held") is True,
+                "sellable_shares": position.get("sellable_quantity"),
+                "inventory_current": inventory_current,
+                "inventory_as_of": position.get("as_of"),
+                "inventory_source": "用户手工核对，T+1形式校验；非券商同步" if account else "尚未核对当日账户库存",
+            })
             meta.update((await self._load_fundamentals([code], target)).get(code, {}))
         row = evaluate_classic(strategy_id, bars, meta=meta)
         if row["status"] == "NO_MATCH":
@@ -860,6 +916,8 @@ class WildmanClassicService:
             "trade_date": target.isoformat(),
             "bars": indicator_bars(bars),
             "data_source": {"provider": source, "adjustment_basis": basis, "source_updated_at": updated, "batch_meta": history_meta},
+            "risk_evidence": meta.get("risk_evidence") or [],
+            "risk_coverage": meta.get("fundamental_coverage") or {},
         }
 
 

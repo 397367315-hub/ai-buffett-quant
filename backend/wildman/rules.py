@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 from typing import Any, Iterable
 
 
-RULE_VERSION = "WM_RULE_CORE_V1_1"
+RULE_VERSION = "WM_RULE_CORE_V1_2"
 
 
 class Cycle(StrEnum):
@@ -66,7 +67,7 @@ HARD_RISKS = {
     "RETREAT_MARKET", "FISH_TAIL", "FOLLOWER", "FAKE_BREAKOUT",
     "NO_SUPPORT", "ANCHOR_BROKEN", "MODE_OUTSIDE", "NO_STOP",
     "RISK_REWARD_FAIL", "CYCLE_UNCONFIRMED", "CLIMAX_NO_CHASE",
-    "ICE_NO_NEW_STARTER",
+    "ICE_NO_NEW_STARTER", "MAJOR_DISCLOSURE_RISK",
 }
 
 
@@ -77,7 +78,7 @@ def _num(value: Any) -> float | None:
         result = float(value)
     except (TypeError, ValueError):
         return None
-    return result if result == result else None
+    return result if isfinite(result) else None
 
 
 def _yes(value: Any) -> bool:
@@ -341,19 +342,19 @@ class StockRoleClassifier:
         checks = [
             evidence("WM_ROLE_HEIGHT", "周期连板身位", "最高或并列最高", {"actual": height, "market_max": max_height}, None if height is None or max_height is None else height >= max_height, "个股角色"),
             evidence("WM_ROLE_LINKAGE", "板块带动性", "龙头有跟随；补涨不得独立领涨", stock.get("theme_linkage"), influence, "个股角色"),
-            evidence("WM_ROLE_LEADERSHIP", "独立领涨事实", "真龙需明确独立领涨；补涨需明确非独立领涨", {"value": stock.get("independent_theme_leadership"), "fact_basis": stock.get("fact_basis")}, independent_leadership if role is not Role.SUPPLEMENT else _tri_not(independent_leadership), "个股角色"),
+            evidence("WM_ROLE_LEADERSHIP", "独立领涨事实", "真龙需明确独立领涨；补涨需明确非独立领涨", stock.get("independent_theme_leadership"), independent_leadership if role is not Role.SUPPLEMENT else _tri_not(independent_leadership), "个股角色"),
             evidence("WM_ROLE_BENCHMARK", "情绪标杆", "资金认可", stock.get("emotion_benchmark"), _tri_bool(stock.get("emotion_benchmark")), "个股角色"),
-            evidence("WM_ROLE_EARLY_START", "题材早期启动", "空间龙需明确处于题材最早一批启动", {"early_theme_start": stock.get("early_theme_start"), "fact_basis": stock.get("fact_basis")}, early_theme_start, "个股角色"),
-            evidence("WM_ROLE_TIMING", "启动时点", "补涨须在真实龙头确立后启动；空间龙须是题材早期启动", {"stock_start_date": stock.get("stock_start_date"), "leader_established_date": stock.get("leader_established_date"), "early_theme_start": stock.get("early_theme_start"), "first_limit_pioneer": stock.get("first_limit_pioneer"), "supplement_started_after_leader": stock.get("supplement_started_after_leader"), "fact_basis": stock.get("fact_basis")}, timing, "个股角色"),
-            evidence("WM_ROLE_HEIGHT_RATIO", "相对龙头身位", "补涨通常为真实龙头50%~70%板数的经验参考，不是收益目标", {"stock_height": height, "leader_height": leader_height, "ratio": round(height / leader_height, 3) if height is not None and leader_height not in (None, 0) else None, "fact_basis": stock.get("fact_basis")}, height_rule, "个股角色"),
-            evidence("WM_ROLE_DIVERGENCE_SUPPORT", "首次分歧承接", "龙头承接较稳；补涨承接弱须如实记录", {"value": stock.get("first_divergence_support"), "fact_basis": stock.get("fact_basis")}, divergence_support, "个股角色"),
+            evidence("WM_ROLE_EARLY_START", "题材早期启动", "空间龙需明确处于题材最早一批启动", stock.get("early_theme_start"), early_theme_start, "个股角色"),
+            evidence("WM_ROLE_TIMING", "启动时点", "补涨须在真实龙头确立后启动；空间龙须是题材早期启动", {"stock_start_date": stock.get("stock_start_date"), "leader_established_date": stock.get("leader_established_date"), "early_theme_start": stock.get("early_theme_start"), "first_limit_pioneer": stock.get("first_limit_pioneer"), "supplement_started_after_leader": stock.get("supplement_started_after_leader")}, timing, "个股角色"),
+            evidence("WM_ROLE_HEIGHT_RATIO", "相对龙头身位", "补涨通常为真实龙头50%~70%板数的经验参考，不是收益目标", {"stock_height": height, "leader_height": leader_height, "ratio": round(height / leader_height, 3) if height is not None and leader_height not in (None, 0) else None}, height_rule, "个股角色"),
+            evidence("WM_ROLE_DIVERGENCE_SUPPORT", "首次分歧承接", "龙头承接较稳；补涨承接弱须如实记录", stock.get("first_divergence_support"), divergence_support, "个股角色"),
             evidence("WM_ROLE_RETREAT_BEHAVIOR", "退潮表现", "仅展示观测事实，不预判A杀或反弹", retreat_behavior, None if retreat_behavior is None else True, "个股角色"),
         ]
         comparison = [
             {"dimension": "启动时机", "leader": "题材启动最早/最早一批", "supplement": "真实龙头确立后低位启动", "actual": {"early_theme_start": stock.get("early_theme_start"), "stock_start_date": stock.get("stock_start_date"), "leader_established_date": stock.get("leader_established_date"), "supplement_started_after_leader": stock.get("supplement_started_after_leader")}},
-            {"dimension": "板块影响力", "leader": "有跟随、价格领先", "supplement": "无/弱独立领涨，依附主线", "actual": {"theme_linkage": stock.get("theme_linkage"), "independent_theme_leadership": stock.get("independent_theme_leadership"), "fact_basis": stock.get("fact_basis")}},
+            {"dimension": "板块影响力", "leader": "有跟随、价格领先", "supplement": "无/弱独立领涨，依附主线", "actual": {"theme_linkage": stock.get("theme_linkage"), "independent_theme_leadership": stock.get("independent_theme_leadership")}},
             {"dimension": "身位高度", "leader": "真实最高/并列最高", "supplement": "通常为真龙50%~70%板数（经验参考，非收益目标）", "actual": {"stock_height": height, "leader_height": leader_height, "ratio": round(height / leader_height, 3) if height is not None and leader_height not in (None, 0) else None}},
-            {"dimension": "首次分歧", "leader": "有承接、支持较强", "supplement": "承接弱/快速坍塌风险", "actual": {"first_divergence_support": stock.get("first_divergence_support"), "fact_basis": stock.get("fact_basis")}},
+            {"dimension": "首次分歧", "leader": "有承接、支持较强", "supplement": "承接弱/快速坍塌风险", "actual": {"first_divergence_support": stock.get("first_divergence_support")}},
             {"dimension": "退潮表现", "leader": "横盘或A，取决于周期事实", "supplement": "A形态风险仅作观察，不作确定预言", "actual": {"retreat_behavior": retreat_behavior}},
         ]
         return {"role": role.value, "evidence": checks, "comparison": comparison, "fact_basis": stock.get("fact_basis"), "confidence_source": "rule_based"}
@@ -469,8 +470,11 @@ class ExpectationEngine:
         under = _tri_all([_tri_bool(stock.get("yesterday_strong")), _tri_any([_tri_bool(stock.get("open_low")), _tri_bool(stock.get("no_support"))])])
         if under is True:
             return {"state": "不及预期", "confirmed": True, "action": "竞价或开盘优先处理，绝不补仓"}
-        expected = _tri_all([_tri_bool(stock.get("yesterday_strong")), _tri_bool(stock.get("open_low"))])
-        if expected is True:
+        expected = auction is not None and (
+            (_yes(stock.get("yesterday_strong")) and 1 <= auction <= 3)
+            or (_yes(stock.get("yesterday_divergence")) and -0.5 <= auction <= 0.5)
+        )
+        if expected and stock.get("no_support") is not True:
             return {"state": "符合预期", "confirmed": True, "action": "观察锚点和分时，持股或分批止盈"}
         return {"state": "待确认", "confirmed": False, "action": "等待昨日状态、竞价和开盘事实，不预设符合预期"}
 
@@ -494,6 +498,8 @@ class RiskGate:
         if support == "差/无承接": flags.append("NO_SUPPORT")
         if _yes(stock.get("high_volume_stall")): flags.append("HIGH_VOLUME_STALL")
         if _yes(stock.get("anchor_broken")): flags.append("ANCHOR_BROKEN")
+        if _yes(stock.get("major_risk")): flags.append("MAJOR_DISCLOSURE_RISK")
+        if stock.get("major_risk") is None: flags.append("DISCLOSURE_UNCONFIRMED")
         if setup.get("type") == "NONE": flags.append("MODE_OUTSIDE")
         if setup.get("anchor_price") is None: flags.append("NO_STOP")
         if market.get("cycle") == Cycle.ICE.value and setup.get("type") != "NONE" and not (_yes(stock.get("new_starter")) or _yes(stock.get("first_limit_pioneer"))): flags.append("ICE_NO_NEW_STARTER")
@@ -587,7 +593,7 @@ class WildmanRuleCore:
             stage_ready = stage_ready and cycle["cycle"] == Cycle.MAIN_RISE.value and mainline["state"] == MainlineState.CONFIRMED.value
         elif setup["type"] == "LIMIT_PULLBACK":
             stage_ready = stage_ready and mainline["state"] in {MainlineState.CANDIDATE.value, MainlineState.HIGH_QUALITY.value, MainlineState.CONFIRMED.value}
-        setup_ready = setup.get("confirmed") is True and setup.get("anchor_price") is not None and rr is not None and rr >= 2
+        setup_ready = setup.get("confirmed") is True and setup.get("anchor_price") is not None and rr is not None and rr >= 2 and stock.get("major_risk") is False
         if risk["hard_reject"]:
             status = CandidateStatus.RISK_REJECTED
         elif setup["type"] == "NONE":
@@ -598,8 +604,7 @@ class WildmanRuleCore:
             status = CandidateStatus.WAIT_CONFIRM
         account = account or {}
         consecutive_stops = int(_num(account.get("consecutive_stops")) or 0)
-        # The service has no aggregated equity ledger; only a separately verified
-        # drawdown fact may affect the advisory position range.
+        # Only dated, validated account observations can affect allocation.
         drawdown_pct = _num(account.get("verified_drawdown_pct")) or 0
         reference_position = self.position.suggest(cycle["cycle"], setup["type"], consecutive_stops, drawdown_pct)
         if risk["hard_reject"] or status is CandidateStatus.WATCH or not cycle["confirmed"]:
@@ -610,10 +615,15 @@ class WildmanRuleCore:
                 **reference_position,
                 "reference_range": reference_position.get("range"),
                 "allocation_type": "reference",
-                "opening_recommendation": status is CandidateStatus.MODE_READY,
+                "opening_recommendation": status is CandidateStatus.MODE_READY and reference_position.get("range") != "0",
             }
         exit_plan = self.exit.create(setup, _num(stock.get("close_price")))
-        passed = [*cycle["evidence"], *mainline["evidence"], *role["evidence"], *support["evidence"]]
+        coverage = stock.get("coverage") or {}
+        disclosure = evidence("WM_RISK_DISCLOSURE", "公告与财务风险核查", "限定核查范围内未命中重大风险", {
+            "核查开始": coverage.get("checked_from"), "核查截至": coverage.get("checked_to"),
+            "有效公告数": coverage.get("announcement_records"), "重大风险命中": stock.get("major_risk"),
+        }, _tri_not(_tri_bool(stock.get("major_risk"))), "公告与已披露财务")
+        passed = [*cycle["evidence"], *mainline["evidence"], *role["evidence"], *support["evidence"], disclosure]
         chain = [
             {"stage": "市场", "result": cycle["cycle"], "detail": cycle["cycle_node"]},
             {"stage": "板块", "result": mainline["state"], "detail": theme.get("theme_name") or "题材待确认"},

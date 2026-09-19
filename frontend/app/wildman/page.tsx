@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { apiFetch, friendlyApiError } from '@/lib/api';
 import KlineChart, { type KlineRow } from '@/components/KlineChart';
+import WildmanAccountPanel from '@/components/wildman/WildmanAccountPanel';
 
 type AnyMap = Record<string, any>;
 type ViewKey = 'dashboard' | 'cycle' | 'mainline' | 'candidates' | 'setups' | 'intraday' | 'risk' | 'plan' | 'review' | 'classic';
@@ -153,6 +154,29 @@ function Fact({ label, value, detail }: { label: string; value: ReactNode; detai
   </div>;
 }
 
+function DisclosureEvidence({ facts }: { facts: AnyMap }) {
+  const coverage = facts.coverage || facts.risk_coverage || {};
+  const evidence = Array.isArray(facts.risk_evidence) ? facts.risk_evidence : [];
+  const announcements = evidence.filter((item: AnyMap) => item.kind === 'announcement');
+  const risks = evidence.filter((item: AnyMap) => item.status === 'risk_hit');
+  const title = facts.major_risk === true ? '命中风险，优先核查' : facts.major_risk === false ? '核查范围内未命中重大风险' : '核查范围尚不完整';
+  return <Panel title="公告与财务核查" icon={ShieldAlert}>
+    <div className="text-xs text-text">{title}</div>
+    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-secondary">
+      <span>核查区间：{safe(coverage.checked_from)} 至 {safe(coverage.checked_to)}</span>
+      <span>有效公告：{safe(coverage.announcement_records, '0')} 条</span>
+      <span>来源：{Array.isArray(coverage.sources) ? coverage.sources.map(sourceText).join('、') || '尚无有效返回' : '尚无有效返回'}</span>
+    </div>
+    {coverage.note && <p className="mt-2 text-[11px] leading-5 text-text-secondary">{coverage.note}</p>}
+    <div className="mt-3 divide-y divide-border">{[...risks, ...announcements.filter((item: AnyMap) => item.status !== 'risk_hit')].slice(0, 6).map((item: AnyMap, index: number) => <div key={index} className="py-2 text-xs leading-5">
+      <div className="flex flex-wrap items-start justify-between gap-2"><span className={item.status === 'risk_hit' ? 'text-warn' : 'text-text'}>{safe(item.title || item.reason)}</span><time className="shrink-0 text-[10px] text-text-secondary">{safe(item.published_at || item.disclosed_at)}</time></div>
+      {item.title && <p className="text-[11px] text-text-secondary">{item.reason}</p>}
+      {typeof item.url === 'string' && /^https?:\/\//i.test(item.url) && <a className="text-[11px] text-accent" href={item.url} target="_blank" rel="noreferrer">查看原公告</a>}
+    </div>)}</div>
+    <p className="mt-2 text-[10px] leading-4 text-text-secondary">以已披露信息和本次核查窗口为准；未命中不等于公司不存在其他风险。</p>
+  </Panel>;
+}
+
 function RuleRows({ rows }: { rows: AnyMap[] }) {
   return <div className="divide-y divide-border">{rows.length ? rows.map((row, index) => <div key={`${row.rule_id}-${index}`} className="grid gap-2 py-2.5 text-[11px] sm:grid-cols-[1fr_1fr_auto]">
     <div title={safe(row.rule_id, '规则编号')}><div className="text-text">{safe(row.rule_name, '规则证据')}</div><div className="mt-0.5 text-[9px] text-text-secondary">{row.source ? `来源：${readableValue(row.source)}` : '来源：核心周期数据'}</div></div>
@@ -223,6 +247,9 @@ function sourceText(value: unknown): string {
     numcat_daily_auc: '猫爪·集合竞价',
     numcat_daily_auc_detail: '猫爪·集合竞价明细',
     numcat_level2: '猫爪·Level-2',
+    numcat_finance_announcement: '猫爪·公司公告',
+    numcat_finance_indicator: '猫爪·财务指标',
+    financial_pit_snapshots: '已披露财务缓存',
     stock_daily_bars: '数据库·日线缓存',
     database_cache: '数据库缓存',
     cache: '缓存',
@@ -247,6 +274,18 @@ const COVERAGE_LABELS: Record<string, string> = {
   provider: '实际来源',
   errors: '错误',
   error: '错误',
+  actual: '实际值', market_max: '市场最高连板', height: '连板数',
+  stock_start_date: '个股启动日', leader_established_date: '同题材高板确立日',
+  early_theme_start: '题材早期启动', first_limit_pioneer: '首板先锋',
+  supplement_started_after_leader: '高板确立后启动',
+  stock_height: '个股连板', leader_height: '同题材最高连板', ratio: '相对比例',
+  first_divergence_support: '首次分歧承接', theme_linkage: '同题材跟随观察',
+  independent_theme_leadership: '独立领涨证据', value: '数值',
+  pioneer: '先锋', midcap: '中军', leader_premium: '前日龙头溢价',
+  support_promotion: '助攻晋级', core_midcap_stable: '中军稳定',
+  fund_return: '资金回流', reversal: '反包', supplement_started: '补涨启动',
+  resists_market_drop: '相对市场抗跌', position_record: '已有持仓',
+  sellable_shares: '可卖股数', as_of: '核对日期', current: '日期有效',
 };
 
 function coverageLabel(key: string): string {
@@ -316,10 +355,11 @@ function ToolboxDetail({ row, detail, loading, onClose, onRefresh }: { row: Tool
         <div className="flex shrink-0 items-center gap-1"><button type="button" onClick={onRefresh} className="grid h-8 w-8 place-items-center rounded border border-border text-text-secondary hover:text-accent" title="刷新工具箱详情"><RefreshCw size={14} /></button><button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded border border-border text-text-secondary hover:text-text" title="关闭详情"><X size={15} /></button></div>
       </header>
       {loading ? <div className="grid h-64 place-items-center text-xs text-text-secondary"><Loader2 size={20} className="animate-spin text-accent" /></div> : <div className="space-y-4 p-4">
-        <div className="grid gap-2 sm:grid-cols-4"><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">状态</span><b className={`mt-1 block text-xs ${toolboxStatusTone(item.status).split(' ').at(-1)}`}>{safe(item.status)}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">当前价</span><b className={`mt-1 block font-mono text-xs ${tone(item.change_pct)}`}>{finite(item.price) ? item.price.toFixed(2) : '--'} <span className="text-[10px]">{pct(item.change_pct)}</span></b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">锚点 / 目标</span><b className="mt-1 block font-mono text-xs text-text">{finite(item.anchor_price) ? item.anchor_price.toFixed(2) : '--'} / {finite(item.target_price) ? item.target_price.toFixed(2) : '--'}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">信号日</span><b className="mt-1 block text-xs text-text">{safe(item.signal_date)}</b></div></div>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">状态</span><b className={`mt-1 block text-xs ${toolboxStatusTone(item.status).split(' ').at(-1)}`}>{safe(item.status)}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">当前价</span><b className={`mt-1 block font-mono text-xs ${tone(item.change_pct)}`}>{finite(item.price) ? item.price.toFixed(2) : '--'} <span className="text-[10px]">{pct(item.change_pct)}</span></b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">锚点 / 目标</span><b className="mt-1 block font-mono text-xs text-text">{finite(item.anchor_price) ? item.anchor_price.toFixed(2) : '--'} / {finite(item.target_price) ? item.target_price.toFixed(2) : '--'}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">信号日</span><b className="mt-1 block text-xs text-text">{safe(item.signal_date)}</b></div></div>
         <Panel title="时间窗口与策略边界" icon={Clock3}><div className="grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2"><Fact label="策略" value={safe(strategy.name, safe(item.horizon))} /><Fact label="持有周期" value={safe(item.holding_period, safe(item.strategy?.holding_period))} /><Fact label="信号原因" value={safe(item.reason)} /><Fact label="风险说明" value={safe(strategy.risk_note, '以策略规则和实际持仓为准')} /></div></Panel>
         {bars.length > 0 && <Panel title="K 线与均线" icon={BarChart3} meta={`${bars.length} 个交易日`}><div className="mb-3 flex flex-wrap gap-3 text-[10px] text-text-secondary"><span>MA5 <b className="font-mono text-text">{finite(latestBar.ma5) ? latestBar.ma5.toFixed(2) : '--'}</b></span><span>MA20 <b className="font-mono text-text">{finite(latestBar.ma20) ? latestBar.ma20.toFixed(2) : '--'}</b></span>{strategy.id === 'WM_CLASSIC_75A' && <span>MA75 <b className="font-mono text-text">{finite(latestBar.ma75) ? latestBar.ma75.toFixed(2) : '--'}</b></span>}</div><KlineChart rows={bars} height={350} showMovingAverages movingAveragePeriods={strategy.id === 'WM_CLASSIC_75A' ? [5, 20, 75] : [5, 20]} /></Panel>}
         <Panel title="规则证据" icon={ListChecks}><ToolboxEvidence rows={item.evidence || []} /></Panel>
+        {strategy.id === 'WM_CLASSIC_T' && <DisclosureEvidence facts={item} />}
         <div className="grid gap-4 md:grid-cols-2"><Panel title="防守" icon={ShieldAlert}><div className="space-y-2 text-xs leading-5 text-text-secondary">{(item.risk_notes || [strategy.risk_note]).filter(Boolean).map((note: string, index: number) => <div key={`${note}-${index}`} className="border-l-2 border-warn/70 pl-3">{note}</div>)}</div></Panel><Panel title="策略规则" icon={Target}><div className="space-y-3 text-xs leading-5"><div><span className="text-text-secondary">入场条件</span>{(strategy.entry_rules || []).map((rule: string, index: number) => <div key={`${rule}-${index}`} className="mt-1 text-text">{rule}</div>)}</div><div><span className="text-text-secondary">退出条件</span>{(strategy.exit_rules || []).map((rule: string, index: number) => <div key={`${rule}-${index}`} className="mt-1 text-text">{rule}</div>)}</div></div></Panel></div>
       </div>}
     </aside>
@@ -354,10 +394,17 @@ function LeaderSupplementTable() {
   return <details className="rounded-md border border-border bg-card"><summary className="cursor-pointer list-none px-4 py-3 text-xs font-semibold text-text"><span className="mr-2 text-accent">角色辨析</span>真龙与补涨的五个观察维度</summary><div className="border-t border-border px-3 pb-3"><div className="mt-3 overflow-x-auto"><table className="w-full min-w-[680px] text-[11px]"><thead className="text-text-secondary"><tr><th className="w-[120px] px-2 py-2 text-left font-medium">维度</th><th className="w-1/2 px-2 py-2 text-left font-medium text-accent">真龙</th><th className="w-1/2 px-2 py-2 text-left font-medium text-warn">补涨</th></tr></thead><tbody>{rows.map(([dimension, leader, supplement]) => <tr key={dimension} className="border-t border-border align-top"><th className="px-2 py-2.5 text-left font-medium text-text">{dimension}</th><td className="px-2 py-2.5 leading-5 text-text-secondary">{leader}</td><td className="px-2 py-2.5 leading-5 text-text-secondary">{supplement}</td></tr>)}</tbody></table></div><p className="mt-2 text-[10px] leading-4 text-text-secondary">以上是识别框架，不是对未来高度或收益的承诺；以当前周期和逐股事实为准。</p></div></details>;
 }
 
-function RoleEvidence({ role }: { role: AnyMap }) {
+function RoleEvidence({ role, facts }: { role: AnyMap; facts: AnyMap }) {
   const evidence = Array.isArray(role?.evidence) ? role.evidence.filter((item: unknown): item is AnyMap => Boolean(item && typeof item === 'object')) : [];
   if (!evidence.length && !role?.confidence_source) return null;
-  return <Panel title="角色事实" icon={Target} meta={role.confidence_source ? `来源：${safe(role.confidence_source)}` : undefined}><RuleRows rows={evidence} /></Panel>;
+  const basis = role.fact_basis || facts.fact_basis || {};
+  const dates = Array.isArray(basis.observed_dates) ? basis.observed_dates : [];
+  const proxy = facts.leadership_proxy_evidence || {};
+  return <Panel title="角色事实" icon={Target} meta="规则核查">
+    {dates.length > 0 && <p className="mb-3 text-[11px] leading-5 text-text-secondary">历史核查：{dates[0]} 至 {dates[dates.length - 1]}，共 {dates.length} 个交易日。{facts.industry_theme_proxy ? '当前使用行业归类。' : '按对应交易日的猫爪题材成分归类。'}</p>}
+    {facts.leadership_proxy === true && <div className="mb-3 border-l-2 border-accent pl-3 text-[11px] leading-5 text-text-secondary">多日领涨观察成立：{proxy.lead_day_count} 日处于同题材连板领先位置，随后出现 {proxy.follower_count} 只跟随股。这是历史关联证据，不能单独认证真龙或证明因果带动。</div>}
+    <RuleRows rows={evidence} />
+  </Panel>;
 }
 
 function CandidateCard({ row, onOpen }: { row: AnyMap; onOpen: (symbol: string) => void }) {
@@ -385,8 +432,10 @@ function CandidateDetail({ row, loading, onClose, onRefresh }: { row: AnyMap | n
         <div className="flex items-center gap-1"><button type="button" onClick={onRefresh} className="grid h-8 w-8 place-items-center rounded border border-border text-text-secondary hover:text-accent" title="刷新日线与猫爪Level-2"><RefreshCw size={14} /></button><button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded border border-border text-text-secondary hover:text-text" title="关闭"><X size={15} /></button></div>
       </header>
       {loading ? <div className="grid h-64 place-items-center text-xs text-text-secondary"><Loader2 size={20} className="animate-spin text-accent" /></div> : row && <div className="space-y-4 p-4">
-        <div className="grid gap-3 sm:grid-cols-4"><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">周期</span><b className="mt-1 block text-xs text-text">{row.cycle?.cycle}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">角色</span><b className="mt-1 block text-xs text-text">{row.role?.role}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">节点</span><b className="mt-1 block text-xs text-text">{row.setup?.name}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">结论</span><b className="mt-1 block text-xs text-text">{row.candidate_status}</b></div></div>
-        <RoleEvidence role={row.role || {}} />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">周期</span><b className="mt-1 block text-xs text-text">{row.cycle?.cycle}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">角色</span><b className="mt-1 block text-xs text-text">{row.role?.role}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">节点</span><b className="mt-1 block text-xs text-text">{row.setup?.name}</b></div><div className="rounded border border-border bg-card p-3"><span className="text-[10px] text-text-secondary">结论</span><b className="mt-1 block text-xs text-text">{row.candidate_status}</b></div></div>
+        <RoleEvidence role={row.role || {}} facts={row.stock_facts || {}} />
+        <DisclosureEvidence facts={row.stock_facts || {}} />
+        {row.account_context?.source && <div className="border-l-2 border-accent pl-3 text-xs leading-5 text-text-secondary">账户口径：{row.account_context.source}。日期 {safe(row.account_context.as_of)}；连续已结算亏损 {row.account_context.consecutive_stops} 笔。{row.account_context.current ? '仓位参考已结合账户数据。' : '账户日期与研究日不一致，未套用回撤。'}扫描持续开放。</div>}
         <Panel title="规则解释链" icon={Layers3}>{(row.explain_chain || []).map((item: AnyMap, index: number) => <div key={`${item.stage}-${index}`} className="grid grid-cols-[72px_1fr] gap-3 border-b border-border py-2.5 text-xs last:border-0"><span className="text-text-secondary">{item.stage}</span><div><b className="font-medium text-text">{item.result}</b><p className="mt-1 text-[10px] text-text-secondary">{item.detail}</p></div></div>)}</Panel>
         <div className="grid gap-4 md:grid-cols-2"><Panel title="防守与仓位" icon={ShieldAlert}><Fact label="仓位动作" value={`${safe(row.position?.mode)} · ${safe(row.position?.range)}`} detail={row.position?.reason} /><Fact label="防守锚点" value={`${safe(row.exit_plan?.anchor_type)} ${finite(row.exit_plan?.anchor_price) ? row.exit_plan.anchor_price.toFixed(2) : ''}`} /><Fact label="价格止损" value={finite(row.exit_plan?.price_stop) ? row.exit_plan.price_stop.toFixed(2) : row.exit_plan?.max_loss_rule} /><Fact label="逻辑失效" value={row.exit_plan?.logic_stop} /></Panel><Panel title="猫爪 Level-2 盘口" icon={Database} meta={row.level2?.pending ? '同步中' : row.level2?.available ? '已接入' : '等待样本'}><Fact label="承接结论" value={<Badge value={row.support?.state}>{safe(row.support?.state)}</Badge>} detail={row.support?.note} /><Fact label="盘口失衡 OBI" value={row.level2?.summary?.obi?.label || '等待样本'} detail={finite(row.level2?.summary?.obi?.value) ? row.level2.summary.obi.value.toFixed(2) : undefined} /><Fact label="买方吸收" value={row.level2?.summary?.absorption?.buy?.label || '等待样本'} /><Fact label="买盘补单" value={row.level2?.summary?.replenishment?.bid?.label || '等待样本'} /><Fact label="疑似派发风险" value={row.level2?.summary?.distribution?.label || '等待样本'} /></Panel></div>
         <Panel title="完整规则依据" icon={ListChecks}><RuleRows rows={[...(row.passed_rules || []), ...(row.waiting_rules || []), ...(row.failed_rules || [])]} /></Panel>
@@ -423,6 +472,8 @@ export default function WildmanPage() {
   const toolboxRunRef = useRef(0);
   const toolboxAbortRef = useRef<AbortController | null>(null);
   const toolboxDetailAbortRef = useRef<AbortController | null>(null);
+  const dashboardAbortRef = useRef<AbortController | null>(null);
+  const candidateAbortRef = useRef<AbortController | null>(null);
 
   const tradeDate = useMemo(() => {
     if (payload?.trade_date) return String(payload.trade_date).slice(0, 10);
@@ -493,24 +544,31 @@ export default function WildmanPage() {
   }, [toolboxStrategyId, tradeDate]);
 
   const load = useCallback(async (refresh = false) => {
+    dashboardAbortRef.current?.abort();
+    const controller = new AbortController();
+    dashboardAbortRef.current = controller;
     setLoading(true); if (refresh) setRefreshing(true); setError('');
     try {
       const params = new URLSearchParams({ refresh: String(refresh), exclude_star_market: String(excludeStar), exclude_gem: String(excludeGem) });
-      const response = await apiFetch<{ data: AnyMap }>(`/wildman/dashboard?${params}`, { timeoutMs: 60000 });
-      setPayload(response.data);
-    } catch (caught) { setError(friendlyApiError(caught, '野人哥交易决策模块暂时不可用')); }
-    finally { setLoading(false); setRefreshing(false); }
+      const response = await apiFetch<{ data: AnyMap }>(`/wildman/dashboard?${params}`, { timeoutMs: 120000, signal: controller.signal });
+      if (!controller.signal.aborted) setPayload(response.data);
+    } catch (caught) { if (!controller.signal.aborted) setError(friendlyApiError(caught, '野人哥交易决策模块暂时不可用')); }
+    finally { if (!controller.signal.aborted) { setLoading(false); setRefreshing(false); } }
   }, [excludeGem, excludeStar]);
 
-  useEffect(() => { void load(false); }, [load]);
+  useEffect(() => { void load(false); return () => dashboardAbortRef.current?.abort(); }, [load]);
+  useEffect(() => () => { candidateAbortRef.current?.abort(); toolboxDetailAbortRef.current?.abort(); }, []);
 
   const loadDetail = useCallback(async (symbol: string, refresh = false) => {
+    candidateAbortRef.current?.abort();
+    const controller = new AbortController();
+    candidateAbortRef.current = controller;
     setDetailLoading(true); setSelected((current) => current?.symbol === symbol ? current : null);
     try {
-      const response = await apiFetch<{ data: AnyMap }>(`/wildman/candidates/${encodeURIComponent(symbol)}?refresh=${refresh}`, { timeoutMs: 60000 });
-      setSelected(response.data);
-    } catch (caught) { setError(friendlyApiError(caught, '候选详情暂时不可用')); setSelected(null); }
-    finally { setDetailLoading(false); }
+      const response = await apiFetch<{ data: AnyMap }>(`/wildman/candidates/${encodeURIComponent(symbol)}?refresh=${refresh}`, { timeoutMs: 120000, signal: controller.signal });
+      if (!controller.signal.aborted) setSelected(response.data);
+    } catch (caught) { if (!controller.signal.aborted) { setError(friendlyApiError(caught, '候选详情暂时不可用')); setSelected(null); } }
+    finally { if (!controller.signal.aborted) setDetailLoading(false); }
   }, []);
 
   const loadReview = useCallback(async () => {
@@ -567,16 +625,18 @@ export default function WildmanPage() {
     const waitingCount = (toolboxScan?.rows || []).filter((row: ToolboxRow) => row.status === '等待确认').length;
     const excludedCount = (toolboxScan?.rows || []).filter((row: ToolboxRow) => row.status === '风险排除').length;
     return <div className="space-y-4">
+      {toolboxStrategyId === 'WM_CLASSIC_T' && <details className="border-b border-border pb-3"><summary className="cursor-pointer text-xs text-accent">个人底仓与可卖数量核对</summary><WildmanAccountPanel className="mt-3" /></details>}
       <section className="border-b border-border pb-4">
         <div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-semibold text-text">经典战法工具箱</h2><span className="rounded border border-accent/30 bg-accent/10 px-2 py-1 text-[10px] text-accent">全市场扫描</span></div><p className="mt-1 max-w-3xl text-xs leading-5 text-text-secondary">选择策略，读取当前交易日的全市场候选。结果只代表规则状态，T+1 工具不代表新建仓信号。</p></div><button type="button" onClick={() => void loadToolboxScan(true)} disabled={toolboxLoading} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded border border-border px-2.5 text-[11px] text-text-secondary hover:border-accent hover:text-accent disabled:opacity-50" title="仅本次扫描强制刷新缓存"><RefreshCw size={13} className={toolboxLoading ? 'animate-spin' : ''} />刷新扫描</button></div>
         <div className="mt-4 grid gap-3 lg:grid-cols-3">{TOOLBOX_STRATEGIES.map((strategy) => { const active = strategy.id === toolboxStrategyId; const color = strategy.color === 'cyan' ? 'border-cyan-400/50 bg-cyan-400/10' : strategy.color === 'amber' ? 'border-amber-400/50 bg-amber-400/10' : 'border-violet-400/50 bg-violet-400/10'; return <button key={strategy.id} type="button" aria-pressed={active} onClick={() => { setToolboxStrategyId(strategy.id); setToolboxStatusFilter('all'); setToolboxSearch(''); setToolboxPage(1); }} className={`min-w-0 rounded-md border p-4 text-left transition ${active ? `${color} ring-1 ring-accent` : 'border-border bg-card hover:border-accent/50'}`}><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-sm font-semibold text-text">{strategy.name}</div><div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-text-secondary"><span className="rounded border border-current/30 px-1.5 py-0.5">{strategy.horizon}</span><span>{strategy.holding_period}</span></div></div><ChevronRight size={15} className={active ? 'shrink-0 text-accent' : 'shrink-0 text-text-secondary'} /></div><p className="mt-3 min-h-10 text-xs leading-5 text-text-secondary">{strategy.summary}</p>{strategy.id === 'WM_CLASSIC_T' && <p className="mt-2 text-[10px] leading-4 text-amber-200">前提：已有持仓 · T+1 · 不产生新买入信号</p>}{strategy.id === 'WM_CLASSIC_520' && <p className="mt-2 text-[10px] leading-4 text-cyan-200">参考目标：2-5% · 持有不超过 5 个交易日</p>}{strategy.id === 'WM_CLASSIC_75A' && <p className="mt-2 text-[10px] leading-4 text-violet-200">参考节奏：波段持有数周至数月</p>}</button>; })}</div>
       </section>
       <Panel title={`${selectedToolboxStrategy.name} · 扫描结果`} icon={ListChecks} meta={<span className={toolboxScan?.status === 'completed' ? 'text-up' : toolboxScan?.status === 'failed' ? 'text-down' : 'text-warn'}>{toolboxScan?.status === 'completed' ? '扫描完成' : toolboxScan?.status === 'failed' ? '扫描失败' : toolboxLoading ? '扫描中' : '等待扫描'}</span>}>
         {toolboxError && <div className="mb-4 flex items-start gap-2 rounded border border-down/30 bg-down/5 p-3 text-xs text-down"><AlertTriangle size={14} className="mt-0.5 shrink-0" /><span className="min-w-0 break-words">{toolboxError}</span><button type="button" onClick={() => void loadToolboxScan(true)} className="ml-auto shrink-0 text-down underline">重试</button></div>}
-        <div className="grid gap-2 sm:grid-cols-4"><div className="rounded border border-border bg-bg p-3"><div className="text-[10px] text-text-secondary">市场总数</div><b className="mt-1 block font-mono text-sm text-text">{total.toLocaleString()} 只</b></div><div className="rounded border border-border bg-bg p-3"><div className="text-[10px] text-text-secondary">规则过滤</div><b className="mt-1 block font-mono text-sm text-text">{excluded.toLocaleString()}</b></div><div className="rounded border border-border bg-bg p-3"><div className="text-[10px] text-text-secondary">已评估</div><b className="mt-1 block font-mono text-sm text-text">{evaluated.toLocaleString()}</b></div><div className="rounded border border-border bg-bg p-3"><div className="text-[10px] text-text-secondary">缺历史 / 过期</div><b className="mt-1 block font-mono text-sm text-warn">{missingHistory.toLocaleString()} / {staleHistory.toLocaleString()}</b></div></div>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4"><div className="rounded border border-border bg-bg p-3"><div className="text-[10px] text-text-secondary">市场总数</div><b className="mt-1 block font-mono text-sm text-text">{total.toLocaleString()} 只</b></div><div className="rounded border border-border bg-bg p-3"><div className="text-[10px] text-text-secondary">规则过滤</div><b className="mt-1 block font-mono text-sm text-text">{excluded.toLocaleString()}</b></div><div className="rounded border border-border bg-bg p-3"><div className="text-[10px] text-text-secondary">已评估</div><b className="mt-1 block font-mono text-sm text-text">{evaluated.toLocaleString()}</b></div><div className="rounded border border-border bg-bg p-3"><div className="text-[10px] text-text-secondary">缺历史 / 过期</div><b className="mt-1 block font-mono text-sm text-warn">{missingHistory.toLocaleString()} / {staleHistory.toLocaleString()}</b></div></div>
         <div className="mt-2 grid gap-2 sm:grid-cols-3"><div className="rounded border border-border bg-bg px-3 py-2 text-[10px] text-text-secondary">已确认 <b className="ml-1 font-mono font-normal text-up">{confirmedCount}</b></div><div className="rounded border border-border bg-bg px-3 py-2 text-[10px] text-text-secondary">等待确认 <b className="ml-1 font-mono font-normal text-warn">{waitingCount}</b></div><div className="rounded border border-border bg-bg px-3 py-2 text-[10px] text-text-secondary">风险排除 <b className="ml-1 font-mono font-normal text-down">{excludedCount}</b></div></div>
         {(toolboxLoading || toolboxScan?.status === 'running') && <div className="mt-4"><div className="flex items-center justify-between gap-3 text-[10px] text-text-secondary"><span className="flex items-center gap-1.5"><Loader2 size={12} className="animate-spin text-accent" />正在扫描全市场</span><span className="font-mono">{progressNumerator.toLocaleString()} / {progressDenominator.toLocaleString()} · {scanPercent}%</span></div><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border"><div className="h-full rounded-full bg-accent transition-all" style={{ width: `${scanPercent}%` }} /></div></div>}
-        <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] leading-4 text-text-secondary"><span className="inline-flex flex-wrap"><CoverageNote note={toolboxScan?.coverage_note} /></span><span>缺历史 {missingHistory}</span><span>过期 {staleHistory}</span>{toolboxScan?.cache_hit && <span className="text-accent">命中缓存</span>}</div>
+        <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[10px] leading-4 text-text-secondary"><span className="inline-flex flex-wrap"><CoverageNote note={toolboxScan?.coverage_note} /></span><span>历史不足/未返回 {missingHistory}</span><span>过期 {staleHistory}</span>{toolboxScan?.cache_hit && <span className="text-accent">命中缓存</span>}</div>
+        {toolboxScan && toolboxScan.coverage_gaps?.length > 0 && <details className="mt-3 border-t border-border pt-3 text-xs"><summary className="cursor-pointer text-text-secondary">查看未参与计算的股票与原因（{toolboxScan.coverage_gaps.length}只）</summary><div className="mt-2 max-h-60 overflow-y-auto divide-y divide-border">{toolboxScan.coverage_gaps.map((gap: AnyMap) => <div key={gap.symbol} className="flex flex-wrap justify-between gap-2 py-2"><span>{gap.name} <span className="font-mono text-text-secondary">{gap.symbol}</span></span><span className="text-text-secondary">{gap.reason}{finite(gap.history_rows) ? ` · ${gap.history_rows}/${gap.required_rows}根日线` : ''}</span></div>)}</div></details>}
         <ToolboxSourceAudit scan={toolboxScan} />
         <div className="mt-4 flex flex-col gap-3 border-y border-border py-3 md:flex-row md:items-center"><label className="flex min-w-0 flex-1 items-center gap-2 rounded border border-border bg-bg px-3"><Search size={14} className="shrink-0 text-text-secondary" /><input value={toolboxSearch} onChange={(event) => { setToolboxSearch(event.target.value); setToolboxPage(1); }} placeholder="搜索股票代码、名称、题材" className="h-9 min-w-0 flex-1 bg-transparent text-xs text-text outline-none placeholder:text-text-secondary" /></label><div className="flex flex-wrap items-center gap-2 text-[10px]"><label className="flex items-center gap-1.5 text-text-secondary"><input type="checkbox" checked={excludeStar} onChange={(event) => { setExcludeStar(event.target.checked); setToolboxPage(1); }} />排除科创</label><label className="flex items-center gap-1.5 text-text-secondary"><input type="checkbox" checked={excludeGem} onChange={(event) => { setExcludeGem(event.target.checked); setToolboxPage(1); }} />排除创业</label></div></div>
         <div className="flex flex-wrap items-center gap-2"><span className="mr-1 text-[10px] text-text-secondary">结果</span>{([['all', '全部'], ['已确认', `已确认 ${confirmedCount}`], ['等待确认', `等待确认 ${waitingCount}`], ['风险排除', `风险排除 ${excludedCount}`]] as const).map(([value, label]) => <button key={value} type="button" onClick={() => { setToolboxStatusFilter(value); setToolboxPage(1); }} className={`rounded border px-2.5 py-1.5 text-[10px] ${toolboxStatusFilter === value ? 'border-accent/60 bg-accent/10 text-accent' : 'border-border text-text-secondary hover:text-text'}`}>{label}</button>)}</div>
@@ -594,7 +654,7 @@ export default function WildmanPage() {
     if (view === 'candidates') return <div className="space-y-5"><LeaderSupplementTable />{roleGroups.map((group) => <Panel key={group.role} title={group.role} icon={Target} meta={`${group.rows.length}只`}>{renderCandidates(group.rows)}</Panel>)}</div>;
     if (view === 'setups') return <div className="space-y-4">{['FIRST_DIVERGENCE', 'WEAK_TO_STRONG', 'SWING_PULLBACK', 'SWING_BREAKOUT', 'B_POINT', 'LIMIT_PULLBACK'].map((type) => { const rows = candidates.filter((row: AnyMap) => row.setup?.type === type); return rows.length ? <Panel key={type} title={safe(rows[0]?.setup?.name)} icon={Crosshair} meta={`${rows.length}只`}>{renderCandidates(rows)}</Panel> : null; })}<Panel title="等待模式形成" icon={Clock3}>{renderCandidates(candidates.filter((row: AnyMap) => row.setup?.type === 'NONE').slice(0, 12))}</Panel></div>;
     if (view === 'intraday') return <div className="grid gap-4 xl:grid-cols-[1fr_1fr]"><Panel title="盘口候选" icon={BarChart3}>{renderCandidates(focus.slice(0, 8))}</Panel><Panel title="猫爪 Level-2 接入状态" icon={Database}><Fact label="数据类型" value="逐笔成交 / 逐笔委托 / 十档盘口" /><Fact label="调用范围" value="候选详情按股按日" /><Fact label="承接指标" value="买方吸收 / OBI / 补单" /><Fact label="风险指标" value="疑似派发 / 异常挂撤单" /><Fact label="存储策略" value="复用现有缓存" detail="本模块只保存规则结论和证据摘要" /></Panel></div>;
-    if (view === 'risk') return <div className="grid gap-4 xl:grid-cols-2"><Panel title="今日排除池" icon={CircleSlash2} meta={`${payload.reject_pool?.length || 0}只`}>{renderCandidates((payload.reject_pool || []).slice(0, 16))}</Panel><Panel title="风险 Gate" icon={ShieldAlert}>{['RETREAT_MARKET 退潮期', 'FISH_TAIL 鱼尾行情', 'OVER_CONSENSUS 过度一致', 'FOLLOWER 后排跟风', 'FAKE_BREAKOUT 假突破', 'NO_SUPPORT 无承接', 'ANCHOR_BROKEN 破锚', 'MODE_OUTSIDE 模式外', 'NO_STOP 无止损', 'RISK_REWARD_FAIL 盈亏比不足'].map((item) => <div key={item} className="border-b border-border py-2.5 text-xs text-text last:border-0">{item}</div>)}</Panel></div>;
+    if (view === 'risk') return <div className="space-y-4"><WildmanAccountPanel /><div className="grid gap-4 xl:grid-cols-2"><Panel title="今日排除池" icon={CircleSlash2} meta={`${payload.reject_pool?.length || 0}只`}>{renderCandidates((payload.reject_pool || []).slice(0, 16))}</Panel><Panel title="风险核查条件" icon={ShieldAlert}>{['退潮期与鱼尾行情', '过度一致、后排跟风', '假突破或无承接', '跌破防守锚点', '模式外、无止损或盈亏比不足', '重大公告或财务风险命中', '公告核查不完整，继续观察', '连续亏损提醒，扫描持续开放'].map((item) => <div key={item} className="border-b border-border py-2.5 text-xs text-text last:border-0">{item}</div>)}</Panel></div></div>;
     if (view === 'plan') return <div className="grid gap-4 xl:grid-cols-[1fr_1fr]"><Panel title="盘前计划" icon={CalendarCheck}><Fact label="市场阶段" value={`${cycle.cycle} · ${cycle.cycle_node}`} /><Fact label="核心主线" value={(payload.mainlines || []).filter((row: AnyMap) => ['核心主线确认', '高质量候选'].includes(row.state)).slice(0, 4).map((row: AnyMap) => row.theme_name).join(' / ') || '等待确认'} /><Fact label="允许模式" value={(cycle.allowed_actions || []).join(' / ')} /><Fact label="禁止模式" value={(cycle.forbidden_actions || []).join(' / ')} /><Fact label="仓位" value={cycle.position_range} /></Panel><Panel title="三套预期剧本" icon={BrainCircuit}><Fact label="超预期" value="持有或等待模式内盘口确认" detail="昨日分歧，竞价高开且带量上攻" /><Fact label="符合预期" value="观察锚点和分时承接" detail="正常溢价或平开换手" /><Fact label="不及预期" value="竞价或开盘优先处理" detail="该强不强、竞价萎缩或无承接；绝不补仓" /></Panel><Panel title="重点盯盘" icon={Target} className="xl:col-span-2">{renderCandidates(focus.slice(0, 10))}</Panel></div>;
     if (view === 'review') return <div className="grid gap-4 xl:grid-cols-[.8fr_1.2fr]"><Panel title="记录交易复盘" icon={Save}><div className="space-y-3"><input value={reviewForm.symbol} onChange={(event) => setReviewForm({ ...reviewForm, symbol: event.target.value.replace(/\D/g, '').slice(0, 6) })} placeholder="股票代码" className="h-9 w-full rounded border border-border bg-bg px-3 text-xs text-text outline-none focus:border-accent" /><select value={reviewForm.setup_type} onChange={(event) => setReviewForm({ ...reviewForm, setup_type: event.target.value })} className="h-9 w-full rounded border border-border bg-bg px-3 text-xs text-text"><option value="FIRST_DIVERGENCE">主升首分歧</option><option value="WEAK_TO_STRONG">弱转强</option><option value="SWING_PULLBACK">波段回踩</option><option value="B_POINT">B点</option><option value="LIMIT_PULLBACK">涨停缩量回踩</option><option value="NONE">模式外</option></select><input value={reviewForm.pnl_pct} onChange={(event) => setReviewForm({ ...reviewForm, pnl_pct: event.target.value })} placeholder="已实现盈亏百分比，例如 -3.5" inputMode="decimal" disabled={!reviewForm.completed} className="h-9 w-full rounded border border-border bg-bg px-3 text-xs text-text outline-none focus:border-accent disabled:opacity-50" /><label className="flex items-center gap-2 text-xs text-text-secondary"><input type="checkbox" checked={reviewForm.mode_inside} onChange={(event) => setReviewForm({ ...reviewForm, mode_inside: event.target.checked })} />模式内交易</label><label className="flex items-center gap-2 text-xs text-text-secondary"><input type="checkbox" checked={reviewForm.completed} onChange={(event) => setReviewForm({ ...reviewForm, completed: event.target.checked })} />已完成，纳入已实现统计</label>{reviewForm.completed && <input type="date" value={reviewForm.exit_date} onChange={(event) => setReviewForm({ ...reviewForm, exit_date: event.target.value })} className="h-9 w-full rounded border border-border bg-bg px-3 text-xs text-text outline-none focus:border-accent" aria-label="退出日期" />}<textarea value={reviewForm.review_text} onChange={(event) => setReviewForm({ ...reviewForm, review_text: event.target.value })} placeholder="预判、实际、执行与纠错" className="min-h-24 w-full resize-y rounded border border-border bg-bg p-3 text-xs text-text outline-none focus:border-accent" /><button type="button" disabled={saving || reviewForm.symbol.length !== 6} onClick={() => void saveReview()} className="inline-flex h-9 w-full items-center justify-center gap-2 rounded bg-accent px-4 text-xs font-medium text-white disabled:opacity-50">{saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}保存复盘</button></div></Panel><div className="space-y-4"><Panel title="复盘统计" icon={TrendingUp} meta={<div className="flex gap-1">{(['daily', 'weekly', 'monthly'] as const).map((item) => <button key={item} onClick={() => setReviewPeriod(item)} className={`rounded px-2 py-1 ${reviewPeriod === item ? 'bg-accent/15 text-accent' : 'text-text-secondary'}`}>{item === 'daily' ? '日' : item === 'weekly' ? '周' : '月'}</button>)}</div>}><ReviewMetrics metrics={reviewMetrics} /></Panel><Panel title="交易日志" icon={BookOpenCheck}>{(review?.trades || []).length ? (review?.trades || []).map((row: AnyMap) => <div key={row.trade_id} className="grid gap-2 border-b border-border py-2.5 text-xs last:border-0 sm:grid-cols-[1fr_auto]"><div><b className="font-medium text-text">{row.stock_name || row.symbol} · {row.symbol}</b><p className="mt-1 text-[10px] text-text-secondary">{row.setup_type} · {row.entry_date} · {row.mode_inside ? '模式内' : '模式外'}{row.exit_date ? ` · 退出 ${row.exit_date}` : ''}</p></div><b className={tone(row.pnl_pct)}>{pct(row.pnl_pct)}</b></div>) : <div className="py-5 text-xs text-text-secondary">当前周期还没有交易复盘记录</div>}</Panel></div></div>;
     return renderToolbox();
@@ -613,7 +673,7 @@ export default function WildmanPage() {
         <div className="p-3 md:p-5">{error && <div className="mb-4 flex items-start gap-2 rounded border border-down/30 bg-down/5 p-3 text-xs text-down"><AlertTriangle size={14} className="mt-0.5 shrink-0" /><span>{error}</span></div>}{loading && !payload ? <div className="grid h-72 place-items-center text-xs text-text-secondary"><div className="text-center"><Loader2 size={22} className="mx-auto animate-spin text-accent" /><p className="mt-3">正在构建周期、主线与候选解释链</p></div></div> : renderView()}</div>
       </main>
     </div>
-    <CandidateDetail row={selected} loading={detailLoading} onClose={() => setSelected(null)} onRefresh={() => selected && void loadDetail(selected.symbol, true)} />
-    <ToolboxDetail row={toolboxSelected} detail={toolboxDetail} loading={toolboxDetailLoading} onClose={() => { setToolboxSelected(null); setToolboxDetail(null); }} onRefresh={() => toolboxSelected && void loadToolboxDetail(toolboxSelected, true)} />
+    <CandidateDetail row={selected} loading={detailLoading} onClose={() => { candidateAbortRef.current?.abort(); setDetailLoading(false); setSelected(null); }} onRefresh={() => selected && void loadDetail(selected.symbol, true)} />
+    <ToolboxDetail row={toolboxSelected} detail={toolboxDetail} loading={toolboxDetailLoading} onClose={() => { toolboxDetailAbortRef.current?.abort(); setToolboxDetailLoading(false); setToolboxSelected(null); setToolboxDetail(null); }} onRefresh={() => toolboxSelected && void loadToolboxDetail(toolboxSelected, true)} />
   </div>;
 }

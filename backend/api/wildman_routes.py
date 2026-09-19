@@ -6,14 +6,23 @@ import logging
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response
 
-from services.admin_auth import require_admin_for_mutation
+from services.admin_auth import require_admin_for_mutation, verify_admin_token
+from services.wildman_account_service import wildman_account_service
 from services.wildman_classic_service import wildman_classic_service
-from services.wildman_service import wildman_service
+from services.wildman_service import dashboard_summary, wildman_service
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _personal_account(symbol: str, authorization: str | None) -> dict | None:
+    scheme, _, token = str(authorization or "").partition(" ")
+    username = verify_admin_token(token) if scheme.lower() == "bearer" else None
+    if username is None:
+        return None
+    return await wildman_account_service.get_account(username, symbol)
 
 router = APIRouter(
     prefix="/api/v1/wildman",
@@ -55,7 +64,9 @@ async def dashboard(
     exclude_star_market: bool = Query(True),
     exclude_gem: bool = Query(True),
 ):
-    return await _call(wildman_service.dashboard, _date(date_value), refresh=refresh, exclude_star_market=exclude_star_market, exclude_gem=exclude_gem)
+    result = await _call(wildman_service.dashboard, _date(date_value), refresh=refresh, exclude_star_market=exclude_star_market, exclude_gem=exclude_gem)
+    result["data"] = dashboard_summary(result["data"])
+    return result
 
 
 @router.get("/cycle")
@@ -98,8 +109,10 @@ async def candidates(
 
 
 @router.get("/candidates/{symbol}")
-async def candidate_detail(symbol: str, date_value: str | None = Query(None, alias="date"), refresh: bool = Query(False)):
-    return await _call(wildman_service.candidate, symbol, _date(date_value), refresh=refresh)
+async def candidate_detail(symbol: str, response: Response, date_value: str | None = Query(None, alias="date"), refresh: bool = Query(False), authorization: str | None = Header(None)):
+    response.headers["Cache-Control"] = "private, no-store"
+    account = await _personal_account(symbol, authorization)
+    return await _call(wildman_service.candidate, symbol, _date(date_value), refresh=refresh, account=account)
 
 
 @router.get("/roles/{symbol}")
@@ -173,9 +186,13 @@ async def classic_scan(
 async def classic_stock_detail(
     strategy_id: str,
     symbol: str,
+    response: Response,
     date_value: str | None = Query(None, alias="date"),
     detail: bool = Query(True),
     refresh: bool = Query(False),
+    authorization: str | None = Header(None),
 ):
     del detail
-    return await _call(wildman_classic_service.detail, strategy_id, symbol, _date(date_value), refresh=refresh)
+    response.headers["Cache-Control"] = "private, no-store"
+    account = await _personal_account(symbol, authorization) if strategy_id.upper() == "WM_CLASSIC_T" else None
+    return await _call(wildman_classic_service.detail, strategy_id, symbol, _date(date_value), refresh=refresh, account=account)

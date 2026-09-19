@@ -30,3 +30,19 @@ def test_classic_scan_exposes_running_contract():
         response = TestClient(app).get("/api/v1/wildman/toolbox/WM_CLASSIC_520/scan?refresh=true")
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "running"
+
+
+def test_personal_t_detail_is_private_and_not_used_by_public_scan():
+    from api import wildman_routes
+    account = {"as_of": "2026-09-20", "target": {"symbol": "000001", "sellable_quantity": 100}}
+    loader = AsyncMock(return_value=account)
+    detail = AsyncMock(return_value={"symbol": "000001"})
+    with patch.object(wildman_routes, "verify_admin_token", return_value="owner"), patch.object(wildman_routes.wildman_account_service, "get_account", loader), patch.object(wildman_classic_service, "detail", detail), patch.object(wildman_classic_service, "scan", new=AsyncMock(return_value={"rows": []})):
+        client = TestClient(app)
+        response = client.get("/api/v1/wildman/toolbox/WM_CLASSIC_T/stocks/000001", headers={"Authorization": "Bearer test"})
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "private, no-store"
+        assert detail.await_args.kwargs["account"] == account
+        loader.reset_mock()
+        client.get("/api/v1/wildman/toolbox/WM_CLASSIC_T/scan", headers={"Authorization": "Bearer test"})
+        loader.assert_not_awaited()

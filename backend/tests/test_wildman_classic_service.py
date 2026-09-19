@@ -8,6 +8,12 @@ from services import wildman_classic_service as module
 from services.wildman_classic_service import WildmanClassicService, fetch_numcat_history_batch
 
 
+def test_a_share_scanner_never_requests_b_share_history():
+    for code in ("200011", "201872", "900901"):
+        assert module._market_exclusion(code, {}, exclude_star_market=False, exclude_gem=False) == "B股（非A股）过滤"
+    assert module._market_exclusion("920071", {}, exclude_star_market=False, exclude_gem=False) is None
+
+
 def provider_row(code, tradedate="20260918", close=10, qfq=True, volume=10):
     row = {
         "symbol": code,
@@ -108,3 +114,34 @@ async def test_numcat_session_date_precedes_stale_db_date():
     })()
     with patch.object(module, "numcat_market_provider", provider):
         assert await service._resolve_trade_date(date(2026, 9, 20)) == date(2026, 9, 18)
+
+
+@pytest.mark.asyncio
+async def test_suspension_filter_requires_same_day_full_session_without_resumption():
+    from market_data.numcat.extended_provider import numcat_extended_provider
+    provider = type("Provider", (), {"configured": True})()
+    rows = [
+        {"symbol": "000001", "tradedate": "20260918", "suspend_type": "S", "suspend_timing": None},
+        {"symbol": "000002", "tradedate": "20260917", "suspend_type": "S"},
+        {"symbol": "000003", "tradedate": "20260918", "suspend_type": "S", "suspend_timing": "10:06-10:16"},
+        {"symbol": "000004", "tradedate": "20260918", "suspend_type": "S"},
+        {"symbol": "000004", "tradedate": "20260918", "suspend_type": "R"},
+    ]
+    with patch.object(module, "numcat_market_provider", provider), patch.object(numcat_extended_provider, "suspend", new=AsyncMock(return_value=rows)):
+        assert await WildmanClassicService()._suspensions(date(2026, 9, 18)) == {"000001"}
+
+
+@pytest.mark.asyncio
+async def test_historical_universe_keeps_later_delisted_and_excludes_not_yet_listed():
+    provider = type("Provider", (), {
+        "configured": True,
+        "screening": AsyncMock(return_value=[]),
+        "security_directory": AsyncMock(return_value=[
+            {"code": "000001", "name": "历史标的", "list_date": "2000-01-01", "delist_date": "2026-08-01"},
+            {"code": "000002", "name": "未上市", "list_date": "2026-07-01"},
+        ]),
+    })()
+    with patch.object(module, "numcat_market_provider", provider):
+        rows, metadata = await WildmanClassicService()._load_numcat_universe(date(2026, 6, 1))
+    assert [row["code"] for row in rows] == ["000001"]
+    assert metadata["historical_directory"] is True

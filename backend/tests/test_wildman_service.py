@@ -17,7 +17,7 @@ from models import (
     WildmanStockRole,
     WildmanTradeReview,
 )
-from services.wildman_service import WildmanService, _num
+from services.wildman_service import WildmanService, _num, dashboard_summary
 from services.data_collector import shanghai_now
 from wildman.rules import RULE_VERSION
 
@@ -119,6 +119,12 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(payload["candidates"][0]["symbol"], "600001")
         self.assertTrue(payload["mainlines"][0]["steps"]["step4"])
+        summary = dashboard_summary(payload)
+        self.assertNotIn("stock_facts", summary["candidates"][0])
+        self.assertIn("stock_facts", payload["candidates"][0])
+        self.assertEqual(summary["candidates"][0]["setup"], payload["candidates"][0]["setup"])
+        for rows in payload["candidate_groups"].values():
+            self.assertNotIn("stock_facts", rows[0])
         async with self.session_factory() as session:
             counts = {
                 model.__tablename__: (await session.execute(select(func.count()).select_from(model))).scalar_one()

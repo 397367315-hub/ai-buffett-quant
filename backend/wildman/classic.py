@@ -287,14 +287,17 @@ def _evaluate_520(bars: list[Bar], result: dict[str, Any]) -> dict[str, Any]:
 
 def _evaluate_t(bars: list[Bar], result: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
     source = "StockDailyBar/NumCat批量stk_factor_pro; 价格与成交额同一来源"
+    sellable = _number(meta.get("sellable_shares"))
     holding = bool(meta.get("holding"))
+    inventory_current = meta.get("inventory_current") is True
+    holding_confirmed = sellable > 0 if inventory_current and sellable is not None else None
     evidence = [_evidence(
         "T_HOLDING",
         "已有可卖持仓",
         True,
-        {"position_record": holding, "sellable_shares": "unknown"},
-        None,
-        "PersonalPoolItem仅提供用户管理仓位线索，未提供可卖股数/T+1状态",
+        {"position_record": holding, "sellable_shares": sellable, "as_of": meta.get("inventory_as_of"), "current": inventory_current},
+        holding_confirmed,
+        str(meta.get("inventory_source") or "需当日核对可卖股数与T+1状态"),
     )]
     if not bars:
         return _finish(result, status="风险排除", reason="无历史，不能执行做T判断", evidence=evidence, risks=["缺少历史不计入无匹配。"])
@@ -322,9 +325,12 @@ def _evaluate_t(bars: list[Bar], result: dict[str, Any], meta: dict[str, Any]) -
         return _finish(result, status="NO_MATCH", reason="尚未达到5V10做T触发条件", evidence=evidence)
     if not liquid:
         return _finish(result, status="风险排除", reason="流动性不足，不能认证盘中先卖后买可执行", evidence=evidence, risks=["成交额或成交量字段不完整，未计作无匹配。"])
-    if not holding:
-        return _finish(result, status="等待确认", reason="满足5V10，但没有PersonalPoolItem仓位线索；等待确认可卖底仓，不产生新买入", signal_date=bars[-1].date, anchor=bars[-1].close, target=bars[-1].close * 0.97, evidence=evidence, risks=["PersonalPoolItem仅表示用户管理的仓位比例，未提供可卖股数；不得假设可卖。", "T+1限制、未知基本面和单边下跌风险；不得加倍补仓。"])
-    return _finish(result, status="等待确认", reason="满足5V10且有仓位线索，但可卖股数未接入；不生成新买入", signal_date=bars[-1].date, anchor=bars[-1].close, target=bars[-1].close * 0.97, evidence=evidence, risks=["没有可卖股数/可用底仓接口，不能确认执行。", "T+1限制、未知基本面和单边下跌风险；不得加倍补仓。"])
+    if fundamentals is False or meta.get("major_risk") is True:
+        return _finish(result, status="风险排除", reason="基本面或公告风险命中，不支持通过做T摊低风险持仓成本", evidence=evidence, risks=["风险公告及财务证据优先于价格触发。"])
+    if holding_confirmed is True and fundamentals is True:
+        return _finish(result, status="已确认", reason="5V10、流动性、风险筛查与当日可卖底仓条件满足，仅用于已有持仓做T研究", signal_date=bars[-1].date, anchor=bars[-1].close, target=bars[-1].close * 0.97, evidence=evidence, risks=["可卖数量为用户当日核对，执行前仍以券商最新库存为准。", "先卖后买；不可增加总仓位，不能保证日内回补价差。"])
+    reason = "满足5V10，等待当日可卖底仓核对" if holding_confirmed is not True else "满足5V10与可卖底仓条件，等待公告和财务风险核查"
+    return _finish(result, status="等待确认", reason=reason + "；不产生新建仓建议", signal_date=bars[-1].date, anchor=bars[-1].close, target=bars[-1].close * 0.97, evidence=evidence, risks=["今日买入不可当日卖出；过期库存不视为当前可卖。", "单边下跌和流动性风险仍需盘中确认，不得加倍补仓。"])
 
 
 def _evaluate_75a(bars: list[Bar], result: dict[str, Any]) -> dict[str, Any]:
