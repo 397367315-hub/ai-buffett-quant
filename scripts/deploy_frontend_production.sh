@@ -10,19 +10,29 @@ VERIFY_PATH="${NETLIFY_VERIFY_PATH:-/pro/stock?code=600519}"
 cd "${ROOT_DIR}"
 npx netlify status >/dev/null
 
-# Netlify's Next.js plugin writes the deploy bundle under frontend/.netlify.
-# Running from the repository root can leave a stale root-level bundle and
-# publish HTML that references chunks which were never uploaded.
+# Build separately: the Next.js plugin restores .next on completion. Deploy
+# only the prepared runtime directory, then verify before promoting it.
 rm -rf "${FRONTEND_DIR}/.next" "${FRONTEND_DIR}/.netlify"
 cd "${FRONTEND_DIR}"
+NETLIFY_SITE_ID="${SITE_ID}" npx netlify build --context production
+test -d "${FRONTEND_DIR}/.netlify/static/_next/static"
+test -d "${FRONTEND_DIR}/.netlify/functions-internal"
+
+DEPLOY_REPORT="$(mktemp /tmp/ai-buffett-deploy.XXXXXX)"
+PROMOTE_REPORT="$(mktemp /tmp/ai-buffett-promote.XXXXXX)"
+trap 'rm -f "${DEPLOY_REPORT}" "${PROMOTE_REPORT}"' EXIT
 npx netlify deploy \
-  --prod \
+  --no-build \
+  --dir .netlify/static \
+  --functions .netlify/functions-internal \
   --site "${SITE_ID}" \
   --skip-functions-cache \
   --timeout 900 \
-  --message "${NETLIFY_DEPLOY_MESSAGE:-Production frontend deploy}"
+  --message "${NETLIFY_DEPLOY_MESSAGE:-Production frontend deploy}" \
+  --json > "${DEPLOY_REPORT}"
 
-python3 - "${SITE_URL}${VERIFY_PATH}" <<'PY'
+verify_page() {
+python3 - "$1" <<'PY'
 import re
 import sys
 import urllib.error
@@ -68,3 +78,10 @@ if failed:
     raise SystemExit("Static asset verification failed:\n" + "\n".join(failed))
 print(f"Verified page and {len(assets)} Next.js assets: {page_url}")
 PY
+}
+
+PREVIEW_URL="$(python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); print(value["deploy_url"])' "${DEPLOY_REPORT}")"
+verify_page "${PREVIEW_URL}${VERIFY_PATH}"
+PROMOTE_DATA="$(python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); print(json.dumps({"site_id":sys.argv[2],"deploy_id":value["deploy_id"]}))' "${DEPLOY_REPORT}" "${SITE_ID}")"
+npx netlify api restoreSiteDeploy --data "${PROMOTE_DATA}" > "${PROMOTE_REPORT}"
+verify_page "${SITE_URL}${VERIFY_PATH}"
