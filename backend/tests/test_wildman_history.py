@@ -231,6 +231,31 @@ def test_current_candidates_are_not_added_as_today_limit_ups():
     assert days[-1].isoformat() not in result["stock_overrides"]["000001"]["fact_basis"]["limit_up_dates"]
 
 
+def test_broad_style_low_price_equity_transfer_does_not_win_primary_industry_topic():
+    days = _days(3)
+    up = _pool(days, heights=[1, 2, 3])
+    members = [
+        {
+            "theme_symbol": theme,
+            "symbols": ["000001"],
+            "trade_date": day.isoformat(),
+        }
+        for day in days
+        for theme in ("广义风格", "低价股", "股权转让", "电力设备")
+    ]
+    result = derive_historical_overrides(
+        days[-1],
+        [{"code": "000001", "theme_symbol": "低价股", "sector": "电力设备"}],
+        up,
+        members,
+    )
+
+    facts = result["stock_overrides"]["000001"]
+    assert facts["primary_theme_name"] == "电力设备"
+    assert facts["industry_name"] == "电力设备"
+    assert facts["industry_theme_proxy"] is False
+
+
 def test_cross_cycle_is_unknown_when_transition_daily_bars_are_incomplete():
     days = _days(8)
     up = _pool([days[0], days[1], days[2], days[3]], heights=[1, 2, 3, 4])

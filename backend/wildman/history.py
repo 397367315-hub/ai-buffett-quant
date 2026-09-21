@@ -12,6 +12,8 @@ from datetime import date, datetime
 from math import isfinite
 from typing import Any, Iterable
 
+from wildman.mainline import candidate_name_allowed
+
 
 MAX_HISTORY_TRADING_DAYS = 20
 
@@ -388,7 +390,7 @@ def derive_historical_overrides(
         target_up_codes = set(pool_by_day.get(target_date, {})) if target_date else set()
         target_themes = [
             candidate for candidate, codes in target_membership.items()
-            if code in codes
+            if code in codes and candidate_name_allowed(candidate)
         ]
         named_target_themes = [
             candidate for candidate in target_themes
@@ -406,6 +408,10 @@ def derive_historical_overrides(
             )
         else:
             theme = current_theme.get(code) or industry_by_code.get(code)
+            if not candidate_name_allowed(theme):
+                theme = industry_by_code.get(code)
+            if not candidate_name_allowed(theme):
+                theme = None
         theme_is_industry_proxy = theme is not None and theme == industry_by_code.get(code) and theme not in code_themes
         theme_days = sorted({day for day, by_theme in membership.items() if theme and code in by_theme.get(theme, set())})
         heights = [height for _, height in heights_by_code.get(code, []) if height is not None]

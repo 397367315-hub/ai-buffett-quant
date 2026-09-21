@@ -29,10 +29,15 @@ class WildmanRuleCoreTests(unittest.TestCase):
     @staticmethod
     def confirmed_theme(**updates):
         payload = {
-            "theme_name": "机器人", "limit_up_count": 7, "max_limit_height": 5,
-            "has_pioneer": True, "has_core_midcap": True, "old_dragon_active": True,
-            "leader_premium": True, "support_promotion": True, "core_midcap_stable": True,
-            "fund_return": True,
+            "theme_name": "机器人",
+            "candidate_eligible": True,
+            "mainline_five_steps": {
+                "step1": {"passed": True, "actual": {"level": "国家战略", "date": "2026-09-01"}, "sources": [{"url": "https://example.test/strategy"}], "reason": "有明确政策来源", "observed_at": "2026-09-01T09:00:00+08:00"},
+                "step2": {"passed": True, "actual": {"first_boards": 5, "first_board_window": "09:30-10:30", "index_breakout": True}, "sources": [{"url": "https://example.test/intraday"}], "reason": "首日异动达到阈值"},
+                "step3": {"passed": True, "actual": {"market_cap": 12_000_000_000, "high_open_advance": True}, "sources": [{"url": "https://example.test/core"}], "reason": "容量中军趋势有效"},
+                "step4": {"passed": True, "actual": {"prior_leader": True, "bottom_volume_stabilized": True, "pressure_breakout": True, "current_continuous_boards_excluded": True}, "sources": [{"url": "https://example.test/old-dragon"}], "reason": "老龙完成右侧异动"},
+                "step5": {"passed": True, "actual": {"next_open_premium": True, "yesterday_first_board_survived": True, "core_no_negative_feedback": True}, "sources": [{"url": "https://example.test/premium"}], "reason": "次日溢价完成验证"},
+            },
         }
         payload.update(updates)
         return payload
@@ -142,10 +147,10 @@ class WildmanRuleCoreTests(unittest.TestCase):
         )
         self.assertEqual(support["state"], "差/无承接")
 
-    def test_promoted_leader_fact_can_confirm_mainline_step_four(self):
-        theme = self.confirmed_theme(leader_premium=True, support_promotion=True, core_midcap_stable=True)
+    def test_explicit_mainline_fact_can_confirm_step_five(self):
+        theme = self.confirmed_theme()
         result = self.core.mainline.evaluate(theme)
-        self.assertTrue(result["steps"]["step4"])
+        self.assertTrue(result["steps"]["step5"])
         self.assertEqual(result["state"], "核心主线确认")
 
     def test_missing_market_numbers_are_unknown_not_ice(self):
@@ -156,9 +161,10 @@ class WildmanRuleCoreTests(unittest.TestCase):
         self.assertIsNone(result["evidence"][0]["actual"])
 
     def test_partial_nextday_mainline_evidence_stays_unknown(self):
-        theme = self.confirmed_theme(support_promotion=None)
+        theme = self.confirmed_theme()
+        theme["mainline_five_steps"]["step5"]["passed"] = None
         result = self.core.mainline.evaluate(theme)
-        self.assertIsNone(result["steps"]["step4"])
+        self.assertIsNone(result["steps"]["step5"])
         self.assertNotEqual(result["state"], "核心主线确认")
         self.assertIn("次日溢价验证", result["missing"])
 
@@ -267,7 +273,7 @@ class WildmanRuleCoreTests(unittest.TestCase):
         self.assertEqual(result["expectancy"], -0.5)
         self.assertEqual(result["per_setup"]["WTS"]["sample_count"], 3)
         self.assertIn("不阻断扫描", result["per_setup"]["WTS"]["guidance"])
-        self.assertEqual(RULE_VERSION, "WM_RULE_CORE_V1_2")
+        self.assertEqual(RULE_VERSION, "WM_RULE_CORE_V1_3")
 
 
 if __name__ == "__main__":

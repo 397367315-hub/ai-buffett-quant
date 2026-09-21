@@ -32,6 +32,8 @@ from wildman.rules import RULE_VERSION, WildmanRuleCore, review_metrics
 from wildman.facts import daily_facts, intraday_facts
 from services.wildman_risk_service import risk_facts
 from services.wildman_history_service import build_history_context
+from services.wildman_mainline_service import enrich_mainlines
+from wildman.mainline import candidate_name_allowed
 
 
 CACHE_KEY = "wildman_dashboard_v5"
@@ -74,6 +76,18 @@ def dashboard_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "candidate_groups": {key: [candidate_card(row) for row in rows] for key, rows in payload.get("candidate_groups", {}).items()},
         "reject_pool": [candidate_card(row) for row in payload.get("reject_pool", [])],
     }
+
+
+def candidate_theme_facts(theme: dict[str, Any]) -> dict[str, Any]:
+    """Keep shared evidence once per theme, resolving it again on detail reads."""
+    result = {key: value for key, value in theme.items() if not isinstance(value, (list, dict))}
+    if isinstance(theme.get("mainline_five_steps"), dict):
+        result["mainline_five_steps"] = {
+            key: {**fact, "actual": {"题材": theme.get("theme_name"), "触发日": theme.get("trigger_date"),
+                                      "完整证据": "主线雷达"}, "sources": []}
+            for key, fact in theme["mainline_five_steps"].items() if isinstance(fact, dict)
+        }
+    return result
 
 
 class WildmanService:
@@ -349,7 +363,9 @@ class WildmanService:
 
         by_theme: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for item in up_rows:
-            by_theme[str(item.get("sector") or "未归类")].append(item)
+            name = str(item.get("sector") or "未归类")
+            if candidate_name_allowed(name):
+                by_theme[name].append(item)
         theme_facts: list[dict[str, Any]] = []
         for theme_name, rows in by_theme.items():
             heights = [int(_num(item.get("continuous_days")) or 1) for item in rows]
@@ -379,10 +395,15 @@ class WildmanService:
             })
         for theme in theme_facts:
             theme.update({key: value for key, value in (history.get("theme_overrides", {}).get(theme["theme_name"]) or {}).items() if value is not None})
-        theme_facts.sort(key=lambda row: (row["max_limit_height"], row["limit_up_count"]), reverse=True)
+        theme_facts, mainline_source = await enrich_mainlines(target, theme_facts, history, bars)
+        theme_facts.sort(key=lambda row: (
+            self.rules.mainline.evaluate(row).get("sequential_count", 0),
+            self.rules.mainline.evaluate(row).get("passed_count", 0),
+            row["limit_up_count"],
+        ), reverse=True)
         all_heights = [int(_num(item.get("continuous_days")) or 1) for item in up_rows]
         max_height = max(all_heights, default=int(_num(getattr(latest_sentiment, "max_streak_height", None)) or 0))
-        ladder_complete = any(theme["max_limit_height"] >= 4 and any(int(_num(item.get("continuous_days")) or 1) in {2, 3} for item in theme["rows"]) and any(int(_num(item.get("continuous_days")) or 1) == 1 for item in theme["rows"]) and theme["has_core_midcap"] for theme in theme_facts) if up_valid else None
+        ladder_complete = any(theme["max_limit_height"] >= 4 and any(int(_num(item.get("continuous_days")) or 1) in {2, 3} for item in theme["rows"]) and any(int(_num(item.get("continuous_days")) or 1) == 1 for item in theme["rows"]) and theme.get("has_core_midcap") for theme in theme_facts) if up_valid else None
         core_support = any(theme.get("core_volume_support") is True for theme in theme_facts[:5]) if up_valid and bars else None
         one_word = sum(1 for item in up_rows if str(item.get("first_limit_time") or "").replace(":", "")[:4] == "0925" and _num(item.get("failed_attempts")) == 0)
         limit_down_count = _num(getattr(latest_sentiment, "limit_down_count", None))
@@ -411,6 +432,7 @@ class WildmanService:
         current_codes = {_normalize_code(item.get("code")) for item in up_rows}
         prior_candidates = [{**item, "continuous_days": 0, "failed_attempts": None, "previous_limit": previous_by_code.get(_normalize_code(item.get("code")))} for item in previous_rows if _normalize_code(item.get("code")) not in current_codes]
         mapped_count = sum(bool(item.get("primary_theme_name")) and item.get("industry_theme_proxy") is False for item in overrides.values())
+        history.setdefault("source", {})["mainline_five_steps"] = mainline_source
         return {"market": market, "themes": theme_facts, "up_rows": up_rows, "previous_rows": prior_candidates, "down_rows": down_rows, "failed_rows": failed_rows, "bars": bars, "risk_facts": risks, "history_facts": overrides, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "universe_metadata": sorted({str(row.get("source") or "unknown") for row in metadata.values()}), "universe_metadata_hits": metadata_hits, "data_date": up_pool.get("trade_date"), "previous_date": previous_date.isoformat() if previous_valid else None, "same_day_pools": {"limit_up": up_valid, "limit_down": down_valid, "failed": failed_valid}, "history": history.get("source") or {}, "concept_mapped_count": mapped_count, "theme_basis": f"猫爪当日题材成分匹配{mapped_count}只；其余明确使用行业代理，多日关联不代表因果"}}
 
     async def dashboard(self, requested: date | None = None, *, refresh: bool = False, exclude_star_market: bool = True, exclude_gem: bool = True) -> dict[str, Any]:
@@ -430,7 +452,7 @@ class WildmanService:
             theme_map: dict[str, dict[str, Any]] = {}
             for theme in snapshot["themes"][:20]:
                 result = self.rules.mainline.evaluate(theme)
-                item = {key: value for key, value in theme.items() if key != "rows"} | result
+                item = {key: value for key, value in theme.items() if key not in {"rows", "member_codes"}} | result
                 theme_results.append(item)
                 theme_map[theme["theme_id"]] = item
             raw_candidates = [item for theme in snapshot["themes"][:20] for item in theme.get("rows", [])]
@@ -450,7 +472,7 @@ class WildmanService:
             for code in symbols:
                 raw = unique[code]
                 theme_name = str(raw.get("sector") or "未归类")
-                theme = theme_map.get(theme_name) or {"theme_id": theme_name, "theme_name": theme_name, "state": "观察", "limit_up_count": 1, "max_limit_height": 1}
+                theme = candidate_theme_facts(theme_map.get(theme_name) or {"theme_id": theme_name, "theme_name": theme_name, "state": "观察", "limit_up_count": 1, "max_limit_height": 1})
                 facts = self._stock_facts(raw, bars_by_symbol.get(code, []), auctions.get(code), theme, snapshot["market"])
                 historical = (snapshot.get("history_facts") or {}).get(code) or {}
                 original_basis = facts.get("fact_basis") or {}
@@ -583,7 +605,7 @@ class WildmanService:
                 stock_facts["support_recovered"] = True
                 last, vwap = _num(minutes[-1].get("close")), _num(minutes[-1].get("vwap"))
                 stock_facts["reversal_confirmed"] = last > vwap if last and vwap else None
-        theme_facts = candidate.get("theme_facts") or {
+        theme_facts = next((row for row in payload.get("mainlines", []) if row.get("theme_id") == candidate["theme_id"]), None) or candidate.get("theme_facts") or {
             "theme_id": candidate["theme_id"],
             "theme_name": candidate["theme_name"],
         }
@@ -593,7 +615,7 @@ class WildmanService:
             key: l2.get(key)
             for key in ("available", "pending", "provider", "data_quality", "summary", "sync", "capabilities")
         }
-        return {**candidate, **refined, "stock_facts": stock_facts, "account_context": account_rules, "intraday_source": "numcat_minute" if minutes else f"{l2.get('provider')}_level2_features" if timeline and l2.get("provider") else None, "level2": level2_payload, "trade_date": payload["trade_date"]}
+        return {**candidate, **refined, "theme_facts": theme_facts, "stock_facts": stock_facts, "account_context": account_rules, "intraday_source": "numcat_minute" if minutes else f"{l2.get('provider')}_level2_features" if timeline and l2.get("provider") else None, "level2": level2_payload, "trade_date": payload["trade_date"]}
 
     async def review(self, period: str = "daily", requested: date | None = None) -> dict[str, Any]:
         target = await self._target_date(requested)

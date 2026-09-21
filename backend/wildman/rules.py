@@ -13,7 +13,7 @@ from math import isfinite
 from typing import Any, Iterable
 
 
-RULE_VERSION = "WM_RULE_CORE_V1_2"
+RULE_VERSION = "WM_RULE_CORE_V1_3"
 
 
 class Cycle(StrEnum):
@@ -238,44 +238,106 @@ class MarketCycleEngine:
         }
 
 
+MAINLINE_STEP_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("step1", "消息级别", "国家战略/重大会议明确表述/重大事件催化，具备可核验日期与来源"),
+    ("step2", "首日异动", "09:30-10:30首板爆发至少5只，板块指数放量突破前高"),
+    ("step3", "容量中军", "市值≥100亿元趋势核心，高开后走强或放量阳线"),
+    ("step4", "老龙异动", "前一轮龙头底部放量企稳，压力位突破或重启前/当日新首板；当前连续连板股不算老龙"),
+    ("step5", "次日溢价验证", "次一交易日开盘龙头高溢价、昨日首板高位存活、核心无负反馈"),
+)
+
+
+def _mainline_fact(theme: dict[str, Any], step_id: str) -> dict[str, Any]:
+    """Normalize one collector fact without consulting legacy theme flags."""
+    facts = theme.get("mainline_five_steps")
+    raw = facts.get(step_id) if isinstance(facts, dict) else None
+    if not isinstance(raw, dict):
+        return {
+            "passed": None,
+            "actual": {},
+            "sources": [],
+            "reason": f"缺少{step_id}事实",
+        }
+    actual = raw.get("actual")
+    sources = raw.get("sources")
+    reason = raw.get("reason")
+    passed = raw.get("passed")
+    observed_at = raw.get("observed_at")
+    valid = (
+        isinstance(actual, dict)
+        and isinstance(sources, list)
+        and all(isinstance(source, dict) for source in sources)
+        and isinstance(reason, str)
+        and isinstance(passed, bool)
+        and (observed_at is None or isinstance(observed_at, str))
+    )
+    return {
+        "passed": passed if valid else None,
+        "actual": actual if isinstance(actual, dict) else {},
+        "sources": sources if isinstance(sources, list) else [],
+        "reason": reason if isinstance(reason, str) else "事实契约字段缺失或类型错误",
+        **({"observed_at": observed_at} if isinstance(observed_at, str) else {}),
+    }
+
+
 class MainlineEngine:
     def evaluate(self, theme: dict[str, Any]) -> dict[str, Any]:
-        limit_count = _num(theme.get("limit_up_count"))
-        height = _num(theme.get("max_limit_height"))
-        step1 = _tri_gte(limit_count, 3)
-        step2 = _tri_all([
-            _tri_gte(height, 2),
-            _tri_bool(theme.get("has_pioneer")),
-            _tri_bool(theme.get("has_core_midcap")),
-        ])
-        step3 = _tri_bool(theme.get("old_dragon_active"))
-        step4 = _tri_all([_tri_bool(theme.get(key)) for key in ("leader_premium", "support_promotion", "core_midcap_stable")])
-        step5 = _tri_any([_tri_bool(theme.get(key)) for key in ("fund_return", "reversal", "supplement_started", "resists_market_drop")])
-        if _yes(theme.get("retreat")):
-            state = MainlineState.RETREAT
-        elif _yes(theme.get("weakening")):
-            state = MainlineState.WEAKENING
-        elif step1 is True and step2 is True and step4 is True:
+        eligible = theme.get("candidate_eligible") if isinstance(theme.get("candidate_eligible"), bool) else None
+        facts = {step_id: _mainline_fact(theme, step_id) for step_id, _, _ in MAINLINE_STEP_SPECS}
+        checks = []
+        for index, (step_id, title, required) in enumerate(MAINLINE_STEP_SPECS, start=1):
+            fact = facts[step_id]
+            row = evidence(
+                f"WM_MAINLINE_STEP{index}", title, required, fact["actual"], fact["passed"],
+                f"主线五步法/Step{index}",
+            )
+            row.update({"sources": fact["sources"], "reason": fact["reason"]})
+            if "observed_at" in fact:
+                row["observed_at"] = fact["observed_at"]
+            checks.append(row)
+
+        steps = {step_id: fact["passed"] for step_id, fact in facts.items()}
+        failed = [row["rule_name"] for row in checks if row["passed"] is False]
+        missing = [row["rule_name"] for row in checks if row["passed"] is None]
+        passed_count = sum(row["passed"] is True for row in checks)
+        first_unresolved = next((index for index, row in enumerate(checks) if row["passed"] is not True), None)
+        sequential_count = first_unresolved if first_unresolved is not None else len(checks)
+        next_step = checks[first_unresolved]["rule_name"] if first_unresolved is not None else None
+
+        if eligible is not True:
+            state = MainlineState.WATCH
+            if eligible is False:
+                qualification_note = "候选资格已排除，主线五步事实不得确认"
+            else:
+                qualification_note = "候选资格未知，等待candidate_eligible明确为True"
+        elif sequential_count >= 5:
             state = MainlineState.CONFIRMED
-        elif step1 is True and step2 is True:
+            qualification_note = "五步按顺序全部通过，完成次日溢价验证"
+        elif sequential_count >= 4:
             state = MainlineState.HIGH_QUALITY
-        elif step1 is True:
+            qualification_note = "前四步按顺序通过，等待次日溢价验证"
+        elif sequential_count >= 3:
             state = MainlineState.CANDIDATE
+            qualification_note = "前三步按顺序通过，等待老龙异动与次日溢价验证"
         else:
             state = MainlineState.WATCH
-        checks = [
-            evidence("WM_MAINLINE_STEP1", "同题材涨停潮", "≥3~5只", limit_count, step1, "主线五步法/Step1"),
-            evidence("WM_MAINLINE_STEP2", "梯队完整", "空间龙≥2~3板+先锋+中军", {"height": height, "pioneer": theme.get("has_pioneer"), "midcap": theme.get("has_core_midcap")}, step2, "主线五步法/Step2"),
-            evidence("WM_MAINLINE_STEP3", "老龙异动", "底部堆量/首板/放量突破", theme.get("old_dragon_active"), step3, "主线五步法/Step3"),
-            evidence("WM_MAINLINE_STEP4", "次日溢价验证", "龙头溢价+助攻晋级+中军稳定", {key: theme.get(key) for key in ("leader_premium", "support_promotion", "core_midcap_stable")}, step4, "主线五步法/Step4"),
-            evidence("WM_MAINLINE_STEP5", "盘中动态强化", "回流/反包/补涨/抗跌", {key: theme.get(key) for key in ("fund_return", "reversal", "supplement_started", "resists_market_drop")}, step5, "主线五步法/Step5"),
-        ]
+            if first_unresolved is not None and checks[first_unresolved]["passed"] is False:
+                qualification_note = f"{next_step}未通过，后续步骤不能越级"
+            else:
+                qualification_note = f"等待{next_step or '主线五步事实'}，后续步骤不能越级"
+
         return {
             "state": state.value,
-            "confirmed": state is MainlineState.CONFIRMED,
-            "steps": {"step1": step1, "step2": step2, "step3": step3, "step4": step4, "step5": step5},
+            "confirmed": state is MainlineState.CONFIRMED and eligible is True,
+            "candidate_eligible": eligible,
+            "steps": steps,
+            "sequential_count": sequential_count,
             "evidence": checks,
-            "missing": [item["rule_name"] for item in checks if item["passed"] is None],
+            "missing": missing,
+            "failed": failed,
+            "passed_count": passed_count,
+            "next_step": next_step,
+            "qualification_note": qualification_note,
             "data_quality": _quality(checks),
         }
 

@@ -19,7 +19,7 @@ from models import (
 )
 from services.wildman_service import WildmanService, _num, dashboard_summary
 from services.data_collector import shanghai_now
-from wildman.rules import RULE_VERSION
+from wildman.rules import MainlineEngine, RULE_VERSION
 
 
 class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
@@ -91,16 +91,39 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
                 "theme_name": "机器人",
                 "limit_up_count": 3,
                 "max_limit_height": 2,
-                "has_pioneer": True,
-                "has_core_midcap": True,
-                "old_dragon_active": None,
-                "leader_premium": True,
-                "support_promotion": True,
-                "core_midcap_stable": True,
-                "fund_return": None,
-                "reversal": None,
-                "supplement_started": True,
-                "resists_market_drop": None,
+                "candidate_eligible": True,
+                "mainline_five_steps": {
+                    "step1": {
+                        "passed": True,
+                        "actual": {"level": "国家战略", "date": "2026-09-01"},
+                        "sources": [{"url": "https://example.test/strategy"}],
+                        "reason": "有明确政策来源",
+                    },
+                    "step2": {
+                        "passed": True,
+                        "actual": {"first_boards": 5, "first_board_window": "09:30-10:30", "index_breakout": True},
+                        "sources": [{"url": "https://example.test/intraday"}],
+                        "reason": "首日异动达到阈值",
+                    },
+                    "step3": {
+                        "passed": True,
+                        "actual": {"market_cap": 12_000_000_000, "high_open_advance": True},
+                        "sources": [{"url": "https://example.test/core"}],
+                        "reason": "容量中军趋势有效",
+                    },
+                    "step4": {
+                        "passed": True,
+                        "actual": {"prior_leader": True, "bottom_volume_stabilized": True, "pressure_breakout": True, "current_continuous_boards_excluded": True},
+                        "sources": [{"url": "https://example.test/old-dragon"}],
+                        "reason": "老龙完成右侧异动",
+                    },
+                    "step5": {
+                        "passed": True,
+                        "actual": {"next_open_premium": True, "yesterday_first_board_survived": True, "core_no_negative_feedback": True},
+                        "sources": [{"url": "https://example.test/premium"}],
+                        "reason": "次日溢价完成验证",
+                    },
+                },
                 "rows": [raw_stock],
             }],
             "up_rows": [raw_stock],
@@ -118,10 +141,18 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
             payload = await service.dashboard(refresh=True, exclude_star_market=False, exclude_gem=False)
 
         self.assertEqual(payload["candidates"][0]["symbol"], "600001")
-        self.assertTrue(payload["mainlines"][0]["steps"]["step4"])
+        self.assertTrue(payload["mainlines"][0]["candidate_eligible"])
+        self.assertTrue(payload["mainlines"][0]["steps"]["step5"])
+        self.assertTrue(payload["mainlines"][0]["confirmed"])
+        recalculated = MainlineEngine().evaluate(payload["mainlines"][0])
+        self.assertEqual(recalculated["confirmed"], payload["mainlines"][0]["confirmed"])
+        self.assertEqual(recalculated["state"], payload["mainlines"][0]["state"])
         summary = dashboard_summary(payload)
         self.assertNotIn("stock_facts", summary["candidates"][0])
         self.assertIn("stock_facts", payload["candidates"][0])
+        self.assertNotIn("rows", payload["candidates"][0]["theme_facts"])
+        self.assertNotIn("member_codes", payload["candidates"][0]["theme_facts"])
+        self.assertNotIn("stock_facts", json.dumps(summary, ensure_ascii=False))
         self.assertEqual(summary["candidates"][0]["setup"], payload["candidates"][0]["setup"])
         for rows in payload["candidate_groups"].values():
             self.assertNotIn("stock_facts", rows[0])

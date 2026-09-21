@@ -410,6 +410,13 @@ class WildmanHistoryService:
         if not symbol_to_name:
             source["missing_reasons"].append("missing_theme_symbol_name_mapping")
         result["source"] = source
+        # Shared only with the in-flight five-step collector; these inputs are
+        # never copied into dashboard snapshots or persisted as raw history.
+        result["mainline_inputs"] = {
+            "limit_history": up_rows,
+            "member_history": member_rows,
+            "theme_symbols": name_to_symbol,
+        }
         return result
 
 
