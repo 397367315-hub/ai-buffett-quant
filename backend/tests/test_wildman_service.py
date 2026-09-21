@@ -1,6 +1,6 @@
 import json
 import unittest
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -54,6 +54,7 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
             volume=1_000_000 + index * 1_000,
             change_pct=None if index == 29 else 0.8,
         )
+
 
     async def test_dashboard_adapts_and_persists_compact_rule_snapshots(self):
         service = WildmanService()
@@ -242,6 +243,54 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(facts["break_neckline"])
         self.assertIsNone(facts["pressure_price"])
+
+
+class WildmanTargetDateTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_historical_date_is_preserved(self):
+        service = WildmanService()
+        with patch("services.wildman_service.numcat_extended_provider.rows", new_callable=AsyncMock) as calendar:
+            calendar.return_value = [{"cal_date": "2026-09-21", "is_open": 1}]
+            self.assertEqual(await service._target_date(date(2026, 9, 18)), date(2026, 9, 18))
+            calendar.assert_not_awaited()
+
+    async def test_preopen_uses_previous_open_session(self):
+        service = WildmanService()
+        with (
+            patch("services.wildman_service.shanghai_now", return_value=datetime(2026, 9, 21, 9, 29)),
+            patch("services.wildman_service.numcat_extended_provider.rows", new_callable=AsyncMock) as calendar,
+        ):
+            calendar.return_value = [
+                {"cal_date": "20260921", "is_open": "1", "pretrade_date": "20260918"},
+            ]
+            self.assertEqual(await service._target_date(), date(2026, 9, 18))
+
+    async def test_weekend_and_holiday_rows_are_not_trading_dates(self):
+        service = WildmanService()
+        with (
+            patch("services.wildman_service.shanghai_now", return_value=datetime(2026, 9, 21, 10, 0)),
+            patch("services.wildman_service.numcat_extended_provider.rows", new_callable=AsyncMock) as calendar,
+        ):
+            calendar.return_value = [
+                {"cal_date": "2026-09-21", "is_open": 0},
+                {"cal_date": "2026-09-20", "is_open": 0},
+                {"cal_date": "2026-09-18", "is_open": 1},
+            ]
+            self.assertEqual(await service._target_date(), date(2026, 9, 18))
+
+    async def test_calendar_date_wins_when_daily_emotion_lags(self):
+        service = WildmanService()
+        with (
+            patch("services.wildman_service.shanghai_now", return_value=datetime(2026, 9, 21, 16, 0)),
+            patch("services.wildman_service.numcat_extended_provider.rows", new_callable=AsyncMock) as calendar,
+            patch("services.wildman_service.numcat_market_provider.market_emotion", new_callable=AsyncMock) as emotion,
+        ):
+            calendar.return_value = [
+                {"cal_date": "2026-09-21", "is_open": 1},
+                {"cal_date": "2026-09-18", "is_open": 1},
+            ]
+            emotion.return_value = [{"trade_date": "2026-09-18"}]
+            self.assertEqual(await service._target_date(), date(2026, 9, 21))
+            emotion.assert_not_awaited()
 
 
 if __name__ == "__main__":

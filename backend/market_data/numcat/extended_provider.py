@@ -265,8 +265,8 @@ class NumCatExtendedProvider:
             "data": data,
         }
 
-    async def rows(self, apiname: str, *, params: dict[str, Any] | None = None, fields: str | list[str] | None = None, refresh: bool = False) -> list[dict[str, Any]]:
-        result = await self.query(apiname, params=params, fields=fields, refresh=refresh)
+    async def rows(self, apiname: str, *, params: dict[str, Any] | None = None, fields: str | list[str] | None = None, refresh: bool = False, cache_ttl: int | None = None) -> list[dict[str, Any]]:
+        result = await self.query(apiname, params=params, fields=fields, refresh=refresh, cache_ttl=cache_ttl)
         data = result.get("data")
         if not isinstance(data, dict):
             return []

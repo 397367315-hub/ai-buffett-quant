@@ -511,6 +511,8 @@ class EastMoneyDataCollector:
         page: int,
         page_size: int,
         target_date: date | str | None = None,
+        *,
+        refresh: bool = False,
     ) -> dict:
         requested_date = (
             target_date.strftime("%Y%m%d")
@@ -524,7 +526,9 @@ class EastMoneyDataCollector:
                     target = date.fromisoformat(
                         f"{requested_date[:4]}-{requested_date[4:6]}-{requested_date[6:8]}"
                     )
-                    pool = await numcat_market_provider.limit_pool(pool_type, tradedate=target)
+                    pool = await numcat_market_provider.limit_pool(
+                        pool_type, tradedate=target, refresh=refresh,
+                    )
                     if pool.get("trade_date"):
                         stocks = list(pool.get("stocks") or [])
                         start = max(page - 1, 0) * page_size
@@ -565,9 +569,12 @@ class EastMoneyDataCollector:
         page: int = 1,
         page_size: int = 200,
         target_date: date | str | None = None,
+        *,
+        refresh: bool = False,
     ) -> dict:
         return await self._fetch_limit_pool(
             "https://push2ex.eastmoney.com/getTopicZTPool", "up", page, page_size, target_date,
+            refresh=refresh,
         )
 
     async def fetch_limit_down_pool(
@@ -575,9 +582,12 @@ class EastMoneyDataCollector:
         page: int = 1,
         page_size: int = 200,
         target_date: date | str | None = None,
+        *,
+        refresh: bool = False,
     ) -> dict:
         return await self._fetch_limit_pool(
             "https://push2ex.eastmoney.com/getTopicDTPool", "down", page, page_size, target_date,
+            refresh=refresh,
         )
 
     async def fetch_failed_limit_pool(
@@ -585,9 +595,12 @@ class EastMoneyDataCollector:
         page: int = 1,
         page_size: int = 200,
         target_date: date | str | None = None,
+        *,
+        refresh: bool = False,
     ) -> dict:
         return await self._fetch_limit_pool(
             "https://push2ex.eastmoney.com/getTopicZBPool", "failed", page, page_size, target_date,
+            refresh=refresh,
         )
 
     async def fetch_limit_up_stocks(self, page: int = 1, page_size: int = 200) -> list[dict]:

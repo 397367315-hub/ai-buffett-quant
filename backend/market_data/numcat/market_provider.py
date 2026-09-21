@@ -941,6 +941,7 @@ class NumCatMarketProvider:
         *,
         tradedate: date | None = None,
         recentdays: int = 30,
+        refresh: bool = False,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {}
         if tradedate:
@@ -952,6 +953,7 @@ class NumCatMarketProvider:
             fields=MARKET_EMOTION_FIELDS,
             params=params,
             cache_ttl=60 if tradedate is None else 900,
+            bypass_cache=refresh,
             affinity_key=f"market-emotion:{params.get('tradedate') or params.get('recentdays')}",
         )
         output = []
@@ -1024,6 +1026,7 @@ class NumCatMarketProvider:
         *,
         tradedate: date | None = None,
         recentdays: int | None = None,
+        refresh: bool = False,
     ) -> dict[str, Any]:
         normalized_type = str(pool_type or "").strip().lower()
         if normalized_type not in {"u", "d", "ub", "db", "bu", "bd"}:
@@ -1038,6 +1041,7 @@ class NumCatMarketProvider:
             fields=LIMIT_POOL_FIELDS,
             params=params,
             cache_ttl=30 if tradedate is None else 900,
+            bypass_cache=refresh,
             affinity_key=f"limit-pool:{normalized_type}:{params.get('tradedate') or params.get('recentdays', 'latest')}",
         )
         rows = []

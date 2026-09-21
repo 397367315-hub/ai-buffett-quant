@@ -1,5 +1,6 @@
 import asyncio
-from datetime import date
+import time
+from datetime import date, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -112,8 +113,43 @@ async def test_numcat_session_date_precedes_stale_db_date():
         "configured": True,
         "market_emotion": AsyncMock(return_value=[{"trade_date": "2026-09-18"}]),
     })()
-    with patch.object(module, "numcat_market_provider", provider):
+    calendar = AsyncMock()
+    calendar.rows.return_value = [{"cal_date": "20260920", "is_open": "0", "pretrade_date": "20260918"}]
+    with patch.object(module, "numcat_market_provider", provider), patch.object(module, "numcat_extended_provider", calendar):
         assert await service._resolve_trade_date(date(2026, 9, 20)) == date(2026, 9, 18)
+
+
+@pytest.mark.asyncio
+async def test_explicit_open_trade_date_is_preserved():
+    calendar = AsyncMock()
+    calendar.rows.return_value = [{"cal_date": "20260921", "is_open": "1", "pretrade_date": "20260918"}]
+    with patch.object(module, "numcat_extended_provider", calendar):
+        assert await WildmanClassicService()._resolve_trade_date(date(2026, 9, 21)) == date(2026, 9, 21)
+
+
+@pytest.mark.asyncio
+async def test_numcat_calendar_latest_wins_when_daily_emotion_lags():
+    service = WildmanClassicService()
+    calendar = AsyncMock()
+    calendar.rows.return_value = [{"cal_date": "20260921", "is_open": "1", "pretrade_date": "20260918"}]
+    provider = type("Provider", (), {
+        "configured": True,
+        "market_emotion": AsyncMock(return_value=[{"trade_date": "2026-09-18"}]),
+    })()
+    with patch.object(module, "numcat_extended_provider", calendar), patch.object(module, "numcat_market_provider", provider), patch.object(module, "shanghai_now", return_value=datetime(2026, 9, 22, 1, 5)):
+        assert await service._resolve_trade_date(None) == date(2026, 9, 21)
+        provider.market_emotion.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_numcat_calendar_refresh_bypasses_cached_classic_date_and_preopen_uses_pretrade():
+    service = WildmanClassicService()
+    service._date_cache["latest"] = (time.monotonic() + 60, date(2026, 9, 18))
+    calendar = AsyncMock()
+    calendar.rows.return_value = [{"cal_date": "20260921", "is_open": "1", "pretrade_date": "20260918"}]
+    with patch.object(module, "numcat_extended_provider", calendar), patch.object(module, "shanghai_now", return_value=datetime(2026, 9, 21, 9, 29)):
+        assert await service._resolve_trade_date(None, refresh=True) == date(2026, 9, 18)
+        assert calendar.rows.await_args.kwargs["cache_ttl"] == 60
 
 
 @pytest.mark.asyncio

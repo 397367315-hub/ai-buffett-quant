@@ -26,10 +26,12 @@ from wildman.classic import STRATEGIES, STRATEGY_IDS, evaluate_classic, indicato
 
 try:
     from market_data.numcat.gateway import NumCatGatewayError, numcat_gateway
+    from market_data.numcat.extended_provider import numcat_extended_provider
     from market_data.numcat.market_provider import DAILY_FIELDS, STK_FACTOR_FIELDS, _market, _rows, numcat_market_provider
 except ImportError:  # pragma: no cover - only for stripped-down tooling environments
     NumCatGatewayError = RuntimeError
     numcat_gateway = None
+    numcat_extended_provider = None
     numcat_market_provider = None
     STK_FACTOR_FIELDS = ""
     DAILY_FIELDS = ""
@@ -283,21 +285,51 @@ class WildmanClassicService:
     def _cache_key(strategy_id: str, target: date, exclude_star_market: bool, exclude_gem: bool) -> str:
         return f"{strategy_id}:{target.isoformat()}:{int(exclude_star_market)}:{int(exclude_gem)}"
 
-    async def _resolve_trade_date(self, requested: date | None) -> date:
+    async def _resolve_trade_date(self, requested: date | None, *, refresh: bool = False) -> date:
+        if requested:
+            if numcat_extended_provider is not None:
+                try:
+                    sessions = await numcat_extended_provider.rows(
+                        "tradecal",
+                        params={"tradedate": requested.strftime("%Y%m%d")},
+                        refresh=refresh,
+                        cache_ttl=60,
+                    )
+                    for item in sessions:
+                        if not isinstance(item, dict):
+                            continue
+                        is_closed = item.get("is_open", item.get("is_trading", item.get("open"))) in {False, 0, "0", "false", "False"}
+                        previous = _date(item.get("pretrade_date"))
+                        current = _date(item.get("cal_date") or item.get("trade_date") or item.get("tradedate"))
+                        if current == requested and is_closed and previous and previous < requested:
+                            return previous
+                        if current == requested and not is_closed:
+                            return requested
+                except Exception:
+                    pass
+            return requested
         cache_key = requested.isoformat() if requested else "latest"
         cached_date = self._date_cache.get(cache_key)
-        if cached_date and cached_date[0] > time.monotonic():
+        if not refresh and cached_date and cached_date[0] > time.monotonic():
             return cached_date[1]
-        if numcat_market_provider is not None and numcat_market_provider.configured:
+        if numcat_extended_provider is not None:
             try:
-                sessions = await numcat_market_provider.market_emotion(recentdays=30)
-                candidates = sorted(
-                    {
-                        parsed for item in sessions
-                        if (parsed := _date(item.get("trade_date"))) is not None
-                        and (requested is None or parsed <= requested)
-                    }
-                )
+                sessions = await numcat_extended_provider.rows("tradecal", params={}, refresh=refresh, cache_ttl=60)
+                now = shanghai_now()
+                candidates = set()
+                for item in sessions:
+                    if not isinstance(item, dict):
+                        continue
+                    is_closed = item.get("is_open", item.get("is_trading", item.get("open"))) in {False, 0, "0", "false", "False"}
+                    values = [(item.get("cal_date") or item.get("trade_date") or item.get("tradedate"), False), (item.get("pretrade_date"), True)]
+                    for value, is_previous in values:
+                        if is_closed and not is_previous:
+                            continue
+                        parsed = _date(value)
+                        if parsed is None or parsed > now.date() or (parsed == now.date() and (now.hour, now.minute, now.second) < (9, 30, 0)):
+                            continue
+                        candidates.add(parsed)
+                candidates = sorted(candidates)
                 if candidates:
                     resolved = candidates[-1]
                     self._date_cache[cache_key] = (time.monotonic() + 60, resolved)
@@ -305,15 +337,19 @@ class WildmanClassicService:
             except Exception:
                 pass
         async with async_session() as session:
+            now = shanghai_now()
+            clock_date = now.date() - timedelta(days=int((now.hour, now.minute) < (9, 30)))
             statement = select(func.max(StockDailyBar.trade_date))
             if requested:
                 statement = statement.where(StockDailyBar.trade_date <= requested)
+            statement = statement.where(StockDailyBar.trade_date <= clock_date)
             known = (await session.execute(statement)).scalar_one_or_none()
             if known:
                 return known
             universe_statement = select(func.max(StockUniverseSnapshot.trade_date))
             if requested:
                 universe_statement = universe_statement.where(StockUniverseSnapshot.trade_date <= requested)
+            universe_statement = universe_statement.where(StockUniverseSnapshot.trade_date <= clock_date)
             known = (await session.execute(universe_statement)).scalar_one_or_none()
         resolved = known or requested or shanghai_now().date()
         self._date_cache[cache_key] = (time.monotonic() + 60, resolved)
@@ -821,7 +857,7 @@ class WildmanClassicService:
 
     async def scan(self, strategy_id: str, requested_date: date | None = None, *, refresh: bool = False, exclude_star_market: bool = True, exclude_gem: bool = True) -> dict[str, Any]:
         strategy_id = self._validate_strategy(strategy_id)
-        target = await self._resolve_trade_date(requested_date)
+        target = await self._resolve_trade_date(requested_date, refresh=refresh)
         key = self._cache_key(strategy_id, target, exclude_star_market, exclude_gem)
         now = time.monotonic()
         if not refresh:
@@ -883,7 +919,7 @@ class WildmanClassicService:
         code = _code(symbol)
         if not code or len(code) != 6 or not code.isdigit():
             raise ValueError("symbol必须是6位股票代码")
-        target = await self._resolve_trade_date(requested_date)
+        target = await self._resolve_trade_date(requested_date, refresh=refresh)
         histories, history_meta = await self._history_batch([code], target, refresh=refresh, minimum_bars=self._minimum_bars(strategy_id))
         bars = histories.get(code, [])
         async with async_session() as session:

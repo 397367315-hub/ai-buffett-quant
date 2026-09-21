@@ -27,6 +27,7 @@ from models import (
 )
 from services.data_collector import collector, shanghai_now
 from services.level2_service import level2_service
+from market_data.numcat.extended_provider import numcat_extended_provider
 from market_data.numcat.market_provider import numcat_market_provider
 from wildman.rules import RULE_VERSION, WildmanRuleCore, review_metrics
 from wildman.facts import daily_facts, intraday_facts
@@ -95,18 +96,47 @@ class WildmanService:
         self.rules = WildmanRuleCore()
         self._lock = asyncio.Lock()
 
-    async def _target_date(self, requested: date | None = None) -> date:
+    async def _target_date(self, requested: date | None = None, *, refresh: bool = False) -> date:
         if requested:
             return requested
-        if numcat_market_provider.configured:
-            rows = await self._safe(numcat_market_provider.market_emotion(recentdays=5), [])
-            observed = [date.fromisoformat(row["trade_date"]) for row in rows if row.get("trade_date") and row["trade_date"] <= shanghai_now().date().isoformat()]
-            if observed:
-                return max(observed)
+        now = shanghai_now()
+        calendar_rows = await self._safe(
+            numcat_extended_provider.rows("tradecal", params={}, refresh=refresh, cache_ttl=60),
+            [],
+        )
+        observed: list[date] = []
+        for row in calendar_rows:
+            if not isinstance(row, dict):
+                continue
+            is_closed = row.get("is_open", row.get("is_trading", row.get("open"))) in {
+                False, 0, "0", "false", "False",
+            }
+            values = [
+                (row.get("cal_date") or row.get("trade_date") or row.get("tradedate"), False),
+                (row.get("pretrade_date"), True),
+            ]
+            for value, is_previous in values:
+                if is_closed and not is_previous:
+                    continue
+                text = str(value or "").strip()
+                if len(text) == 8 and text.isdigit():
+                    text = f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+                try:
+                    candidate = date.fromisoformat(text[:10])
+                except (TypeError, ValueError):
+                    continue
+                if candidate > now.date():
+                    continue
+                if candidate == now.date() and (now.hour, now.minute, now.second) < (9, 30, 0):
+                    continue
+                observed.append(candidate)
+        if observed:
+            return max(observed)
+        latest_allowed = now.date() - timedelta(days=int((now.hour, now.minute) < (9, 30)))
         async with async_session() as session:
             values = [
-                (await session.execute(select(func.max(MarketSentimentDaily.trade_date)))).scalar_one_or_none(),
-                (await session.execute(select(func.max(StockDailyBar.trade_date)))).scalar_one_or_none(),
+                (await session.execute(select(func.max(MarketSentimentDaily.trade_date)).where(MarketSentimentDaily.trade_date <= latest_allowed))).scalar_one_or_none(),
+                (await session.execute(select(func.max(StockDailyBar.trade_date)).where(StockDailyBar.trade_date <= latest_allowed))).scalar_one_or_none(),
             ]
         known = [item for item in values if isinstance(item, date)]
         return max(known) if known else shanghai_now().date()
@@ -146,12 +176,25 @@ class WildmanService:
                 row.updated_at = datetime.utcnow()
             await session.commit()
 
-    async def _sentiments(self, target: date) -> list[MarketSentimentDaily]:
+    async def _sentiments(self, target: date, *, refresh: bool = False) -> list[MarketSentimentDaily]:
         if numcat_market_provider.configured:
-            rows = await self._safe(numcat_market_provider.market_emotion(recentdays=30), [])
+            kwargs = {"refresh": True} if refresh else {}
+            rows = await self._safe(numcat_market_provider.market_emotion(recentdays=30, **kwargs), [])
             matched = [row for row in rows if str(row.get("trade_date") or "") <= target.isoformat()]
-            if matched and any(row.get("trade_date") == target.isoformat() for row in matched):
-                return [SimpleNamespace(**{**row, "trade_date": date.fromisoformat(row["trade_date"])}) for row in sorted(matched, key=lambda row: row["trade_date"], reverse=True)[:30]]
+            if matched:
+                converted = [SimpleNamespace(**{**row, "trade_date": date.fromisoformat(row["trade_date"]), "_source": "numcat"}) for row in sorted(matched, key=lambda row: row["trade_date"], reverse=True)[:30]]
+                if any(row.trade_date == target for row in converted):
+                    return converted
+                async with async_session() as session:
+                    database_rows = list((await session.execute(
+                        select(MarketSentimentDaily)
+                        .where(MarketSentimentDaily.trade_date <= target)
+                        .order_by(desc(MarketSentimentDaily.trade_date))
+                        .limit(30)
+                    )).scalars().all())
+                merged = {row.trade_date: row for row in converted}
+                merged.update({row.trade_date: row for row in database_rows if row.trade_date not in merged})
+                return sorted(merged.values(), key=lambda row: row.trade_date, reverse=True)[:30]
         async with async_session() as session:
             return list((await session.execute(
                 select(MarketSentimentDaily)
@@ -270,11 +313,14 @@ class WildmanService:
             return {code: {"major_risk": None, "fundamentals_clear": None, "coverage": {"status": "failed", "checked_to": target.isoformat(), "error": type(exc).__name__}, "risk_evidence": []} for code in symbols}
 
     async def _snapshot(self, target: date, refresh: bool) -> dict[str, Any]:
-        sentiments_task = self._sentiments(target)
-        up_task = self._safe(collector.fetch_limit_up_pool(page_size=500, target_date=target), {"stocks": [], "total": 0, "trade_date": None})
-        down_task = self._safe(collector.fetch_limit_down_pool(page_size=500, target_date=target), {"stocks": [], "total": 0, "trade_date": None})
-        failed_task = self._safe(collector.fetch_failed_limit_pool(page_size=500, target_date=target), {"stocks": [], "total": 0, "trade_date": None})
+        refresh_kwargs = {"refresh": True} if refresh else {}
+        sentiments_task = self._sentiments(target, refresh=refresh)
+        up_task = self._safe(collector.fetch_limit_up_pool(page_size=500, target_date=target, **refresh_kwargs), {"stocks": [], "total": 0, "trade_date": None})
+        down_task = self._safe(collector.fetch_limit_down_pool(page_size=500, target_date=target, **refresh_kwargs), {"stocks": [], "total": 0, "trade_date": None})
+        failed_task = self._safe(collector.fetch_failed_limit_pool(page_size=500, target_date=target, **refresh_kwargs), {"stocks": [], "total": 0, "trade_date": None})
         sentiments, up_pool, down_pool, failed_pool = await asyncio.gather(sentiments_task, up_task, down_task, failed_task)
+        emotion_dates = [row.trade_date for row in sentiments if isinstance(getattr(row, "trade_date", None), date)]
+        emotion_date = max(emotion_dates) if emotion_dates else None
         async with async_session() as session:
             previous_date = (await session.execute(select(func.max(StockDailyBar.trade_date)).where(StockDailyBar.trade_date < target))).scalar_one_or_none()
         observed_prior = [row.trade_date for row in sentiments if row.trade_date < target]
@@ -433,10 +479,11 @@ class WildmanService:
         prior_candidates = [{**item, "continuous_days": 0, "failed_attempts": None, "previous_limit": previous_by_code.get(_normalize_code(item.get("code")))} for item in previous_rows if _normalize_code(item.get("code")) not in current_codes]
         mapped_count = sum(bool(item.get("primary_theme_name")) and item.get("industry_theme_proxy") is False for item in overrides.values())
         history.setdefault("source", {})["mainline_five_steps"] = mainline_source
-        return {"market": market, "themes": theme_facts, "up_rows": up_rows, "previous_rows": prior_candidates, "down_rows": down_rows, "failed_rows": failed_rows, "bars": bars, "risk_facts": risks, "history_facts": overrides, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "universe_metadata": sorted({str(row.get("source") or "unknown") for row in metadata.values()}), "universe_metadata_hits": metadata_hits, "data_date": up_pool.get("trade_date"), "previous_date": previous_date.isoformat() if previous_valid else None, "same_day_pools": {"limit_up": up_valid, "limit_down": down_valid, "failed": failed_valid}, "history": history.get("source") or {}, "concept_mapped_count": mapped_count, "theme_basis": f"猫爪当日题材成分匹配{mapped_count}只；其余明确使用行业代理，多日关联不代表因果"}}
+        sentiment_sources = {str(getattr(row, "_source", "database")) for row in sentiments}
+        return {"market": market, "themes": theme_facts, "up_rows": up_rows, "previous_rows": prior_candidates, "down_rows": down_rows, "failed_rows": failed_rows, "bars": bars, "risk_facts": risks, "history_facts": overrides, "source": {"limit_up": up_pool.get("source"), "limit_down": down_pool.get("source"), "failed": failed_pool.get("source"), "universe_metadata": sorted({str(row.get("source") or "unknown") for row in metadata.values()}), "universe_metadata_hits": metadata_hits, "data_date": up_pool.get("trade_date"), "previous_date": previous_date.isoformat() if previous_valid else None, "same_day_pools": {"limit_up": up_valid, "limit_down": down_valid, "failed": failed_valid}, "history": history.get("source") or {}, "concept_mapped_count": mapped_count, "sentiment_date": emotion_date.isoformat() if emotion_date else None, "sentiment_current": emotion_date == target, "sentiment_source": "+".join(sorted(sentiment_sources)) if sentiment_sources else None, "theme_basis": f"猫爪当日题材成分匹配{mapped_count}只；其余明确使用行业代理，多日关联不代表因果"}}
 
     async def dashboard(self, requested: date | None = None, *, refresh: bool = False, exclude_star_market: bool = True, exclude_gem: bool = True) -> dict[str, Any]:
-        target = await self._target_date(requested)
+        target = await self._target_date(requested, refresh=refresh)
         cache_key = self._cache_key(exclude_star_market, exclude_gem)
         cached = None if refresh else await self._cached(cache_key)
         if not refresh and self._cache_fresh(cached, target):
@@ -618,7 +665,7 @@ class WildmanService:
         return {**candidate, **refined, "theme_facts": theme_facts, "stock_facts": stock_facts, "account_context": account_rules, "intraday_source": "numcat_minute" if minutes else f"{l2.get('provider')}_level2_features" if timeline and l2.get("provider") else None, "level2": level2_payload, "trade_date": payload["trade_date"]}
 
     async def review(self, period: str = "daily", requested: date | None = None) -> dict[str, Any]:
-        target = await self._target_date(requested)
+        target = await self._target_date(requested, refresh=False)
         days = {"daily": 1, "weekly": 7, "monthly": 31}.get(period, 1)
         start = target - timedelta(days=days - 1)
         async with async_session() as session:
