@@ -14,6 +14,7 @@ from models import PolicyTransmissionRecord
 from market_data.numcat.extended_provider import numcat_extended_provider
 from market_data.numcat.market_provider import numcat_market_provider
 from services.wildman_classic_service import fetch_numcat_history_batch
+from wildman.candidate_discovery import discover_candidate
 from wildman.mainline import candidate_name_allowed, derive_mainline_steps, select_trigger_date
 from wildman.history import normalize_code, normalize_trade_date
 
@@ -137,7 +138,11 @@ async def enrich_mainlines(target: date, legacy: list[dict], history: dict, bars
             board_bars=kwargs.pop("board_bars", []), news=kwargs.pop("news", []), **kwargs)
 
     if not themes or not numcat_market_provider.configured:
-        return [{**theme, **calculate(theme)} for theme in themes], {
+        results = []
+        for theme in themes:
+            facts = calculate(theme)
+            results.append({**theme, **facts, "candidate_discovery": discover_candidate(target, theme, facts)})
+        return results, {
             "status": "unavailable", "source": "numcat", "errors": ["未取得猫爪主线证据"],
         }
 
@@ -249,6 +254,9 @@ async def enrich_mainlines(target: date, legacy: list[dict], history: dict, bars
             "core_capitalization_complete": bool(codes) and all(
                 quotes_by_day.get(trigger, {}).get(code, {}).get("market_cap") is not None for code in codes)},
             stock_quotes=quotes, board_bars=board_rows, member_history=own_members, news=[*news, *policy])
+        facts["candidate_discovery"] = discover_candidate(
+            target, theme, facts, news=[*news, *policy], as_of=target,
+        )
         step3 = facts.get("mainline_five_steps", {}).get("step3")
         if step3:
             step3.setdefault("actual", {}).update({

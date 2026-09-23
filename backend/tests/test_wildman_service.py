@@ -19,6 +19,7 @@ from models import (
 )
 from services.wildman_service import WildmanService, _num, dashboard_summary
 from services.data_collector import shanghai_now
+from wildman.candidate_discovery import DISCOVERY_VERSION
 from wildman.rules import MainlineEngine, RULE_VERSION
 
 
@@ -217,9 +218,18 @@ class WildmanServicePersistenceTests(unittest.IsolatedAsyncioTestCase):
 
     def test_cache_requires_current_rule_date_and_recent_timestamp(self):
         target = date(2026, 9, 18)
-        fresh = {"rule_version": RULE_VERSION, "trade_date": target.isoformat(), "updated_at": shanghai_now().isoformat()}
+        fresh = {
+            "rule_version": RULE_VERSION,
+            "candidate_discovery_version": DISCOVERY_VERSION,
+            "trade_date": target.isoformat(),
+            "updated_at": shanghai_now().isoformat(),
+            "mainlines": [{"candidate_discovery": {"version": DISCOVERY_VERSION}}],
+        }
         self.assertTrue(WildmanService._cache_fresh(fresh, target))
         self.assertFalse(WildmanService._cache_fresh({**fresh, "rule_version": "old"}, target))
+        self.assertFalse(WildmanService._cache_fresh({key: value for key, value in fresh.items() if key != "candidate_discovery_version"}, target))
+        self.assertFalse(WildmanService._cache_fresh({key: value for key, value in fresh.items() if key != "mainlines"}, target))
+        self.assertFalse(WildmanService._cache_fresh({**fresh, "mainlines": [{}]}, target))
         self.assertFalse(WildmanService._cache_fresh({**fresh, "updated_at": "2026-01-01T12:00:00+08:00"}, target))
         self.assertFalse(WildmanService._cache_fresh(fresh, date(2026, 9, 17)))
         self.assertIsNone(_num(float("inf")))

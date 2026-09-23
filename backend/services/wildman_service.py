@@ -34,6 +34,7 @@ from wildman.facts import daily_facts, intraday_facts
 from services.wildman_risk_service import risk_facts
 from services.wildman_history_service import build_history_context
 from services.wildman_mainline_service import enrich_mainlines
+from wildman.candidate_discovery import DISCOVERY_VERSION
 from wildman.mainline import candidate_name_allowed
 
 
@@ -88,6 +89,8 @@ def candidate_theme_facts(theme: dict[str, Any]) -> dict[str, Any]:
                                       "完整证据": "主线雷达"}, "sources": []}
             for key, fact in theme["mainline_five_steps"].items() if isinstance(fact, dict)
         }
+    if isinstance(theme.get("candidate_discovery"), dict):
+        result["candidate_discovery"] = theme["candidate_discovery"]
     return result
 
 
@@ -160,6 +163,16 @@ class WildmanService:
     @staticmethod
     def _cache_fresh(payload: dict | None, target: date) -> bool:
         if not payload or payload.get("trade_date") != target.isoformat() or payload.get("rule_version") != RULE_VERSION:
+            return False
+        mainlines = payload.get("mainlines")
+        if payload.get("candidate_discovery_version") != DISCOVERY_VERSION or not isinstance(mainlines, list):
+            return False
+        if any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("candidate_discovery"), dict)
+            or row["candidate_discovery"].get("version") != DISCOVERY_VERSION
+            for row in mainlines
+        ):
             return False
         try:
             return 0 <= (shanghai_now() - datetime.fromisoformat(payload["updated_at"])).total_seconds() < 300
@@ -542,6 +555,7 @@ class WildmanService:
                 grouped[row["role"]["role"]].append(candidate_card(row))
             payload = {
                 "module_id": "WILDMAN_DECISION_V1", "rule_version": RULE_VERSION,
+                "candidate_discovery_version": DISCOVERY_VERSION,
                 "mode": "DECISION_SUPPORT", "trade_date": target.isoformat(), "updated_at": shanghai_now().isoformat(),
                 "cycle": cycle, "market_facts": snapshot["market"], "mainlines": theme_results,
                 "candidates": candidates, "candidate_groups": dict(grouped),

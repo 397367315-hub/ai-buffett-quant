@@ -3,6 +3,27 @@ import StockKlineButton from '@/components/StockKlineButton';
 
 type AnyMap = Record<string, any>;
 
+const DISCOVERY_VERSION = 'mainline-discovery-v1';
+
+const DISCOVERY_STATUS_ORDER: Record<string, number> = {
+  candidate: 0,
+  watch: 1,
+  unknown: 2,
+  excluded: 3,
+};
+
+const DISCOVERY_PATH_LABELS: Record<string, string> = {
+  catalyst: '催化驱动',
+  market: '市场驱动',
+  both: '催化+市场',
+};
+
+const CATALYST_LEVEL_LABELS: Record<string, string> = {
+  strong: '强催化已核验',
+  industry: '产业催化已核验',
+  unverified: '催化待核实',
+};
+
 const FIVE_STEPS = [
   { key: 'message_level', label: '消息级别', ruleId: 'WM_MAINLINE_STEP1', aliases: ['消息级别', '政策催化', '政策/消息催化', '消息催化'] },
   { key: 'first_day_move', label: '首日异动', ruleId: 'WM_MAINLINE_STEP2', aliases: ['首日异动', '首日爆发', '首板异动', '涨停潮'] },
@@ -100,6 +121,69 @@ function safeHttpUrl(value: unknown): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizedDiscovery(row: AnyMap): AnyMap | null {
+  const discovery = row.candidate_discovery;
+  return isObject(discovery) && discovery.version === DISCOVERY_VERSION ? discovery : null;
+}
+
+function discoveryStatus(discovery: AnyMap | null): string {
+  const status = String(discovery?.status || '').trim().toLowerCase();
+  return ['candidate', 'watch', 'excluded', 'unknown'].includes(status) ? status : 'unknown';
+}
+
+function discoveryLabel(discovery: AnyMap | null): string {
+  if (!discovery) return '候选发现待更新';
+  const label = safe(discovery.label, '');
+  const path = String(discovery.path || '').trim().toLowerCase();
+  const pathLabel = DISCOVERY_PATH_LABELS[path];
+  return [label || '待核验', pathLabel].filter(Boolean).join(' · ');
+}
+
+function discoveryStatusClass(status: string): string {
+  if (status === 'candidate') return 'border-accent/35 bg-accent/10 text-accent';
+  if (status === 'excluded') return 'border-down/35 bg-down/10 text-down';
+  if (status === 'watch') return 'border-warn/35 bg-warn/10 text-warn';
+  return 'border-border bg-bg text-text-secondary';
+}
+
+function catalystText(discovery: AnyMap | null): string {
+  const catalyst = isObject(discovery?.catalyst) ? discovery.catalyst : null;
+  if (!catalyst) return '催化待核实';
+  const level = String(catalyst.level || '').trim().toLowerCase();
+  const label = safe(catalyst.label, CATALYST_LEVEL_LABELS[level] || '催化待核实');
+  const reason = safe(catalyst.reason, '');
+  return reason ? `${label}：${reason}` : label;
+}
+
+function signalText(value: unknown): string {
+  const signal = passedValue(value);
+  if (signal === true) return '通过';
+  if (signal === false) return '未通过';
+  return '待核验';
+}
+
+function discoveryPriority(row: AnyMap, index: number): number {
+  const discovery = normalizedDiscovery(row);
+  const status = discoveryStatus(discovery);
+  const order = DISCOVERY_STATUS_ORDER[status] ?? 4;
+  return order * 100000 + index;
+}
+
+function DiscoverySourceLinks({ sources }: { sources: unknown }) {
+  const items = Array.isArray(sources) ? sources.filter(isObject) : [];
+  if (!items.length) return <span>未取得可核验来源</span>;
+  return <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+    {items.map((item, index) => {
+      const url = safeHttpUrl(item.url);
+      const title = safe(item.title || item.source || item.name, '原始来源');
+      const meta = [item.source, item.published_at || item.time || item.date].filter(Boolean).map(sourceLabel).join(' · ');
+      return url
+        ? <a key={`${url}-${index}`} href={url} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-accent hover:text-text" title={url}><span className="truncate">{title}{meta ? ` · ${meta}` : ''}</span><ExternalLink size={11} className="shrink-0" /></a>
+        : <span key={`${title}-${index}`} className="max-w-full break-words">{title}{meta ? ` · ${meta}` : ' · 链接不可用'}</span>;
+    })}
+  </span>;
 }
 
 function sourceLabel(value: unknown): string {
@@ -276,6 +360,51 @@ function progressCount(row: AnyMap, steps: AnyMap[]): number {
   return steps.reduce((count, step) => count + (passedValue(step.passed) === true ? 1 : 0), 0);
 }
 
+function DiscoveryPanel({ discovery }: { discovery: AnyMap | null }) {
+  if (!discovery) {
+    return <div className="mb-3 rounded border border-warn/30 bg-warn/5 px-3 py-2 text-xs leading-5 text-warn">
+      新版候选发现结果尚未更新：当前缓存不能自动标成主线候选。
+    </div>;
+  }
+  const status = discoveryStatus(discovery);
+  const catalyst = isObject(discovery.catalyst) ? discovery.catalyst : null;
+  const signals = isObject(discovery.signals) ? discovery.signals : {};
+  const reasons = Array.isArray(discovery.reasons) ? discovery.reasons.map((item: unknown) => readable(item, '')).filter(Boolean) : [];
+  const pending = Array.isArray(discovery.pending) ? discovery.pending.map((item: unknown) => readable(item, '')).filter(Boolean) : [];
+  return <section className="mb-3 rounded border border-border bg-bg/35 p-3 text-xs leading-5">
+    <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+      <div className="min-w-0">
+        <div className="break-words font-medium text-text">候选发现依据</div>
+        <div className="mt-0.5 break-words text-text-secondary">分析截面：{safe(discovery.as_of, '待返回')} · 证据日期：{safe(discovery.evidence_date, '待返回')} · 五步是否确认：{discovery.reference_confirmed === true ? '是' : discovery.reference_confirmed === false ? '否' : '待返回'}</div>
+      </div>
+      <span className={`shrink-0 rounded border px-2 py-1 text-[11px] ${discoveryStatusClass(status)}`}>{discoveryLabel(discovery)}</span>
+    </div>
+    <div className="mt-3 grid min-w-0 gap-2 sm:grid-cols-2">
+      <div className="min-w-0 rounded border border-border/70 px-2.5 py-2">
+        <div className="text-text-secondary">入选原因</div>
+        {reasons.length ? <ul className="mt-1 space-y-1 text-text">{reasons.map((reason, index) => <li key={`${reason}-${index}`} className="break-words">· {reason}</li>)}</ul> : <div className="mt-1 text-text-secondary">未返回明确原因，保持待核验。</div>}
+      </div>
+      <div className="min-w-0 rounded border border-border/70 px-2.5 py-2">
+        <div className="text-text-secondary">市场信号</div>
+        <div className="mt-1 grid grid-cols-2 gap-2 text-text">
+          <div className="min-w-0">扩散：{signalText(signals.breadth)}</div>
+          <div className="min-w-0">容量：{signalText(signals.capacity)}</div>
+        </div>
+        <div className="mt-1 break-words text-text-secondary">候选路径：{DISCOVERY_PATH_LABELS[String(discovery.path || '').trim().toLowerCase()] || '待核验'}</div>
+      </div>
+    </div>
+    <div className="mt-2 rounded border border-border/70 px-2.5 py-2">
+      <div className="text-text-secondary">催化核验</div>
+      <div className="mt-1 break-words text-text">{catalystText(discovery)}</div>
+      <div className="mt-1 flex min-w-0 items-start gap-1 text-text-secondary"><span className="shrink-0">来源：</span><DiscoverySourceLinks sources={catalyst?.sources} /></div>
+    </div>
+    <div className="mt-2 rounded border border-border/70 px-2.5 py-2">
+      <div className="text-text-secondary">待核事项</div>
+      {pending.length ? <div className="mt-1 flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-warn">{pending.map((item, index) => <span key={`${item}-${index}`} className="break-words">{item}</span>)}</div> : <div className="mt-1 text-text-secondary">后端未返回待核事项。</div>}
+    </div>
+  </section>;
+}
+
 function MainlineCard({ row }: { row: AnyMap }) {
   const { steps, modern } = normalizeSteps(row);
   const passedCount = progressCount(row, steps);
@@ -290,6 +419,9 @@ function MainlineCard({ row }: { row: AnyMap }) {
   const stocks = stockPool(row);
   const rawState = safe(row.state, '待确认');
   const state = confirmed ? '核心主线确认' : rawState === '核心主线确认' ? '主线候选' : rawState;
+  const discovery = normalizedDiscovery(row);
+  const discoveryBadgeStatus = discoveryStatus(discovery);
+  const fiveStepBadgeText = `五步参考法：${state} (${passedCount}/5)`;
   const boardIndex = isObject(row.board_index) ? row.board_index : null;
   const thresholdLines = formatThresholds(row.thresholds);
   const thresholdDisclosure = safe(row.thresholds?.disclosure, '以上为工程判定口径，用于可复核筛选，不声称是原文逐字阈值。');
@@ -297,10 +429,15 @@ function MainlineCard({ row }: { row: AnyMap }) {
     <header className="border-b border-border px-3 py-3 sm:px-4">
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 items-start gap-2"><Radar size={15} className="mt-0.5 shrink-0 text-accent" /><div className="min-w-0"><h3 className="break-words text-sm font-semibold text-text">{themeName}</h3></div></div>
-        <span className={`shrink-0 rounded border px-2 py-1 text-xs ${confirmed ? 'border-up/35 bg-up/10 text-up' : 'border-warn/35 bg-warn/10 text-warn'}`}>{state}</span>
+        <div className="flex min-w-0 flex-wrap justify-end gap-1.5">
+          <span className={`max-w-full rounded border px-2 py-1 text-xs ${discoveryStatusClass(discoveryBadgeStatus)}`}>{discoveryLabel(discovery)}</span>
+          <span className={`max-w-full rounded border px-2 py-1 text-xs ${confirmed ? 'border-up/35 bg-up/10 text-up' : 'border-warn/35 bg-warn/10 text-warn'}`}>{fiveStepBadgeText}</span>
+        </div>
       </div>
       <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-secondary">
         <span className="font-mono text-text">五步 {passedCount}/5</span>
+        <span>五步参考结论：{state}</span>
+        <span>五步是否确认：{row.confirmed === true ? '是' : row.confirmed === false ? '否' : '未返回'}</span>
         <span>触发日：{safe(row.trigger_date, '待确认')}</span>
         <span>验证日：{safe(row.validation_date, '待确认')}</span>
         <span>板块指数：{boardIndexText(boardIndex)}</span>
@@ -312,6 +449,7 @@ function MainlineCard({ row }: { row: AnyMap }) {
 
     <div className="p-3 sm:p-4">
       {!modern && <div className="mb-3 border border-warn/30 bg-warn/5 px-2.5 py-2 text-xs leading-5 text-warn">当前返回仍是旧版主线缓存，未沿用旧规则解释；刷新后读取新版五步证据。</div>}
+      <DiscoveryPanel discovery={discovery} />
       <div className="divide-y divide-border border-y border-border">
         {FIVE_STEPS.map((definition, index) => {
           const step = steps[index];
@@ -350,9 +488,9 @@ function MainlineCard({ row }: { row: AnyMap }) {
 }
 
 export default function WildmanMainlines({ rows }: { rows: AnyMap[] }) {
-  const mainlines = Array.isArray(rows) ? rows : [];
+  const mainlines = Array.isArray(rows) ? [...rows].sort((left, right) => discoveryPriority(left, rows.indexOf(left)) - discoveryPriority(right, rows.indexOf(right))) : [];
   return <div className="space-y-4">
-    <div className="border-l-2 border-accent bg-card px-3 py-2.5 text-xs leading-5 text-text-secondary"><div className="flex items-start gap-2"><ArrowRight size={14} className="mt-1 shrink-0 text-accent" /><span><b className="font-medium text-text">一个行业/板块/题材候选池 · 严格五步核验：</b>政策/消息催化 → 首日异动 → 容量中军 → 老龙异动 → 次日溢价验证。五步未齐不称为核心主线。</span></div></div>
+    <div className="border-l-2 border-accent bg-card px-3 py-2.5 text-xs leading-5 text-text-secondary"><div className="flex items-start gap-2"><ArrowRight size={14} className="mt-1 shrink-0 text-accent" /><span><b className="font-medium text-text">主线候选提前跟踪 · 五步参考法独立核验：</b>候选发现用于纳入观察；政策/消息催化 → 首日异动 → 容量中军 → 老龙异动 → 次日溢价验证仍需全通过才称核心主线确认。候选标签不是买入许可或交易授权。</span></div></div>
     {mainlines.length ? mainlines.map((row, index) => <MainlineCard key={row.theme_id || row.theme_name || index} row={row} />) : <div className="border border-border bg-card px-3 py-8 text-center text-xs text-text-secondary">当前没有可核验的行业/板块/题材候选。</div>}
   </div>;
 }
