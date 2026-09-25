@@ -111,7 +111,7 @@ class StrongStockV21Service:
     CANDIDATE_CACHE_PREFIX = "strong_stock_v21_full_market_v1"
     MAX_SHORTLIST = 120
     MAX_BOOK_REVIEW = 40
-    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V4"
+    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V5"
     _overview_lock = asyncio.Lock()
 
     @classmethod
@@ -129,7 +129,7 @@ class StrongStockV21Service:
             scan_metadata["date_match"] = source_date == target
             scan_metadata["data_quality"] = {"status": "COMPLETE" if source_date == target else "STALE", "source_date": source_date.isoformat() if source_date else None, "decision_date": target.isoformat(), "reviewed_count": 0, "attempted_count": 0}
             return 0
-        cutoff = target - timedelta(days=200)
+        cutoff = target - timedelta(days=650)
         async with async_session() as session:
             bars = list((await session.execute(select(StockDailyBar).where(
                 StockDailyBar.stock_code.in_(symbols), StockDailyBar.trade_date >= cutoff,
@@ -138,6 +138,8 @@ class StrongStockV21Service:
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for bar in bars:
             grouped[str(bar.stock_code)].append({"trade_date": bar.trade_date, "open": bar.open_price, "close": bar.close_price, "high": bar.high_price, "low": bar.low_price, "volume": bar.volume, "amount": bar.amount, "change_pct": bar.change_pct})
+        for symbol in grouped:
+            grouped[symbol] = grouped[symbol][-400:]
         reviewed = 0
         selection_date = scan_metadata.get("data_date")
         for row in rows:

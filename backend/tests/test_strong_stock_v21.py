@@ -323,7 +323,7 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
             row = await session.get(MarketDataCache, service._overview_cache_key(target, True, True))
             row.updated_at = datetime.utcnow() - timedelta(minutes=10)
             await session.commit()
-        with patch.object(service, "build", new=AsyncMock(side_effect=AssertionError("should hit normal TTL"))):
+        with patch("services.strong_stock_v21.is_a_share_market_session", return_value=False), patch.object(service, "build", new=AsyncMock(side_effect=AssertionError("should hit normal TTL"))):
             cached = await service.overview(target)
         self.assertTrue(cached["cache_used"])
         self.assertEqual(cached["data_quality"]["status"], "PARTIAL")
@@ -343,6 +343,23 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
             result = await service.overview(target)
         self.assertFalse(result["cache_used"])
         self.assertEqual(rebuild.await_count, 1)
+
+    async def test_book_review_window_covers_old_crash_within_400_bars(self):
+        target = date(2026, 8, 28)
+        bars = []
+        previous = 20.0
+        for index in range(400):
+            close = 18.4 if index == 100 else 20.0 if index < 100 else 19.0
+            bars.append(StockDailyBar(stock_code="600188", trade_date=target - timedelta(days=399 - index), open_price=close, close_price=close, high_price=close, low_price=close, volume=100, change_pct=(close / previous - 1) * 100))
+            previous = close
+        async with self.session_factory() as session:
+            session.add_all(bars)
+            await session.commit()
+        rows = [{"symbol": "600188", "stock_name": "测试", "zone": "强势A区", "zone_stage": "A_ACTIVE", "system_selection": {"run_date": target.isoformat()}}]
+        metadata = {"data_date": target.isoformat()}
+        await StrongStockV21Service()._attach_book_reviews(rows, target, metadata)
+        self.assertIn(rows[0]["book_review"]["status"], {"RISK", "INITIAL_WATCH"})
+        self.assertTrue(rows[0]["book_review"].get("data_quality", {}).get("same_day"))
 
     async def test_sector_rows_keeps_latest_window_and_returns_ascending_history(self):
         target = date(2026, 8, 28)
