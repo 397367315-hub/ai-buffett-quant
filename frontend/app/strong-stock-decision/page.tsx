@@ -69,6 +69,7 @@ function V21BridgeWorkspace() {
   const opportunities = allOpportunities.filter((item: AnyMap) => item.opportunity_pool !== 'RISK_EXCLUDE');
   const riskItems = allOpportunities.filter((item: AnyMap) => item.opportunity_pool === 'RISK_EXCLUDE');
   const candidates = (payload?.candidate_pool || payload?.candidates || allOpportunities).filter((item: AnyMap) => item);
+  const candidateReview = (item: AnyMap) => item.book_review || item.candidate_review || {};
   const sectorRows = (payload?.sectors || []).map((sector: AnyMap) => {
     const lifecycleState = sector.lifecycle?.state || sector.lifecycle?.status || sector.state || 'UNKNOWN';
     const sourceDate = sector.trade_date || sector.source_date || payload?.data_quality?.sector_source_date;
@@ -84,7 +85,6 @@ function V21BridgeWorkspace() {
   const migration = (payload?.migration?.paths || []).slice(0, 6);
   const [candidateStatus, setCandidateStatus] = useState('ALL');
   const [candidateSector, setCandidateSector] = useState('ALL');
-  const candidateReview = (item: AnyMap) => item.book_review || item.candidate_review || {};
   const candidateLabel = (item: AnyMap) => { const status = String(candidateReview(item).status || '').toUpperCase(); return item.opportunity_pool === 'RISK_EXCLUDE' || ['RISK', 'RISK_EXCLUDE', 'REJECTED'].includes(status) ? '风险淘汰' : status === 'STRUCTURE_CANDIDATE' ? '结构研究候选' : '初筛观察'; };
   const candidateLabelNote = (item: AnyMap) => candidateReview(item).label || candidateReview(item).status || (candidates.indexOf(item) >= 40 ? '排队/未核验' : '待核验');
   const candidateSectors = Array.from(new Set(candidates.map((item: AnyMap) => item.sector_name).filter(Boolean))) as string[];
