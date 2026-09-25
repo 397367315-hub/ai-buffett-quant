@@ -66,7 +66,10 @@ def summarize_candidate_review(
         # MA60 is an engine feature, not a numerical rule from the books.
         reasons.append("本地日线少于系统 MA60 计算所需样本")
     zone = str((v2.get("zones") or {}).get("zone") or "") if v2 else ""
-    risk_priority = bool(zone == "风险C区" or (v2.get("sell") or {}).get("risk_priority") == "RISK") if v2 else False
+    pre_buy = (v2.get("buy_point") or {}).get("effective_buy_permission") == "BLOCK" if v2 else False
+    pre_score = (v2.get("risk") or {}).get("overall_score") if v2 else None
+    pre_hard = any(isinstance(row, dict) and row.get("status") == "CONFIRMED" and str(row.get("skill_id") or "").startswith("HQS_RISK_") for row in (v2 or {}).get("signals") or [])
+    risk_priority = bool(zone == "风险C区" or (v2.get("sell") or {}).get("risk_priority") == "RISK" or pre_buy or (isinstance(pre_score, (int, float)) and pre_score >= 72) or pre_hard) if v2 else False
     evidence_quality = (hunter_evidence or {}).get("data_quality") or {}
     v2_quality = (v2 or {}).get("data_quality") or {}
     if evidence_quality.get("point_in_time") is not True:
@@ -80,12 +83,18 @@ def summarize_candidate_review(
     signals = [row for row in v2.get("signals") or [] if isinstance(row, dict)]
     patterns = [_signal_brief(row) for row in signals if row.get("status") in ACTIVE and str(row.get("skill_id") or "").startswith(PATTERN_PREFIXES) and not str(row.get("skill_id") or "").startswith("BXDT_PEAK_")]
     pattern_risks = [_signal_brief(row) for row in signals if (row.get("status") in ACTIVE or row.get("status") == "INVALID") and str(row.get("skill_id") or "").startswith("BXDT_PEAK_")]
-    star_risks = [_signal_brief(row) for row in signals if (row.get("status") in ACTIVE or row.get("status") == "INVALID") and str(row.get("skill_id") or "").startswith("BXZX_CLASSIC_TOP_")]
+    star_risks = [_signal_brief(row) for row in signals if row.get("status") == "CONFIRMED" and str(row.get("skill_id") or "").startswith("BXZX_CLASSIC_TOP_")]
     positive_stars = [_signal_brief(row) for row in signals if row.get("status") in ACTIVE and str(row.get("skill_id") or "").startswith("BXZX_") and not str(row.get("skill_id") or "").startswith("BXZX_CLASSIC_TOP_")]
-    book_risk = bool(zone == "风险C区" or (v2.get("sell") or {}).get("risk_priority") == "RISK" or star_risks)
-    hunter_status = "RISK" if book_risk else "STRUCTURE" if zone in {"强势A区", "强势B区"} else "WATCH"
+    buy_blocked = (v2.get("buy_point") or {}).get("effective_buy_permission") == "BLOCK"
+    risk_score = (v2.get("risk") or {}).get("overall_score")
+    hard_risk_signals = [row for row in signals if str(row.get("skill_id") or "").startswith("HQS_RISK_") and row.get("status") == "CONFIRMED"]
+    soft_risk_signals = [row for row in signals if row.get("status") in {"POSSIBLE", "FORMING"} and str(row.get("skill_id") or "").startswith("HQS_RISK_")]
+    book_risk = bool(zone == "风险C区" or (v2.get("sell") or {}).get("risk_priority") == "RISK" or star_risks or buy_blocked or (isinstance(risk_score, (int, float)) and risk_score >= 72) or hard_risk_signals)
+    hunter_status = "RISK" if book_risk else "WATCH" if soft_risk_signals else "STRUCTURE" if zone in {"强势A区", "强势B区"} else "WATCH"
     if book_risk:
         status, label = "RISK", "书籍风险优先"
+    elif soft_risk_signals:
+        status, label = "INITIAL_WATCH", "初筛观察"
     elif hunter_status == "STRUCTURE":
         status, label = "STRUCTURE_CANDIDATE", "强势结构研究候选"
     else:
@@ -98,7 +107,9 @@ def summarize_candidate_review(
     if positive_stars:
         reasons.append("星线需前置位置和后续价量确认")
     if book_risk:
-        reasons.append("C区或顶部证据压过正向形态")
+        reasons.append("买点阻断、高风险分、C区或顶部证据压过正向形态")
+    if soft_risk_signals:
+        reasons.append("风险信号仍处于形成/可能阶段，仅作风险观察")
     if pattern_risks:
         reasons.append("接近历史高点仅作风险观察，不能作为正向大形态")
     if not patterns and not positive_stars:

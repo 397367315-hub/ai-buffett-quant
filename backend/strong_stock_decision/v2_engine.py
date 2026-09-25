@@ -1034,11 +1034,13 @@ def _stock_character(features: dict[str, Any]) -> dict[str, Any]:
 
 
 def _buy_point(features: dict[str, Any], zones: dict[str, Any], main_force: dict[str, Any], stars: list[dict[str, Any]], patterns: list[dict[str, Any]], risk: dict[str, Any]) -> dict[str, Any]:
-    active_stars = [item for item in stars if item.get("status") in {"POSSIBLE", "FORMING", "CONFIRMED"} and not item.get("skill_id", "").startswith("BXZX_CLASSIC_TOP")]
+    active_statuses = {"POSSIBLE", "FORMING", "CONFIRMED"}
+    classic_top = [item for item in stars if item.get("skill_id", "").startswith("BXZX_CLASSIC_TOP") and item.get("status") in active_statuses]
+    active_stars = [item for item in stars if item.get("status") in active_statuses and not item.get("skill_id", "").startswith("BXZX_CLASSIC_TOP")]
     active_patterns = [item for item in patterns if item.get("status") in {"POSSIBLE", "FORMING", "CONFIRMED"}]
     has_attack = any(item["skill_id"] in {"BXZX_009", "BXZX_010"} and item["status"] in {"FORMING", "CONFIRMED"} for item in active_stars)
     has_classic = any(item["skill_id"].startswith("BXZX_CLASSIC") and item["status"] in {"FORMING", "CONFIRMED"} for item in active_stars)
-    danger = (risk.get("overall_score") or 0) >= 72 or zones["zone"] == "风险C区"
+    danger = (risk.get("overall_score") or 0) >= 72 or zones["zone"] == "风险C区" or bool(classic_top)
     if danger:
         legacy_level = "臆想买点" if active_stars or active_patterns else "一般买点"
     elif has_attack and zones["zone"] in {"强势A区", "强势B区"} and main_force.get("direction") == "偏多":
@@ -1054,7 +1056,9 @@ def _buy_point(features: dict[str, Any], zones: dict[str, Any], main_force: dict
     level = "仅研究观察" if blocked else legacy_level
     permission = "BLOCK" if blocked else "RESEARCH_ONLY"
     reason = (
-        "风险C区/高风险优先阻断积极买点；存在主动形态研究信号但仅供研究观察。"
+        "顶部星线候选待后续破位/失败确认，但风险优先；仅供研究观察。"
+        if classic_top
+        else "风险C区/高风险优先阻断积极买点；存在主动形态研究信号但仅供研究观察。"
         if blocked and (active_stars or active_patterns)
         else "风险C区/高风险优先阻断积极买点，当前未形成明确主动形态；仅供研究观察。"
         if blocked

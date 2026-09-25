@@ -49,7 +49,7 @@ function V21BridgeWorkspace() {
         exclude_gem: String(excludeGem),
         compact: 'true',
       });
-      const response = await apiFetch<{ data: AnyMap }>(`/strong-stock-decision/v21/overview?${params}`, { timeoutMs: 45000 });
+      const response = await apiFetch<{ data: AnyMap }>(`/strong-stock-decision/v21/overview?${params}`, { timeoutMs: 65000 });
       setPayload(response.data);
     } catch (caught) {
       setError(friendlyApiError(caught, 'V2.1桥接层暂时不可用'));
@@ -467,7 +467,7 @@ export default function StrongStockDecisionPage() {
     : scoreComponents.reduce((total, item) => total + (item.available !== false && finite(item.value) ? Number(item.weight || 0) * 100 : 0), 0);
   const sourceName = String(sourceStatus.daily_bars_source || '').includes('tencent') ? '腾讯行情' : sourceStatus.daily_bars_source ? '系统日线缓存' : undefined;
   const v2 = data?.v2 || null;
-  const riskPriority = zone.zone === '风险C区' || (finite(v2?.risk?.overall_score) && v2.risk.overall_score >= 72);
+  const riskPriority = zone.zone === '风险C区' || (finite(v2?.risk?.overall_score) && v2.risk.overall_score >= 72) || v2?.sell?.risk_priority === 'RISK' || v2?.buy_point?.effective_buy_permission === 'BLOCK';
 
   const renderDetail = () => {
     if (!data) return null;
@@ -512,6 +512,7 @@ export default function StrongStockDecisionPage() {
           {loading && <div className="strong-loading"><Loader2 size={17} className="animate-spin" /><span>正在核验日线、量价、主力与三书技能…</span><div><i style={{ width: `${progress}%` }} /></div><b>{progress}%</b></div>}
 
           {!data && !loading ? <div className="strong-empty-page"><Search size={28} /><p>输入六位股票代码开始分析</p></div> : data && <>
+            {v2 && riskPriority && <div className="strong-panel strong-panel-risk mb-4 border-down/50 bg-down/5" role="alert"><div className="strong-panel-body flex flex-wrap items-center justify-between gap-2"><div><b className="text-down">风险优先：暂停积极建议</b><p className="mt-1 text-[11px] leading-5 text-text-secondary">顶部星线/风险状态优先；原始买点形态仅保留为研究观察，不代表有效买入许可；本系统仅辅助判断，不自动下单。</p></div><span className="shrink-0 rounded border border-down/40 px-2 py-1 text-[10px] text-down">{safeText(v2.buy_point?.level, '风险阻断')}</span></div></div>}
             <div className="strong-primary-grid">
               <Panel title="实时K线图（日线）" icon={LineChart} meta={<span>{data?.trade_date || '--'} · {bars.length}根日线</span>} className="strong-kline-panel">
                 <div className="strong-ma-legend"><span>MA5:{numberText(data?.engine_features?.ma5)}</span><span>MA10:{numberText(data?.engine_features?.ma10)}</span><span>MA20:{numberText(data?.engine_features?.ma20)}</span><span>MA30:{numberText(data?.v2?.moving_average?.values?.ma30)}</span><span>MA60:{numberText(data?.engine_features?.ma60)}</span></div>
@@ -522,9 +523,9 @@ export default function StrongStockDecisionPage() {
                 <div className="strong-score-content"><ProgressGauge value={score} /><div className="strong-score-list">{scoreComponents.map((item) => <MetricLine key={item.key} label={safeText(item.label, item.key)} value={scoreText(item.value)} valueClass={scoreTone(item.value)} />)}</div></div>
                 <div className="strong-score-note">{safeText(backendScore.method, '可用组件按权重归一化')} · 数据覆盖 {finite(scoreCoverage) ? `${Math.round(scoreCoverage)}%` : '--'} · 评分仅用于结构排序参考。</div>
               </Panel>
-              <Panel title="ACTION 建议" icon={Target} className="strong-action-panel" risk={decision.action === 'RISK' || decision.action === 'EXIT'}>
+              <Panel title="V1原 ACTION 研究状态" icon={Target} className="strong-action-panel" risk={decision.action === 'RISK' || decision.action === 'EXIT'}>
                 <div className={`strong-action-heading ${decision.action === 'RISK' || decision.action === 'EXIT' ? 'is-risk' : ''}`}>{safeText(decision.primary_skill, '等待结构')}<span>→</span>{actionLabel(decision.action)}</div>
-                <p className="strong-action-summary">{decision.action === 'RISK' || decision.action === 'EXIT' ? '风险信号优先，暂停攻击类解释，等待结构修复或明确失效。' : '满足当前阶段的部分条件，仍需等待后续价格、成交和板块互证。'}</p>
+                <p className="strong-action-summary">以顶部风险提示/三书有效状态为准。{decision.action === 'RISK' || decision.action === 'EXIT' ? '风险信号优先，暂停攻击类解释，等待结构修复或明确失效。' : '满足当前阶段的部分条件，仍需等待后续价格、成交和板块互证。'}</p>
                 <div className="strong-action-subtitle">下一步确认：</div>
                 <ol>{(decision.next_confirmation || []).slice(0, 3).map((item: string) => <li key={item}>{item}</li>)}</ol>
                 <div className="strong-action-subtitle is-risk-text">失效条件：</div>
@@ -568,12 +569,6 @@ export default function StrongStockDecisionPage() {
             </section>
 
             {v2 && <>
-              {riskPriority && <div className="strong-panel strong-panel-risk mb-4 border-down/50 bg-down/5" role="alert">
-                <div className="strong-panel-body flex flex-wrap items-center justify-between gap-2">
-                  <div><b className="text-down">风险优先：暂停积极建议</b><p className="mt-1 text-[11px] leading-5 text-text-secondary">当前为风险C区或高风险状态。原始买点形态仅保留为研究观察，不代表有效买入许可；本系统仅辅助判断，不自动下单。</p></div>
-                  <span className="shrink-0 rounded border border-down/40 px-2 py-1 text-[10px] text-down">{safeText(v2.buy_point?.level, '风险阻断')}</span>
-                </div>
-              </div>}
               <StrongStockV2Dashboard v2={v2} symbol={symbol} onRefresh={() => void loadOverview(symbol, true)} />
             </>}
             <footer className="strong-terminal-footer"><span>免责声明：本系统基于三本书理论与可核验数据开发，仅供学习和研究参考，不构成投资建议。</span><span><b>ⓘ</b> Shadow模式：仅分析不执行交易</span></footer>

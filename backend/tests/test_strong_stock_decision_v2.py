@@ -128,6 +128,19 @@ class StrongStockV2EngineTests(unittest.TestCase):
         self.assertEqual(result["classic_top"]["state"], "OBSERVING")
         self.assertEqual(result["risk_priority"], "RISK")
 
+    def test_top_star_blocks_buy_point_even_in_a_zone_with_low_risk_score(self):
+        result = _buy_point(
+            {},
+            {"zone": "强势A区"},
+            {"direction": "偏多"},
+            [{"skill_id": "BXZX_CLASSIC_TOP_001", "status": "FORMING"}],
+            [],
+            {"overall_score": 20},
+        )
+        self.assertEqual(result["level"], "仅研究观察")
+        self.assertEqual(result["effective_buy_permission"], "BLOCK")
+        self.assertIn("顶部星线候选", result["reason"])
+
     def test_star_output_discloses_book_follow_through_boundary(self):
         result = self.build()
         star_signals = [item for item in result["signals"] if item["skill_id"].startswith("BXZX_") and item["skill_id"] != "BXZX_013"]

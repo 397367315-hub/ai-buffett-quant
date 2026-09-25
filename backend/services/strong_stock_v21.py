@@ -111,7 +111,7 @@ class StrongStockV21Service:
     CANDIDATE_CACHE_PREFIX = "strong_stock_v21_full_market_v1"
     MAX_SHORTLIST = 120
     MAX_BOOK_REVIEW = 40
-    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V2"
+    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V4"
     _overview_lock = asyncio.Lock()
 
     @classmethod
@@ -127,7 +127,7 @@ class StrongStockV21Service:
             source_date = _date(scan_metadata.get("data_date"))
             scan_metadata["decision_date"] = target.isoformat()
             scan_metadata["date_match"] = source_date == target
-            scan_metadata["data_quality"] = {"status": "COMPLETE" if source_date == target else "STALE", "source_date": source_date.isoformat() if source_date else None, "decision_date": target.isoformat()}
+            scan_metadata["data_quality"] = {"status": "COMPLETE" if source_date == target else "STALE", "source_date": source_date.isoformat() if source_date else None, "decision_date": target.isoformat(), "reviewed_count": 0, "attempted_count": 0}
             return 0
         cutoff = target - timedelta(days=200)
         async with async_session() as session:
@@ -160,7 +160,7 @@ class StrongStockV21Service:
         source_date = _date(scan_metadata.get("data_date"))
         scan_metadata["decision_date"] = target.isoformat()
         scan_metadata["date_match"] = source_date == target
-        scan_metadata["data_quality"] = {"status": "STALE" if source_date != target else "COMPLETE" if reviewed == len(rows) and rows else "PARTIAL", "source_date": source_date.isoformat() if source_date else None, "decision_date": target.isoformat(), "message": None if source_date == target and reviewed == len(rows) else "初筛来源日或本地日线证据不完整，三书结果仅保留待核验/观察"}
+        scan_metadata["data_quality"] = {"status": "STALE" if source_date != target else "COMPLETE" if reviewed == len(rows) and rows else "PARTIAL", "source_date": source_date.isoformat() if source_date else None, "decision_date": target.isoformat(), "reviewed_count": reviewed, "attempted_count": len(rows), "message": None if source_date == target and reviewed == len(rows) else "初筛来源日或本地日线证据不完整，三书结果仅保留待核验/观察"}
         return reviewed
 
     def __init__(self) -> None:
@@ -792,7 +792,8 @@ class StrongStockV21Service:
                 updated_at = getattr(row, "updated_at", None)
                 quality = snapshot.get("data_quality") or {}
                 candidate_quality = quality.get("candidate_scan") or {}
-                low_quality = quality.get("status") != "COMPLETE" or candidate_quality.get("status") != "COMPLETE"
+                stale_like = quality.get("status") == "STALE" or candidate_quality.get("status") == "STALE" or candidate_quality.get("reviewed_count") == 0
+                low_quality = stale_like
                 effective_ttl = timedelta(minutes=2 if is_a_share_market_session(shanghai_now()) else 5) if low_quality else ttl
                 if not allow_expired and (not isinstance(updated_at, datetime) or now - updated_at > effective_ttl):
                     return None

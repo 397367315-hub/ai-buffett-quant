@@ -58,6 +58,30 @@ class StrongStockV21EngineTests(unittest.TestCase):
         self.assertFalse(review["risk_priority"])
         self.assertNotEqual(review["status"], "RISK")
 
+    def test_a_zone_high_risk_block_cannot_be_structure_candidate(self):
+        v2 = {"trade_date": "2026-08-28", "zones": {"zone": "强势A区"}, "data_quality": {"price_basis": "OHLC"}, "buy_point": {"effective_buy_permission": "BLOCK"}, "risk": {"overall_score": 80}, "sell": {}, "signals": [{"skill_id": "HQS_RISK_004", "status": "CONFIRMED"}]}
+        review = summarize_candidate_review(v2, {"data_quality": {"point_in_time": True}}, decision_date="2026-08-28", selection_date="2026-08-28", bar_count=60)
+        self.assertEqual(review["status"], "RISK")
+        self.assertTrue(review["risk_priority"])
+
+    def test_a_zone_possible_risk_only_stays_initial_watch(self):
+        v2 = {"trade_date": "2026-08-28", "zones": {"zone": "强势A区"}, "data_quality": {"price_basis": "OHLC"}, "buy_point": {"effective_buy_permission": "RESEARCH_ONLY"}, "risk": {"overall_score": 40}, "sell": {}, "signals": [{"skill_id": "HQS_RISK_004", "status": "POSSIBLE"}]}
+        review = summarize_candidate_review(v2, {"data_quality": {"point_in_time": True}}, decision_date="2026-08-28", selection_date="2026-08-28", bar_count=60)
+        self.assertEqual(review["status"], "INITIAL_WATCH")
+        self.assertFalse(review["risk_priority"])
+
+    def test_a_zone_confirmed_risk_is_risk(self):
+        v2 = {"trade_date": "2026-08-28", "zones": {"zone": "强势A区"}, "data_quality": {"price_basis": "OHLC"}, "buy_point": {"effective_buy_permission": "RESEARCH_ONLY"}, "risk": {"overall_score": 40}, "sell": {}, "signals": [{"skill_id": "HQS_RISK_004", "status": "CONFIRMED"}]}
+        review = summarize_candidate_review(v2, {"data_quality": {"point_in_time": True}}, decision_date="2026-08-28", selection_date="2026-08-28", bar_count=60)
+        self.assertEqual(review["status"], "RISK")
+
+    def test_cross_day_high_risk_is_only_risk_pending_verification(self):
+        v2 = {"trade_date": "2026-08-28", "zones": {"zone": "强势A区"}, "data_quality": {"price_basis": "OHLC"}, "buy_point": {"effective_buy_permission": "BLOCK"}, "risk": {"overall_score": 80}, "sell": {}, "signals": [{"skill_id": "HQS_RISK_004", "status": "CONFIRMED"}]}
+        review = summarize_candidate_review(v2, {"data_quality": {"point_in_time": False}}, decision_date="2026-08-28", selection_date="2026-08-27", bar_count=60)
+        self.assertEqual(review["status"], "UNVERIFIED")
+        self.assertTrue(review["risk_observation"])
+        self.assertFalse(review["risk_priority"])
+
     def test_candidate_review_needs_point_in_time_ohlc(self):
         v2 = {"trade_date": "2026-08-28", "zones": {"zone": "强势A区"}, "data_quality": {"price_basis": "CLOSE_PROXY"}, "sell": {}, "signals": []}
         review = summarize_candidate_review(v2, {"data_quality": {"point_in_time": False}}, decision_date="2026-08-28", selection_date="2026-08-28", bar_count=60)
@@ -288,6 +312,37 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stale["cache_stale"])
         self.assertEqual(stale["data_quality"]["status"], "STALE")
         self.assertEqual(stale["data_quality"]["cache_fallback_error"], "RuntimeError")
+
+    async def test_same_day_partial_with_available_reviews_keeps_normal_ttl(self):
+        target = date(2026, 8, 28)
+        payload = {"trade_date": target.isoformat(), "market": {}, "opportunities": [], "data_quality": {"status": "PARTIAL", "candidate_scan": {"status": "PARTIAL", "reviewed_count": 30, "attempted_count": 40}}}
+        service = StrongStockV21Service()
+        with patch.object(service, "build", new=AsyncMock(return_value=payload)):
+            await service.overview(target)
+        async with self.session_factory() as session:
+            row = await session.get(MarketDataCache, service._overview_cache_key(target, True, True))
+            row.updated_at = datetime.utcnow() - timedelta(minutes=10)
+            await session.commit()
+        with patch.object(service, "build", new=AsyncMock(side_effect=AssertionError("should hit normal TTL"))):
+            cached = await service.overview(target)
+        self.assertTrue(cached["cache_used"])
+        self.assertEqual(cached["data_quality"]["status"], "PARTIAL")
+
+    async def test_stale_snapshot_rebuilds_after_short_ttl(self):
+        target = date(2026, 8, 28)
+        stale = {"trade_date": target.isoformat(), "market": {}, "opportunities": [], "data_quality": {"status": "STALE", "candidate_scan": {"status": "STALE", "reviewed_count": 30, "attempted_count": 40}}}
+        fresh = {**stale, "data_quality": {"status": "COMPLETE", "candidate_scan": {"status": "COMPLETE", "reviewed_count": 40, "attempted_count": 40}}}
+        service = StrongStockV21Service()
+        with patch.object(service, "build", new=AsyncMock(return_value=stale)):
+            await service.overview(target)
+        async with self.session_factory() as session:
+            row = await session.get(MarketDataCache, service._overview_cache_key(target, True, True))
+            row.updated_at = datetime.utcnow() - timedelta(minutes=10)
+            await session.commit()
+        with patch.object(service, "build", new=AsyncMock(return_value=fresh)) as rebuild:
+            result = await service.overview(target)
+        self.assertFalse(result["cache_used"])
+        self.assertEqual(rebuild.await_count, 1)
 
     async def test_sector_rows_keeps_latest_window_and_returns_ascending_history(self):
         target = date(2026, 8, 28)
