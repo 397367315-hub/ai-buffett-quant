@@ -1386,4 +1386,36 @@ def build_v2(context: dict[str, Any], legacy: dict[str, Any] | None = None) -> d
     }
 
 
-__all__ = ["V2_ENGINE_VERSION", "build_v2"]
+def build_v2_candidate(context: dict[str, Any], legacy: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Bounded candidate path: long history only feeds the risk layer.
+
+    Shape, MA and star calculations use the latest 160 bars; the full latest
+    400 bars remain available to the historical crash/top risk detector.
+    """
+    full_bars = _normalise_bars(context.get("bars") or [])[-400:]
+    short_context = {**context, "bars": full_bars[-160:]}
+    result = build_v2(short_context, legacy=legacy)
+    full_features = _series_features(full_bars)
+    full_risk = _risk(full_features)
+    short_bars = full_bars[-160:]
+    short_features = _series_features(short_bars)
+    result["risk"] = full_risk
+    zones = result.get("zones") or {}
+    patterns = result.get("big_patterns") or []
+    stars = result.get("stars") or []
+    main_force = result.get("main_force") or {}
+    ma = result.get("moving_average") or {}
+    theme = result.get("theme") or {}
+    sell = _sell(full_risk, zones, stars, short_features)
+    buy = _buy_point(short_features, zones, main_force, stars, patterns, full_risk)
+    consensus = _consensus(zones, patterns, stars, main_force, theme, sell, ((legacy or {}).get("decision") if legacy else None))
+    result["sell"], result["buy_point"], result["consensus"] = sell, buy, consensus
+    replacement = list(full_risk.get("signals") or []) + list(sell.get("signals") or []) + _buy_signals(buy)
+    replacement_ids = {item.get("skill_id") for item in replacement}
+    result["signals"] = [item for item in result.get("signals") or [] if item.get("skill_id") not in replacement_ids]
+    result["signals"].extend(replacement)
+    result["data_quality"] = {**(result.get("data_quality") or {}), "bar_count": len(short_bars), "short_bar_count": len(short_bars), "long_bar_count": len(full_bars), "risk_history_window": "400_BARS", "candidate_path": True}
+    return result
+
+
+__all__ = ["V2_ENGINE_VERSION", "build_v2", "build_v2_candidate"]

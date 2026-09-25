@@ -51,7 +51,7 @@ from strong_stock_decision.v21_engine import (
 )
 from strong_stock_decision.book_evidence import summarize_hunter_evidence
 from strong_stock_decision.candidate_review import summarize_candidate_review
-from strong_stock_decision.v2_engine import build_v2
+from strong_stock_decision.v2_engine import build_v2_candidate
 
 
 def _date(value: Any) -> date | None:
@@ -111,7 +111,7 @@ class StrongStockV21Service:
     CANDIDATE_CACHE_PREFIX = "strong_stock_v21_full_market_v1"
     MAX_SHORTLIST = 120
     MAX_BOOK_REVIEW = 40
-    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V5"
+    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V6"
     _overview_lock = asyncio.Lock()
 
     @classmethod
@@ -148,7 +148,7 @@ class StrongStockV21Service:
             source_date = (row.get("system_selection") or {}).get("run_date") or selection_date
             legacy_zone = row.get("zone") if row.get("zone") not in {None, "UNKNOWN"} else None
             legacy = {"best_trading_zone": {"zone": legacy_zone, "stage": row.get("zone_stage")}} if legacy_zone else None
-            v2 = build_v2({"symbol": symbol, "name": row.get("stock_name"), "bars": point_bars, "sector": None, "sector_flow": [], "source_status": {"source": "local_daily_bars"}}, legacy=legacy)
+            v2 = build_v2_candidate({"symbol": symbol, "name": row.get("stock_name"), "bars": point_bars, "sector": None, "sector_flow": [], "source_status": {"source": "local_daily_bars"}}, legacy=legacy)
             evidence = summarize_hunter_evidence(context={"bars": point_bars, "as_of": target.isoformat()}, zone=(v2.get("zones") or {}).get("zone"))
             review = summarize_candidate_review(v2, evidence, decision_date=target.isoformat(), selection_date=source_date, bar_count=len(point_bars))
             review["zone_source"] = "V1_EXISTING" if legacy_zone else "V2_RESEARCH_PROXY"

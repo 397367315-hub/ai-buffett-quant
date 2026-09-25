@@ -18,7 +18,7 @@ from strong_stock_decision.v21_engine import (
 )
 from strong_stock_decision.book_evidence import summarize_hunter_evidence
 from strong_stock_decision.candidate_review import summarize_candidate_review
-from strong_stock_decision.v2_engine import build_v2
+from strong_stock_decision.v2_engine import build_v2, build_v2_candidate
 
 
 def sector_history(count=6, *, improving=True):
@@ -360,6 +360,23 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
         await StrongStockV21Service()._attach_book_reviews(rows, target, metadata)
         self.assertIn(rows[0]["book_review"]["status"], {"RISK", "INITIAL_WATCH"})
         self.assertTrue(rows[0]["book_review"].get("data_quality", {}).get("same_day"))
+
+    def test_candidate_shortcut_matches_full_risk_and_bounds_shape_window(self):
+        target = date(2026, 8, 28)
+        bars = []
+        previous = 20.0
+        for index in range(400):
+            close = 18.4 if index == 100 else 20.0 if index < 100 else 19.0
+            bars.append({"trade_date": target - timedelta(days=399 - index), "open": close, "close": close, "high": close, "low": close, "volume": 100, "change_pct": (close / previous - 1) * 100})
+            previous = close
+        full = build_v2({"symbol": "600188", "bars": bars})
+        candidate = build_v2_candidate({"symbol": "600188", "bars": bars})
+        self.assertEqual(candidate["risk"]["overall_score"], full["risk"]["overall_score"])
+        self.assertEqual({(row["skill_id"], row["status"]) for row in candidate["risk"]["signals"]}, {(row["skill_id"], row["status"]) for row in full["risk"]["signals"]})
+        self.assertEqual(candidate["buy_point"]["effective_buy_permission"], full["buy_point"]["effective_buy_permission"])
+        self.assertEqual(candidate["sell"]["risk_priority"], full["sell"]["risk_priority"])
+        self.assertEqual(candidate["data_quality"]["short_bar_count"], 160)
+        self.assertEqual(candidate["data_quality"]["long_bar_count"], 400)
 
     async def test_sector_rows_keeps_latest_window_and_returns_ascending_history(self):
         target = date(2026, 8, 28)
