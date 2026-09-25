@@ -114,10 +114,16 @@ function Metric({ label, value, detail, valueClass = '' }: { label: string; valu
 }
 
 function SignalCard({ signal, compact = false }: { signal: AnyMap; compact?: boolean }) {
+  const isTop = String(signal.skill_id || '').startsWith('BXZX_CLASSIC_TOP');
+  const verification = (signal.evidence || []).find((item: AnyMap) => item.feature === 'book_verification');
+  const bookSource = signal.book_source || {};
+  const pageText = bookSource.page_start || bookSource.page_end ? `${bookSource.page_start || '--'}${bookSource.page_end ? `-${bookSource.page_end}` : ''}` : '书页待核对';
+  const pageType = bookSource.page_type === 'pdf' ? 'PDF页' : bookSource.page_type === 'book' ? '书内页码' : '页码类型待核对';
+  const detectionText = signal.detection_basis === 'ENGINE_FEATURE' ? '数值识别是系统量化代理' : signal.detection_basis;
   return <article className={`strong-v2-signal-card ${compact ? 'is-compact' : ''}`}>
-    <div className="strong-v2-signal-head"><div className="min-w-0"><b>{text(signal.name || signal.original_name)}</b><code>{text(signal.skill_id, '')}</code></div><StatusPill value={signal.status} /></div>
+    <div className="strong-v2-signal-head"><div className="min-w-0"><b>{text(signal.name || signal.original_name)}</b><code>{text(signal.skill_id, '')}</code></div><div className="flex items-center gap-1.5"><StatusPill value={signal.status} />{isTop && <span className="strong-v2-status is-invalid">风险侧</span>}</div></div>
     {signal.subtype && signal.subtype !== signal.name && <div className="strong-v2-subtype">子型：{text(signal.subtype)}</div>}
-    {!compact && <><p className="strong-v2-mechanism">{text(signal.mechanism || signal.forming_mechanism, '形成机理待补')}</p><Evidence items={signal.evidence} limit={2} />{signal.counter_evidence?.length > 0 && <div className="strong-v2-counter"><span>反证</span><Evidence items={signal.counter_evidence} limit={1} /></div>}<div className="strong-v2-confirm-grid"><div><span>下一步确认</span><p>{text(signal.next_confirmation?.[0], '等待后续价格与成交确认')}</p></div><div><span>失效条件</span><p>{text(signal.invalidation?.[0], '关键结构失守')}</p></div></div></>}
+    {!compact && <><p className="strong-v2-mechanism">{text(signal.mechanism || signal.forming_mechanism, '形成机理待补')}</p><p className="strong-v2-note">书源：{text(bookSource.book || signal.book, '书名待核对')} · {text(bookSource.chapter, '章节待核对')} · {pageText}（{pageType}）</p>{detectionText && <p className="strong-v2-note">{detectionText}</p>}<Evidence items={signal.evidence} limit={3} />{verification && <p className="strong-v2-note">书籍核验：{text(verification.text)} · 系统量化代理</p>}{signal.counter_evidence?.length > 0 && <div className="strong-v2-counter"><span>反证</span><Evidence items={signal.counter_evidence} limit={1} /></div>}<div className="strong-v2-confirm-grid"><div><span>下一步确认</span><p>{text(signal.next_confirmation?.[0], '等待后续价格与成交确认')}</p></div><div><span>失效条件</span><p>{text(signal.invalidation?.[0], '关键结构失守')}</p></div></div></>}
     {finite(signal.confidence) && <div className="strong-v2-signal-confidence"><span>工程置信度</span><b>{numberText(signal.confidence, 0)}%</b></div>}
   </article>;
 }

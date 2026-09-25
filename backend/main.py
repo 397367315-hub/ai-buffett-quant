@@ -21,6 +21,7 @@ from api.strong_stock_v21_routes import router as strong_stock_v21_router
 from api.stock_selection_review_routes import router as stock_selection_review_router
 from api.wildman_routes import router as wildman_router
 from api.wildman_account_routes import router as wildman_account_router
+from api.decision_authority_routes import router as decision_authority_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -119,6 +120,7 @@ app.include_router(numcat_router)
 app.include_router(stock_selection_review_router)
 app.include_router(wildman_router)
 app.include_router(wildman_account_router)
+app.include_router(decision_authority_router)
 
 
 @app.get("/")

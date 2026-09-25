@@ -26,10 +26,11 @@ import {
 } from 'lucide-react';
 import type { KlineRow } from '@/components/KlineChart';
 import StrongStockV2Dashboard from '@/components/StrongStockV2Dashboard';
+import WildmanAuthorityCard from '@/components/decision/WildmanAuthorityCard';
 import { apiFetch, friendlyApiError } from '@/lib/api';
 
 function V21BridgeWorkspace() {
-  const [tab, setTab] = useState<'overview' | 'opportunities' | 'review'>('overview');
+  const [tab, setTab] = useState<'overview' | 'sectors' | 'candidates' | 'review'>('overview');
   const [payload, setPayload] = useState<AnyMap | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -46,6 +47,7 @@ function V21BridgeWorkspace() {
         refresh: String(refresh),
         exclude_star_market: String(excludeStarMarket),
         exclude_gem: String(excludeGem),
+        compact: 'true',
       });
       const response = await apiFetch<{ data: AnyMap }>(`/strong-stock-decision/v21/overview?${params}`, { timeoutMs: 45000 });
       setPayload(response.data);
@@ -60,19 +62,42 @@ function V21BridgeWorkspace() {
   useEffect(() => { void load(false); }, [load]);
 
   const regime = payload?.market?.regime || {};
-  const opportunities = (payload?.opportunities || []).filter((item: AnyMap) => item.opportunity_pool !== 'RISK_EXCLUDE');
-  const riskItems = (payload?.opportunities || []).filter((item: AnyMap) => item.opportunity_pool === 'RISK_EXCLUDE');
-  const lifecycle = (payload?.lifecycle || []).slice(0, 12);
-  const migration = (payload?.migration?.paths || []).slice(0, 6);
   const scan = payload?.candidate_scan || {};
+  const reviewedCount = scan.book_reviewed_count ?? '--';
+  const attemptedCount = scan.book_review_attempted_count ?? '--';
+  const allOpportunities = payload?.opportunities || [];
+  const opportunities = allOpportunities.filter((item: AnyMap) => item.opportunity_pool !== 'RISK_EXCLUDE');
+  const riskItems = allOpportunities.filter((item: AnyMap) => item.opportunity_pool === 'RISK_EXCLUDE');
+  const candidates = (payload?.candidate_pool || payload?.candidates || allOpportunities).filter((item: AnyMap) => item);
+  const sectorRows = (payload?.sectors || []).map((sector: AnyMap) => {
+    const lifecycleState = sector.lifecycle?.state || sector.lifecycle?.status || sector.state || 'UNKNOWN';
+    const sourceDate = sector.trade_date || sector.source_date || payload?.data_quality?.sector_source_date;
+    const sameDay = Boolean(sourceDate && payload?.trade_date && sourceDate === payload.trade_date);
+    return { ...sector, state: sameDay ? lifecycleState : 'STALE', sector_source_date: sourceDate, decision_date: payload?.trade_date, lifecycle_note: sameDay ? (sector.lifecycle?.reason || sector.lifecycle?.summary || '同日状态命中') : sourceDate ? `源日 ${sourceDate} 与决策日 ${payload?.trade_date || '待核验'} 不一致` : '缺少源日期，暂作观察待核验', candidate_count: 0 };
+  });
+  const candidateCountBySector = candidates.reduce((counts: Record<string, number>, item: AnyMap) => { if (item.sector_id) counts[item.sector_id] = (counts[item.sector_id] || 0) + 1; return counts; }, {});
+  const structureCountBySector = candidates.reduce((counts: Record<string, number>, item: AnyMap) => { if (item.sector_id && String(candidateReview(item).status || '').toUpperCase() === 'STRUCTURE_CANDIDATE') counts[item.sector_id] = (counts[item.sector_id] || 0) + 1; return counts; }, {});
+  const lifecycle = sectorRows
+    .map((sector: AnyMap) => ({ ...sector, candidate_count: candidateCountBySector[sector.sector_id] || 0, structure_count: structureCountBySector[sector.sector_id] || 0 }))
+    .sort((a: AnyMap, b: AnyMap) => { const preferred = new Set(['STARTING', 'ACCELERATING', 'RETURNING', 'SECOND_STRENGTH']); return Number(preferred.has(b.state)) - Number(preferred.has(a.state)) || (a.rank ?? 999) - (b.rank ?? 999); })
+    .slice(0, 20);
+  const migration = (payload?.migration?.paths || []).slice(0, 6);
+  const [candidateStatus, setCandidateStatus] = useState('ALL');
+  const [candidateSector, setCandidateSector] = useState('ALL');
+  const candidateReview = (item: AnyMap) => item.book_review || item.candidate_review || {};
+  const candidateLabel = (item: AnyMap) => { const status = String(candidateReview(item).status || '').toUpperCase(); return item.opportunity_pool === 'RISK_EXCLUDE' || ['RISK', 'RISK_EXCLUDE', 'REJECTED'].includes(status) ? '风险淘汰' : status === 'STRUCTURE_CANDIDATE' ? '结构研究候选' : '初筛观察'; };
+  const candidateLabelNote = (item: AnyMap) => candidateReview(item).label || candidateReview(item).status || (candidates.indexOf(item) >= 40 ? '排队/未核验' : '待核验');
+  const candidateSectors = Array.from(new Set(candidates.map((item: AnyMap) => item.sector_name).filter(Boolean))) as string[];
+  const filteredCandidates = candidates.filter((item: AnyMap) => (candidateStatus === 'ALL' || candidateLabel(item) === candidateStatus) && (candidateSector === 'ALL' || item.sector_name === candidateSector));
   const renderRows = (rows: AnyMap[], empty: string) => rows.length ? rows.slice(0, 10).map((item, index) => {
     const key = `${item.symbol || item.sector_id || index}-${index}`;
-    const content = <><div className="min-w-0"><div className="truncate text-xs text-text">{item.stock_name || item.sector_name || item.sector_id || '未命名'}</div><div className="mt-1 truncate text-[10px] text-text-secondary">{item.symbol ? `${item.selection_source_label || '候选'} · ${item.symbol}` : `${labelOf(item.state || item.sector_type)} · 置信度 ${item.confidence ?? '--'}`}{item.zone_stage ? ` · ${labelOf(item.zone_stage)}` : item.selection_source === 'system_scan' ? ' · 等待交易区确认' : ''}</div></div><span className={`self-start whitespace-nowrap text-[10px] ${item.priority === 'P1' || item.state === 'STARTING' ? 'text-up' : item.priority === 'EXCLUDE' ? 'text-down' : 'text-text-secondary'}`}>{labelOf(item.priority || item.state || 'WATCH')}</span></>;
+    const content = <><div className="min-w-0"><div className="truncate text-xs text-text">{item.stock_name || item.sector_name || item.sector_id || '未命名'}</div><div className="mt-1 truncate text-[10px] text-text-secondary">{item.symbol ? `${item.selection_source_label || '候选'} · ${item.symbol}` : `${labelOf(item.state || item.sector_type)} · 置信度 ${item.confidence ?? '--'} · 源日 ${item.sector_source_date || item.source_date || '待核验'} · 决策日 ${item.decision_date || payload?.trade_date || '待核验'}${item.sector_source_date && item.decision_date && item.sector_source_date !== item.decision_date ? ' · 日期不可比' : ''}`}{item.zone_stage ? ` · ${labelOf(item.zone_stage)}` : item.selection_source === 'system_scan' ? ' · 等待交易区确认' : ''}</div></div><span className={`self-start whitespace-nowrap text-[10px] ${item.priority === 'P1' || item.state === 'STARTING' ? 'text-up' : item.priority === 'EXCLUDE' ? 'text-down' : 'text-text-secondary'}`}>{labelOf(item.priority || item.state || 'WATCH')}</span></>;
     const className = "grid min-w-0 grid-cols-[1fr_auto] gap-3 border-b border-border py-2.5 no-underline last:border-0 hover:bg-white/[0.02]";
     return item.symbol ? <a key={key} href={`/strong-stock-decision?code=${encodeURIComponent(item.symbol)}`} className={className}>{content}</a> : <div key={key} className={className}>{content}</div>;
   }) : <div className="py-5 text-xs text-text-secondary">{empty}</div>;
 
   return <section className="mt-5 overflow-hidden rounded-md border border-border bg-card" aria-label="强势股交易决策系统 V2.1桥接层">
+    <div className="border-b border-border p-3"><WildmanAuthorityCard compact scopeComparable={excludeStarMarket && excludeGem} /></div>
     <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
       <div className="min-w-0"><h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Network size={15} className="text-accent" />强势股交易决策 V2.1 · 板块轮动与机会雷达</h2><p className="mt-1 text-[10px] text-text-secondary">市场状态 → 板块生命周期 → 资金迁徙推断 → A/B区机会 → 盘后复盘 · Shadow</p></div>
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -81,13 +106,13 @@ function V21BridgeWorkspace() {
         <button type="button" onClick={() => void load(true)} disabled={loading} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs text-text-secondary hover:border-accent hover:text-accent disabled:opacity-50" title="刷新全市场扫描与V2.1研究快照"><RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />刷新全市场</button>
       </div>
     </header>
-    <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">{([['overview', '市场与板块'], ['opportunities', 'A/B机会'], ['review', '盘后复盘']] as const).map(([key, label]) => <button key={key} type="button" onClick={() => setTab(key)} className={`rounded px-3 py-1.5 text-[11px] ${tab === key ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text'}`}>{label}</button>)}</div>
+    <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">{([['overview', '总览'], ['sectors', '板块线索'], ['candidates', '三书候选池'], ['review', '复盘']] as const).map(([key, label]) => <button key={key} type="button" onClick={() => setTab(key)} className={`rounded px-3 py-1.5 text-[11px] ${tab === key ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text'}`}>{label}</button>)}<a href="#stock-query" className="rounded px-3 py-1.5 text-[11px] text-text-secondary hover:text-text">个股查询</a></div>
     {loading && !payload ? <div className="px-4 py-6 text-xs text-text-secondary"><div className="flex items-center gap-2"><Loader2 size={14} className="animate-spin text-accent" />正在读取市场状态、板块轨迹和V2.0快照</div><div className="mt-3 h-1 overflow-hidden rounded-full bg-border"><div className="h-full w-1/2 animate-pulse bg-accent" /></div></div> : error ? <div className="m-4 border-l-2 border-warn bg-warn/5 px-3 py-3 text-xs leading-5 text-warn">{error}<button type="button" className="ml-3 text-accent underline" onClick={() => void load(true)}>重试</button></div> : payload && <div className="grid gap-4 p-4 xl:grid-cols-[1.05fr_1fr_1fr]">
       <div className="min-w-0"><div className="mb-2 flex items-center justify-between"><span className="text-[11px] text-text-secondary">当前市场状态</span><span className="font-mono text-[10px] text-text-secondary">{payload.trade_date || '--'} · {payload.mode}</span></div><div className="border border-border bg-bg p-3"><div className="flex flex-wrap items-end justify-between gap-3"><strong className="text-lg text-text">{({ TREND_ATTACK: '进攻趋势市', ROTATION_RANGE: '高活跃震荡轮动市', DEFENSIVE_FADE: '防守退潮市', TRANSITION: '过渡/混沌市' } as Record<string, string>)[String(regime.regime)] || '过渡/混沌市'}</strong><span className="font-mono text-accent">{regime.confidence ?? '--'}%</span></div><div className="mt-2 text-xs leading-5 text-text-secondary">{regime.strategy_bias?.text || '等待足够市场证据'}</div><div className="mt-3 space-y-1 text-[10px] text-text-secondary">{(regime.evidence || []).slice(0, 3).map((item: AnyMap) => <div key={item.text}>事实 · {item.text}</div>)}{(regime.counter_evidence || []).slice(0, 2).map((item: AnyMap) => <div key={item.text} className="text-warn">反证 · {item.text}</div>)}</div></div><div className="mt-3 grid grid-cols-2 gap-2"><div className="border border-border p-2"><div className="text-[10px] text-text-secondary">板块数量</div><b className="font-mono text-sm text-text">{payload.sectors?.length || 0}</b></div><div className="border border-border p-2"><div className="text-[10px] text-text-secondary">迁徙推断</div><b className="font-mono text-sm text-text">{migration.length}</b></div></div></div>
       <div className="min-w-0"><div className="mb-2 flex items-center justify-between"><span className="text-[11px] font-semibold text-text">板块生命周期</span><span className="text-[10px] text-text-secondary">多日状态机</span></div><div className="max-h-64 overflow-auto pr-1">{renderRows(lifecycle, '暂无足够板块历史样本')}</div><div className="mt-3 border-t border-border pt-3">{migration.slice(0, 3).map((item: AnyMap) => <div key={`${item.source?.id}-${item.target?.id}`} className="flex min-w-0 items-center gap-2 py-1.5 text-[10px] text-text-secondary"><span className="truncate">{item.source?.name || '未命名板块'}</span><span className="text-accent">→</span><span className="truncate text-text">{item.target?.name || '未命名板块'}</span><span className="ml-auto shrink-0 font-mono">{item.confidence ?? '--'}%</span></div>)}</div></div>
-      <div className="min-w-0">{tab === 'overview' && <><div className="mb-2 flex items-center justify-between"><span className="text-[11px] font-semibold text-text">机会与风险摘要</span><span className="text-[10px] text-text-secondary">A/B/C融合 + 全市场系统扫描</span></div><div className="mb-2 grid grid-cols-3 gap-1.5 text-[10px]"><div className="border border-border p-1.5 text-text-secondary">扫描 <b className="font-mono text-text">{scan.total_scanned ?? '--'}</b></div><div className="border border-border p-1.5 text-text-secondary">初筛 <b className="font-mono text-text">{scan.source_shortlisted ?? '--'}</b></div><div className="border border-border p-1.5 text-text-secondary">候选 <b className="font-mono text-text">{scan.shortlisted ?? '--'}</b></div></div>{renderRows([...opportunities, ...riskItems], '当前全市场扫描没有形成可展示候选')}<div className="mt-3 text-[10px] leading-4 text-text-secondary">资金迁徙是板块聚合数据的相对强弱推断，不是逐笔资金账户迁移。</div></>}{tab === 'opportunities' && <><div className="mb-2 text-[11px] font-semibold text-text">A区发现 / A区确认 / B区二攻 / 系统观察</div>{renderRows(opportunities, '暂无满足板块生命周期与A/B区条件的候选')}<div className="mt-3 border-t border-border pt-3 text-[10px] text-warn">风险淘汰：{riskItems.length} 条，C区优先级覆盖攻击信号。</div></>}{tab === 'review' && <><div className="mb-2 text-[11px] font-semibold text-text">今日盘后复盘入口</div><div className="space-y-2 text-xs leading-5 text-text-secondary"><p>状态：{regime.strategy_bias?.text || '数据不足，不能强行分类'}</p><p>明日验证：板块宽度、核心股跟随、资金连续性。</p><p>失效条件：市场转为防守退潮市，或核心股与板块宽度同步破坏。</p><p className="text-warn">结果需经过T+1/T+3/T+5验证后才进入经验层。</p></div></>}</div>
+      <div className="min-w-0 xl:col-span-3">{tab === 'overview' && <><div className="mb-2 flex items-center justify-between"><span className="text-[11px] font-semibold text-text">机会与风险摘要</span><span className="text-[10px] text-text-secondary">A/B/C融合 + 全市场系统扫描</span></div><div className="mb-2 grid grid-cols-3 gap-1.5 text-[10px]"><div className="border border-border p-1.5 text-text-secondary">扫描 <b className="font-mono text-text">{scan.total_scanned ?? '--'}</b></div><div className="border border-border p-1.5 text-text-secondary">初筛入池 <b className="font-mono text-text">{scan.source_shortlisted ?? '--'}</b></div><div className="border border-border p-1.5 text-text-secondary">已核验 <b className="font-mono text-text">{reviewedCount}</b> / 尝试 {attemptedCount}</div></div>{renderRows([...opportunities, ...riskItems], '当前全市场扫描没有形成可展示候选')}<div className="mt-3 text-[10px] leading-4 text-text-secondary">资金迁徙是板块聚合数据的相对强弱推断，不是逐笔资金账户迁移。</div></>}{tab === 'sectors' && <><div className="mb-2 text-[11px] font-semibold text-text">板块线索 / 研究方向</div><p className="mb-2 border-l-2 border-warn px-2 text-[10px] leading-4 text-warn">市场数据推断，非野人哥五步核心主线；板块线索不能替代三书个股核验。</p>{lifecycle.length ? lifecycle.map((item: AnyMap) => <div key={item.sector_id || item.sector_name} className="border-b border-border py-2.5 last:border-0"><div className="flex items-center justify-between gap-2"><b className="text-xs text-text">{item.sector_name || item.sector_id || '待核验方向'}</b><span className={item.state === 'STALE' ? 'text-warn text-[10px]' : 'text-accent text-[10px]'}>{labelOf(item.state)} · 初筛关联数 {item.candidate_count ?? 0} · 结构候选 {item.structure_count ?? 0}</span></div><div className="mt-1 text-[10px] text-text-secondary">数据日：{item.sector_source_date || '待核验'} · 决策日：{item.decision_date || '待核验'}{item.state === 'STALE' ? ' · 日期不可比，观察待核验' : ''}</div><div className="mt-1 text-[10px] text-text-secondary">入选：{item.lifecycle_note || '同日状态与排名线索'} · 反证：{(item.lifecycle?.counter_evidence || item.counter_evidence || []).join?.('；') || '暂无明确反证'}</div></div>) : <div className="py-5 text-xs text-text-secondary">暂无足够板块历史样本</div>}</>}{tab === 'candidates' && <><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><span className="text-[11px] font-semibold text-text">三书候选池 · 结构研究候选 / 初筛观察 / 风险淘汰</span><span className="text-[10px] text-text-secondary">共 {filteredCandidates.length} 条 · 系统量化代理，不等于书籍最终确认</span></div><div className="mb-3 flex flex-wrap gap-2"><select value={candidateStatus} onChange={(event) => setCandidateStatus(event.target.value)} className="border border-border bg-bg px-2 py-1 text-[10px] text-text"><option value="ALL">全部状态</option><option value="结构研究候选">结构研究候选</option><option value="初筛观察">初筛观察</option><option value="风险淘汰">风险淘汰</option></select><select value={candidateSector} onChange={(event) => setCandidateSector(event.target.value)} className="max-w-full border border-border bg-bg px-2 py-1 text-[10px] text-text"><option value="ALL">全部板块</option>{candidateSectors.map((sector) => <option key={sector} value={sector}>{sector}</option>)}</select></div><div className="space-y-1">{filteredCandidates.length ? filteredCandidates.slice(0, 40).map((item: AnyMap, index: number) => { const review = candidateReview(item); const starRisk = (Array.isArray(review.star?.risk) ? review.star.risk.length > 0 : Boolean(review.star?.risk)) || ['RISK', 'TOP', 'C_RISK', 'C区', 'C区风险'].includes(String(review.star?.status || item.risk_state || '').toUpperCase()); const label = candidateLabel(item); const labelNote = candidateLabelNote(item); const sameDay = review.decision_date && review.source_date && review.decision_date === review.source_date && scan.data_date && scan.data_date === review.decision_date; const quality = review.data_quality?.status || review.data_quality?.label; const qualityLabel = quality && !['COMPLETE', 'AVAILABLE'].includes(String(quality).toUpperCase()) ? '数据质量待核验' : quality || '数据质量待核验'; return <a key={`${item.symbol || index}`} href={item.symbol ? `/strong-stock-decision?code=${encodeURIComponent(item.symbol)}#stock-query` : '#stock-query'} className={`grid min-w-0 grid-cols-[1fr_auto] gap-3 border-b border-border px-1 py-2.5 last:border-0 ${starRisk || label === '风险淘汰' ? 'border-l-2 border-down pl-2' : ''}`}><div className="min-w-0"><div className="truncate text-xs text-text">{item.stock_name || item.symbol || '未命名候选'} · {item.symbol || '--'}</div><div className="mt-1 text-[10px] text-text-secondary">板块：{item.sector_name || '待核验'} · 初筛来源：{item.selection_source_label || item.selection_source || '待核验'} · 扫描日：{scan.data_date || '待核验'}</div><div className="mt-1 text-[10px] text-text-secondary">日线源日：{review.source_date || '待核验'} · 决策日：{review.decision_date || '待核验'} · {sameDay ? '同日证据' : '跨日暂不可比'} · {qualityLabel}</div>{(review.reasons || []).slice(0, 2).map((reason: string) => <div key={reason} className="mt-1 line-clamp-1 text-[10px] text-text-secondary">{reason}</div>)}</div><span className={`self-start whitespace-nowrap text-[10px] ${starRisk || label === '风险淘汰' ? 'text-down' : label === '初筛观察' ? 'text-warn' : 'text-accent'}`}>{starRisk ? '星线风险' : label}{labelNote !== label ? ` · ${labelNote}` : ''}</span></a>; }) : <div className="py-5 text-xs text-text-secondary">暂无可核验候选</div>}</div>{filteredCandidates.length > 40 && <div className="mt-2 text-[10px] text-text-secondary">仅展示前40条，请使用板块/状态筛选缩小范围。</div>}</>}{tab === 'review' && <><div className="mb-2 text-[11px] font-semibold text-text">今日盘后复盘入口</div><div className="space-y-2 text-xs leading-5 text-text-secondary"><p>状态：{regime.strategy_bias?.text || '数据不足，不能强行分类'}</p><p>明日验证：板块宽度、核心股跟随、资金连续性。</p><p>失效条件：市场转为防守退潮市，或核心股与板块宽度同步破坏。</p><p className="text-warn">结果需经过T+1/T+3/T+5验证后才进入经验层。</p></div></>}</div>
     </div>}
-    {payload && <footer className="border-t border-border px-4 py-2 text-[10px] text-text-secondary">数据质量：{labelOf(payload.data_quality?.status || 'DATA_INCOMPLETE')} · 候选来源：{scan.source_label || '全市场系统扫描'} · 数据日：{scan.data_date || payload.trade_date || '--'} · {scan.is_realtime ? '实时' : scan.cache_used ? '缓存快照' : '最新可用'} · 运行模式：{labelOf(payload.mode || 'SHADOW')} · 不自动交易</footer>}
+    {payload && <footer className="border-t border-border px-4 py-2 text-[10px] text-text-secondary">数据质量：{labelOf(payload.data_quality?.status || 'DATA_INCOMPLETE')} · 候选来源：{scan.source_label || '全市场系统扫描'} · 数据日：{scan.data_date || '--'} · {scan.is_realtime ? '实时' : scan.cache_used ? '缓存快照' : '最新可用'} · 运行模式：{labelOf(payload.mode || 'SHADOW')} · 不自动交易</footer>}
   </section>;
 }
 
@@ -129,7 +154,7 @@ const V21_LABELS: Record<string, string> = {
   A_CONFIRM: 'A区确认池', RISK_EXCLUDE: '风险淘汰', WATCH: '观察',
   P1: '一级', P2: '二级', EXCLUDE: '淘汰', SHADOW: '影子研究',
   DATA_INCOMPLETE: '数据待确认', COMPLETE: '完整', PARTIAL: '部分可用',
-  UNKNOWN: '未知', TRANSITION: '过渡/混沌', TREND_ATTACK: '进攻趋势',
+  UNKNOWN: '未知', STALE: '过期快照', TRANSITION: '过渡/混沌', TREND_ATTACK: '进攻趋势',
   ROTATION_RANGE: '活跃震荡轮动', DEFENSIVE_FADE: '防守退潮',
 };
 
@@ -322,8 +347,8 @@ function scoreTone(value: unknown): string {
 }
 
 export default function StrongStockDecisionPage() {
-  const [symbol, setSymbol] = useState('002123');
-  const [input, setInput] = useState('002123');
+  const [symbol, setSymbol] = useState('');
+  const [input, setInput] = useState('');
   const [data, setData] = useState<AnyMap | null>(null);
   const [detailTab, setDetailTab] = useState('overview');
   const [loading, setLoading] = useState(false);
@@ -362,7 +387,7 @@ export default function StrongStockDecisionPage() {
 
   useEffect(() => {
     const queryCode = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('code') : null;
-    void loadOverview(queryCode || '002123');
+    if (queryCode) void loadOverview(queryCode);
   }, [loadOverview]);
 
   const loadIntraday = useCallback(async () => {
@@ -442,6 +467,7 @@ export default function StrongStockDecisionPage() {
     : scoreComponents.reduce((total, item) => total + (item.available !== false && finite(item.value) ? Number(item.weight || 0) * 100 : 0), 0);
   const sourceName = String(sourceStatus.daily_bars_source || '').includes('tencent') ? '腾讯行情' : sourceStatus.daily_bars_source ? '系统日线缓存' : undefined;
   const v2 = data?.v2 || null;
+  const riskPriority = zone.zone === '风险C区' || (finite(v2?.risk?.overall_score) && v2.risk.overall_score >= 72);
 
   const renderDetail = () => {
     if (!data) return null;
@@ -460,7 +486,7 @@ export default function StrongStockDecisionPage() {
   };
 
   return (
-    <div className="strong-terminal min-h-screen">
+    <div className="strong-terminal min-h-screen overflow-x-hidden">
       <header className="strong-terminal-header">
         <div className="strong-title-block">
           <div className="strong-title-row"><h1>强势股交易决策系统 V2.0</h1><span className="strong-shadow-badge">V2 Shadow · V1兼容</span></div>
@@ -469,6 +495,8 @@ export default function StrongStockDecisionPage() {
       </header>
 
       <main className="strong-terminal-main">
+          <V21BridgeWorkspace />
+          <div id="stock-query" className="scroll-mt-4" />
           <section className="strong-stock-strip">
             <div className="strong-search-cell"><label>股票代码</label><div className="strong-code-search"><input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void loadOverview(input); }} /><button type="button" onClick={() => void loadOverview(input)} aria-label="查询股票"><Search size={15} /></button></div></div>
             <div className="strong-stock-name"><span>股票名称</span><b>{safeText(data?.name, '等待查询')}</b></div>
@@ -539,9 +567,15 @@ export default function StrongStockDecisionPage() {
               <div className="strong-detail-content">{renderDetail()}</div>
             </section>
 
-            {v2 && <StrongStockV2Dashboard v2={v2} symbol={symbol} onRefresh={() => void loadOverview(symbol, true)} />}
-            <V21BridgeWorkspace />
-
+            {v2 && <>
+              {riskPriority && <div className="strong-panel strong-panel-risk mb-4 border-down/50 bg-down/5" role="alert">
+                <div className="strong-panel-body flex flex-wrap items-center justify-between gap-2">
+                  <div><b className="text-down">风险优先：暂停积极建议</b><p className="mt-1 text-[11px] leading-5 text-text-secondary">当前为风险C区或高风险状态。原始买点形态仅保留为研究观察，不代表有效买入许可；本系统仅辅助判断，不自动下单。</p></div>
+                  <span className="shrink-0 rounded border border-down/40 px-2 py-1 text-[10px] text-down">{safeText(v2.buy_point?.level, '风险阻断')}</span>
+                </div>
+              </div>}
+              <StrongStockV2Dashboard v2={v2} symbol={symbol} onRefresh={() => void loadOverview(symbol, true)} />
+            </>}
             <footer className="strong-terminal-footer"><span>免责声明：本系统基于三本书理论与可核验数据开发，仅供学习和研究参考，不构成投资建议。</span><span><b>ⓘ</b> Shadow模式：仅分析不执行交易</span></footer>
           </>}
       </main>

@@ -296,6 +296,9 @@ class ZoneOpportunityFusionEngine:
             risk = str(row.get("risk_state") or "")
             main_force = str(row.get("main_force_state") or "")
             consensus = str(row.get("three_books_consensus") or "")
+            book_review = row.get("book_review") or {}
+            book_risk = bool(book_review.get("risk_priority") or book_review.get("status") == "RISK")
+            book_unverified = "book_review" in row and book_review.get("status") in {"UNVERIFIED", "UNREVIEWED", None}
             is_c = "C_" in stage or "风险C区" in zone or any(term in risk for term in ("C_FORMED", "C_DEEPENING", "C_EXIT"))
             is_invalid = stage in {"A_INVALID", "B_INVALID", "C_EXIT"}
             severe_conflict = any(term in consensus for term in ("严重冲突", "强冲突"))
@@ -304,7 +307,7 @@ class ZoneOpportunityFusionEngine:
             is_a_confirm = lifecycle in {"STARTING", "ACCELERATING"} and stage == "A_ACTIVE"
             is_b = (lifecycle == "RETURNING" and stage == "B_SMALL_A_FORMING") or (lifecycle == "SECOND_STRENGTH" and stage == "B_REATTACK")
             lifecycle_risk = lifecycle == "FADING" or (lifecycle == "CLIMAX" and stage == "A_LATE")
-            if is_c or is_invalid or severe_conflict or (lifecycle == "FADING" and stage.startswith("A_")):
+            if book_risk or is_c or is_invalid or severe_conflict or (lifecycle == "FADING" and stage.startswith("A_")):
                 pool, priority = "RISK_EXCLUDE", "EXCLUDE"
             elif is_a_confirm:
                 pool = "A_CONFIRM"
@@ -321,6 +324,8 @@ class ZoneOpportunityFusionEngine:
                 priority = "WATCH"
             if market_regime == "DEFENSIVE_FADE" and priority == "P1":
                 priority = "P2"
+            if book_unverified and pool != "RISK_EXCLUDE":
+                pool, priority = "WATCH", "WATCH"
             evidence = list(row.get("evidence") or [])
             selection_source = str(row.get("selection_source") or "").strip()
             if row.get("selection_evidence"):
@@ -336,6 +341,8 @@ class ZoneOpportunityFusionEngine:
                 missing.extend(["后续价格与成交确认", "板块宽度和核心股跟随"])
             counter = list(row.get("counter_evidence") or [])
             if is_c: counter.append("风险C区优先级高于攻击信号")
+            if book_risk: counter.append("三书审阅风险优先，候选进入风险排除")
+            if book_unverified: counter.append("三书证据未核验，不升级为P1/P2")
             if main_force_weak: counter.append("主力状态转弱，候选优先级已下调")
             if severe_conflict: counter.append("三书出现严重冲突，强制进入风险淘汰")
             next_confirmation = list(dict.fromkeys(list(row.get("next_confirmation") or []) + missing))

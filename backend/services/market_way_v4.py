@@ -836,6 +836,13 @@ def build_market_force(payload: dict[str, Any], momentum: dict[str, Any], capita
 def _apply_truth_gate(payload: dict[str, Any], truth: dict[str, Any]) -> None:
     decision = payload.get("decision_2026") or {}
     permission = decision.get("trading_permission") or {}
+    strategy_selector = payload.get("strategy_selector") or {}
+
+    def sync_strategy_cap() -> None:
+        """Keep the strategy selector display aligned with the final gate."""
+        if isinstance(strategy_selector, dict) and "max_total_position_pct" in strategy_selector:
+            strategy_selector["max_total_position_pct"] = permission.get("max_total_position_pct")
+
     if truth["status"] == "FAIL":
         permission.update({
             "code": "BLOCK", "label": "真值阻断", "allows_new_position": False,
@@ -850,12 +857,16 @@ def _apply_truth_gate(payload: dict[str, Any], truth: dict[str, Any]) -> None:
             payload["adaptive_strategy_weights"]["weights"] = [
                 {**item, "weight_pct": 0} for item in payload["adaptive_strategy_weights"].get("weights") or []
             ]
+        sync_strategy_cap()
     elif truth["status"] == "LIMITED" and permission.get("code") == "ALLOW":
         permission.update({
             "code": "CAUTION", "label": "证据降级，仅谨慎研究", "allows_new_position": True,
             "max_total_position_pct": min(int(permission.get("max_total_position_pct") or 0), 25),
             "reasons": _unique(["真值层存在跨日或冲突证据，执行级别自动下调", *(permission.get("reasons") or [])]),
         })
+        sync_strategy_cap()
+    elif truth["status"] == "LIMITED":
+        sync_strategy_cap()
 
 
 def build_market_way_v4(

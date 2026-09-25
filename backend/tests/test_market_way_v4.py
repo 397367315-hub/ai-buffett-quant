@@ -100,6 +100,18 @@ class TruthLayerTests(unittest.TestCase):
 
 
 class MarketWayTests(unittest.TestCase):
+    def test_truth_gate_syncs_strategy_selector_cap(self):
+        source = payload()
+        source["strategy_selector"] = {"max_total_position_pct": 40}
+        source["market_way_v4"] = {"truth": {"status": "LIMITED"}}
+        # The gate is applied during decoration; this fixture-level assertion
+        # is covered by the direct service helper test below.
+        from services.market_way_v4 import _apply_truth_gate
+
+        _apply_truth_gate(source, {"status": "LIMITED"})
+        self.assertEqual(source["decision_2026"]["trading_permission"]["max_total_position_pct"], 25)
+        self.assertEqual(source["strategy_selector"]["max_total_position_pct"], 25)
+
     def test_builds_chain_momentum_and_no_policy_buy_signal(self):
         result = build_market_way_v4(payload(), {"available": False, "policy_items": []}, generated_at=NOW)
         self.assertEqual(len(result["chain"]), 10)

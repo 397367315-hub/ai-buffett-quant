@@ -41,14 +41,19 @@ async def v21_overview(
     refresh: bool = Query(False),
     exclude_star_market: bool = Query(True),
     exclude_gem: bool = Query(True),
+    compact: bool = Query(False),
 ):
-    return await _call(
+    response = await _call(
         strong_stock_v21_service.overview,
         _date(date_value),
         refresh=refresh,
         exclude_star_market=exclude_star_market,
         exclude_gem=exclude_gem,
     )
+    if compact and response.get("code") == 0 and isinstance(response.get("data"), dict):
+        for field in ("sector_trajectories", "lifecycle", "market_history"):
+            response["data"].pop(field, None)
+    return response
 
 
 @router.post("/strong-stock-decision/v21/refresh")

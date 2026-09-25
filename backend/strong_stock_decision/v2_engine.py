@@ -13,6 +13,7 @@ from math import isfinite
 from statistics import mean, pstdev
 from typing import Any, Iterable
 
+from .book_provenance import book_source_for
 from .registry import SIGNAL_STATUSES, V2_BOOK_SKILL_DEFINITIONS
 
 
@@ -311,6 +312,7 @@ def _signal(
     definition = _definition(skill_id)
     if status not in SIGNAL_STATUSES:
         status = "NOT_FOUND"
+    book_source = book_source_for(skill_id)
     return {
         "skill_id": skill_id,
         "parent_skill_id": definition.get("parent_skill_id"),
@@ -334,6 +336,8 @@ def _signal(
         "conflicts": conflicts or [],
         "chart_annotations": chart_annotations or [],
         "engine_features": definition.get("required_features") or [],
+        "book_source": book_source,
+        "detection_basis": "ENGINE_FEATURE",
         "source_case_ids": [],
         "metrics": metrics or {},
         "engine_version": V2_ENGINE_VERSION,
@@ -724,7 +728,29 @@ def _pattern_data(features: dict[str, Any], main_force: dict[str, Any], zones: d
     breakout_down = current is not None and old_low is not None and current < old_low * 0.995
     touch_upper = sum(1 for value in high_right if new_high and abs(value - new_high) / new_high <= 0.025)
     touch_lower = sum(1 for value in low_right if new_low and abs(value - new_low) / new_low <= 0.025)
-    triangle_common = {"upper_line": _round(new_high), "lower_line": _round(new_low), "upper_slope": _round(upper_slope, 3), "lower_slope": _round(lower_slope, 3), "touch_count_upper": touch_upper, "touch_count_lower": touch_lower, "duration": min(features["count"], 30), "range_contraction": _round(contraction), "volume_contraction": _round((_avg(volumes[-10:]) or 0) / max(_avg(volumes[-25:-10]) or 1, 1))}
+    book_verification = {
+        "status": "ENGINE_PROXY",
+        "thresholds_are_engine_proxies": True,
+        "missing": [
+            "前后阳量/阴量是否持续占优",
+            "量价异动与均线归位",
+            "行情是否透支及量时空安全",
+            "强势盘面/板块互证",
+        ],
+        "next_confirmation": [
+            "补齐前后量能性质与价格反馈",
+            "确认突破后保持及后续量价跟随",
+        ],
+    }
+    volume_context = {
+        "recent_up_volume": _round(features.get("recent_up_volume")),
+        "recent_down_volume": _round(features.get("recent_down_volume")),
+        "recent_positive_count": features.get("positive_count"),
+        "recent_negative_count": features.get("negative_count"),
+        "price_damage_pct": _round(features.get("returns5")),
+        "book_verification": book_verification,
+    }
+    triangle_common = {"upper_line": _round(new_high), "lower_line": _round(new_low), "upper_slope": _round(upper_slope, 3), "lower_slope": _round(lower_slope, 3), "touch_count_upper": touch_upper, "touch_count_lower": touch_lower, "duration": min(features["count"], 30), "range_contraction": _round(contraction), "volume_contraction": _round((_avg(volumes[-10:]) or 0) / max(_avg(volumes[-25:-10]) or 1, 1)), "book_verification": book_verification}
     triangle_score = 0.0 if not enough or contraction is None else _clamp((1 - contraction) * 160 + min(touch_upper, touch_lower) * 8)
     triangle_type = "平顶三角形" if (upper_slope is not None and abs(upper_slope) < 3 and (lower_slope or 0) > 2) else "平底三角形" if (lower_slope is not None and abs(lower_slope) < 3 and (upper_slope or 0) < -2) else "收敛三角形" if (upper_slope or 0) < 0 and (lower_slope or 0) > 0 else None
     triangle_id = {"平顶三角形": "BXDT_TRI_001", "平底三角形": "BXDT_TRI_002", "收敛三角形": "BXDT_TRI_003"}.get(triangle_type)
@@ -733,13 +759,13 @@ def _pattern_data(features: dict[str, Any], main_force: dict[str, Any], zones: d
     for skill_id, score in triangle_scores.items():
         subtype = triangle_type if skill_id == triangle_id else None
         lifecycle = "BREAKOUT" if subtype and breakout_up else "FORMING" if subtype else "NOT_FOUND"
-        patterns.append(_signal(skill_id, _status_for(score), score if score else None, subtype=subtype, lifecycle=lifecycle, evidence=[_evidence("高低点边界与收敛关系", "triangle_geometry", triangle_common), _evidence("形态价格口径", "price_basis", features["price_basis"])], counter_evidence=[_evidence("高低点未形成足够重复测试", "touch_count", min(touch_upper, touch_lower))], next_confirmation=["突破后保持在上沿外", "成交量由收缩转为有效放大"], invalidation=["跌破下沿", "区间重新扩张并失去收敛"], chart_annotations=[{"type": subtype or "三角形观察", **triangle_common, "price_basis": features["price_basis"]}], metrics=triangle_common))
+        patterns.append(_signal(skill_id, _status_for(score), score if score else None, subtype=subtype, lifecycle=lifecycle, evidence=[_evidence("高低点边界与收敛关系", "triangle_geometry", triangle_common), _evidence("书籍规则尚未由几何代理确认", "book_verification", book_verification, "BOOK_VERIFICATION"), _evidence("形态价格口径", "price_basis", features["price_basis"])], counter_evidence=[_evidence("高低点未形成足够重复测试", "touch_count", min(touch_upper, touch_lower)), _evidence("前后量能与强势盘面待补齐", "volume_context", volume_context, "BOOK_VERIFICATION")], next_confirmation=["突破后保持在上沿外", "成交量由收缩转为有效放大", "补齐前后量能、是否透支和板块互证"], invalidation=["跌破下沿", "区间重新扩张并失去收敛"], chart_annotations=[{"type": subtype or "三角形观察", **triangle_common, "price_basis": features["price_basis"]}], metrics=triangle_common))
 
     box_width = (new_high - new_low) / current * 100 if new_high is not None and new_low is not None and current else None
     box_score = _clamp(90 - (box_width or 100) * 3) if box_width is not None and box_width <= 18 else 0
     box_stage = "BOX_BREAK_UP" if breakout_up else "BOX_BREAK_DOWN" if breakout_down else "BOX_TEST_UPPER" if current and new_high and current >= new_high * 0.96 else "BOX_TEST_LOWER" if current and new_low and current <= new_low * 1.04 else "BOX_BALANCE"
-    box_metrics = {"upper_boundary": _round(new_high), "lower_boundary": _round(new_low), "midline": _round((new_high + new_low) / 2 if new_high is not None and new_low is not None else None), "duration": min(features["count"], 30), "upper_test_count": touch_upper, "lower_test_count": touch_lower, "box_width_pct": _round(box_width), "lifecycle": box_stage, "breakout_quality": "待确认" if breakout_up or breakout_down else "未突破", "price_basis": features["price_basis"]}
-    patterns.append(_signal("BXDT_BOX_001", _status_for(box_score), box_score if box_score else None, subtype=box_stage, lifecycle="BREAKOUT" if "BREAK" in box_stage else "MATURE" if box_score >= 48 else "NOT_FOUND", evidence=[_evidence("箱体上下沿与中轴", "box_geometry", box_metrics)], next_confirmation=["突破后不快速回箱", "突破方向得到量价跟随"], invalidation=["有效跌破箱体下沿", "突破失败快速回箱"], chart_annotations=[{"type": "箱体", **box_metrics}], metrics=box_metrics))
+    box_metrics = {"upper_boundary": _round(new_high), "lower_boundary": _round(new_low), "midline": _round((new_high + new_low) / 2 if new_high is not None and new_low is not None else None), "duration": min(features["count"], 30), "upper_test_count": touch_upper, "lower_test_count": touch_lower, "box_width_pct": _round(box_width), "lifecycle": box_stage, "breakout_quality": "待确认" if breakout_up or breakout_down else "未突破", "price_basis": features["price_basis"], "book_verification": book_verification}
+    patterns.append(_signal("BXDT_BOX_001", _status_for(box_score), box_score if box_score else None, subtype=box_stage, lifecycle="BREAKOUT" if "BREAK" in box_stage else "MATURE" if box_score >= 48 else "NOT_FOUND", evidence=[_evidence("箱体上下沿与中轴", "box_geometry", box_metrics), _evidence("书籍规则尚未由几何代理确认", "book_verification", book_verification, "BOOK_VERIFICATION")], counter_evidence=[_evidence("前后量能、行情透支和强势盘面未核验", "volume_context", volume_context, "BOOK_VERIFICATION")], next_confirmation=["突破后不快速回箱", "突破方向得到量价跟随", "补齐前后量能、是否透支和板块互证"], invalidation=["有效跌破箱体下沿", "突破失败快速回箱"], chart_annotations=[{"type": "箱体", **box_metrics}], metrics=box_metrics))
 
     neckline = old_high
     low_count = 0
@@ -752,14 +778,37 @@ def _pattern_data(features: dict[str, Any], main_force: dict[str, Any], zones: d
     for skill_id, name in (("BXDT_NECK_001", "多底颈位"), ("BXDT_NECK_002", "圆弧底颈位"), ("BXDT_NECK_003", "V形底颈位")):
         score = neck_score if skill_id == neck_id else 0
         patterns.append(_signal(skill_id, _status_for(score), score if score else None, subtype=name if score else None, lifecycle="BREAKOUT" if score and breakout_up else "FORMING" if score else "NOT_FOUND", evidence=[_evidence("底部次数与颈位价格", "neckline", neckline), _evidence("相近低点数量", "multiple_low_count", low_count)], next_confirmation=["颈位突破并保持", "回踩颈位不重新跌破"], invalidation=["颈位下方收盘", "底部结构重新破坏"], chart_annotations=[{"type": name, "key_price": neckline, "price_basis": features["price_basis"]}], metrics={"neckline": _round(neckline), "low_count": low_count}))
-    support_score = 68 if neck_id and breakout_up else 0
-    patterns.append(_signal("BXDT_NECK_004", _status_for(support_score), support_score if support_score else None, subtype="颈位支撑" if support_score else None, lifecycle="CONFIRMED" if support_score else "NOT_FOUND", evidence=[_evidence("突破后颈位转为支撑", "neckline_support", bool(support_score))], chart_annotations=[{"type": "颈位支撑", "key_price": neckline}], metrics={"neckline": _round(neckline)}))
+    # A neckline only becomes support after a *later* retest has held.  A
+    # same-day breakout is a setup, not confirmation.  The 0.5%/1% values are
+    # engine tolerances and are deliberately disclosed as such.
+    breakout_indices = [index for index, value in enumerate(closes) if neckline and value is not None and value > neckline * 1.005]
+    first_breakout = breakout_indices[0] if breakout_indices else None
+    retest_index = None
+    support_confirmed = False
+    support_invalidated = False
+    if first_breakout is not None and first_breakout < len(closes) - 1:
+        for index in range(first_breakout + 1, len(closes)):
+            low = lows[index] if index < len(lows) else None
+            close = closes[index]
+            if close is not None and ((low is not None and low <= neckline * 1.01) or close <= neckline * 1.01):
+                retest_index = index
+                support_confirmed = close >= neckline * 0.99
+                if support_confirmed:
+                    support_invalidated = any(value is not None and value < neckline * 0.99 for value in closes[index + 1 :])
+                    break
+    if support_confirmed and current is not None and current < neckline * 0.99:
+        support_invalidated = True
+    support_score = 78 if neck_id and support_confirmed and not support_invalidated else 48 if neck_id and first_breakout is not None and not support_invalidated else 0
+    support_state = "INVALIDATED" if support_invalidated else "CONFIRMED" if support_confirmed else "RETEST_PENDING" if neck_id and first_breakout is not None else "UNKNOWN"
+    support_status = "INVALID" if support_invalidated else _status_for(support_score)
+    support_metrics = {"neckline": _round(neckline), "first_breakout_index": first_breakout, "retest_index": retest_index, "support_state": support_state, "current_close": _round(current), "engine_tolerances": {"breakout_pct": 0.5, "retest_band_pct": 1.0, "hold_pct": 1.0}, "book_verification": book_verification}
+    patterns.append(_signal("BXDT_NECK_004", support_status, support_score if support_score else None, subtype="颈位支撑" if support_confirmed and not support_invalidated else "颈位支撑已失效" if support_invalidated else "待回踩确认" if first_breakout is not None else None, lifecycle="FAILED" if support_invalidated else "CONFIRMED" if support_confirmed else "FORMING" if first_breakout is not None else "NOT_FOUND", evidence=[_evidence("突破后颈位回踩与当前守住状态", "neckline_support", support_confirmed and not support_invalidated), _evidence("书籍要求回踩止跌，工程容差仅为代理", "book_verification", book_verification, "BOOK_VERIFICATION")], counter_evidence=[_evidence("回踩后至今跌破颈位，支撑已失效", "retest_hold", support_invalidated), _evidence("缺少突破后的回踩守住证据", "retest_hold", support_confirmed)], next_confirmation=["突破后回踩颈位并有效止跌" if not support_confirmed else "继续保持在颈位之上", "补齐前后量能和强势盘面互证"], invalidation=["颈位下方收盘", "回踩后再次跌破"], chart_annotations=[{"type": "颈位支撑", "key_price": neckline}], metrics=support_metrics))
 
     higher_lows = bool(low_right and low_left and min(low_right) > min(low_left) * 0.995)
     up_score = 72 if higher_lows and (features["ma20"] or 0) < (current or 0) else 0
     prior_return = _pct(old_high, old_low) if old_high and old_low else None
     for skill_id, name, score in (("BXDT_UP_001", "缓慢顺上", up_score if up_score and abs(features["returns20"] or 0) < 18 else 0), ("BXDT_UP_002", "大波段后再顺上", up_score if up_score and abs(features["returns20"] or 0) >= 18 else 0), ("BXDT_UP_003", "小幅波段后再顺上", up_score if up_score and abs(features["returns20"] or 0) < 18 and (features["returns5"] or 0) > 2 else 0)):
-        patterns.append(_signal(skill_id, _status_for(score), score if score else None, subtype=name if score else None, evidence=[_evidence("高低点重心与均线方向", "higher_lows", higher_lows), _evidence("前波段幅度", "prior_leg_return", prior_return)], next_confirmation=["均线排列和重心继续抬升", "量能恢复而非单日脉冲"], invalidation=["高低点重新下降", "价格跌回中长期成本线"], chart_annotations=[{"type": name}], metrics={"higher_lows": higher_lows, "prior_leg_return": _round(prior_return)}))
+        patterns.append(_signal(skill_id, _status_for(score), score if score else None, subtype=name if score else None, evidence=[_evidence("高低点重心与均线方向", "higher_lows", higher_lows), _evidence("书籍规则尚未由几何代理确认", "book_verification", book_verification, "BOOK_VERIFICATION"), _evidence("前波段幅度", "prior_leg_return", prior_return)], counter_evidence=[_evidence("前后量能、回调性质和盘面未核验", "volume_context", volume_context, "BOOK_VERIFICATION")], next_confirmation=["均线排列和重心继续抬升", "量能恢复而非单日脉冲", "补齐量时空安全与强势盘面互证"], invalidation=["高低点重新下降", "价格跌回中长期成本线"], chart_annotations=[{"type": name}], metrics={"higher_lows": higher_lows, "prior_leg_return": _round(prior_return), "book_verification": book_verification}))
 
     # Trend and capital bottom sub-library. Each subtype remains a research
     # signal; a detected candle is never converted directly into a buy order.
@@ -794,11 +843,17 @@ def _pattern_data(features: dict[str, Any], main_force: dict[str, Any], zones: d
     for skill_id, name, matched, score, metrics in bottom_specs:
         patterns.append(_signal(skill_id, _status_for(score), score if score else None, subtype=name if matched else None, lifecycle="CONFIRMED" if score >= 72 else "FORMING" if matched else "NOT_FOUND", evidence=[_evidence("趋势底部候选与位置/后续价格条件", "bottom_candidate", matched), _evidence("价格数据口径", "price_basis", features["price_basis"])], counter_evidence=[_evidence("单根K线不能独立确认底部", "single_candle_boundary", True)], next_confirmation=["后续收盘继续守住关键低点", "成交和价格出现跟随确认"], invalidation=["跌破候选低点", "后续反弹失败并创出新低"], chart_annotations=[{"type": name, "key_price": features["low20"], "price_basis": features["price_basis"]}], metrics=metrics))
 
-    volume_base_score = 62 if low_position and (features["volume_ratio"] or 0) < 1.1 and (features["returns5"] or 0) > -3 else 0
+    recent_up_volume = _num(features.get("recent_up_volume")) or 0
+    recent_down_volume = _num(features.get("recent_down_volume")) or 0
+    recent_positive_count = int(features.get("positive_count") or 0)
+    recent_negative_count = int(features.get("negative_count") or 0)
+    positive_volume_dominant = bool(recent_up_volume > recent_down_volume and recent_positive_count >= recent_negative_count and recent_up_volume > 0)
+    volume_base_score = 62 if low_position and positive_volume_dominant else 0
+    capital_volume_metrics = {"low_position": low_position, "recent_up_volume": _round(recent_up_volume), "recent_down_volume": _round(recent_down_volume), "positive_count": recent_positive_count, "negative_count": recent_negative_count, "dominance": positive_volume_dominant, "window": "ENGINE_FEATURE recent 20 bars", "book_verification": book_verification}
     ma_flat = abs(features["ma_slopes"].get("ma20") or 99) < 0.15
     ma_recovery = (features["ma_slopes"].get("ma20") or -99) > 0
     capital_specs = [
-        ("BXDT_CAPITAL_001", "量能筑底", volume_base_score, {"low_position": low_position, "volume_ratio": features["volume_ratio"]}),
+        ("BXDT_CAPITAL_001", "量能筑底", volume_base_score, capital_volume_metrics),
         ("BXDT_CAPITAL_002", "均线底", 64 if ma_flat or ma_recovery else 0, {"ma_flat": ma_flat, "ma_recovery": ma_recovery}),
         ("BXDT_CAPITAL_003", "下行转走平", 60 if ma_flat else 0, {"ma20_slope": features["ma_slopes"].get("ma20")}),
         ("BXDT_CAPITAL_004", "平行转翘头上行", 68 if ma_recovery and ma_flat else 0, {"ma_recovery": ma_recovery}),
@@ -806,7 +861,7 @@ def _pattern_data(features: dict[str, Any], main_force: dict[str, Any], zones: d
         ("BXDT_CAPITAL_006", "分散转聚合再发散", 58 if ma["stage"] in {"均线发散", "均线翘头"} else 0, {"ma_stage": ma["stage"]}),
     ]
     for skill_id, name, score, metrics in capital_specs:
-        patterns.append(_signal(skill_id, _status_for(score), score if score else None, subtype=name if score else None, evidence=[_evidence("资金底部独立于趋势底部判断", "capital_bottom", bool(score)), _evidence("量能/均线证据", "metrics", metrics)], next_confirmation=["量能承接继续改善", "均线角度与距离同步改善"], invalidation=["低点再次失守", "量价重新恶化"], chart_annotations=[{"type": name, "key_price": features["low20"]}], metrics=metrics))
+        patterns.append(_signal(skill_id, _status_for(score), score if score else None, subtype=name if score else None, evidence=[_evidence("资金底部独立于趋势底部判断", "capital_bottom", bool(score)), _evidence("量能/均线证据", "metrics", metrics), _evidence("书籍规则与工程窗口核验", "book_verification", book_verification, "BOOK_VERIFICATION")], counter_evidence=[_evidence("阴量主导时不可认作正向量能筑底", "positive_volume_dominance", positive_volume_dominant)], next_confirmation=["量能承接继续改善", "均线角度与距离同步改善", "继续观察阳量相对阴量是否保持占优"], invalidation=["低点再次失守", "量价重新恶化", "阴量重新主导"], chart_annotations=[{"type": name, "key_price": features["low20"]}], metrics=metrics))
 
     # Three degrees are intentionally exposed separately.
     duration = _clamp(features["count"] / 2)
@@ -828,9 +883,10 @@ def _pattern_data(features: dict[str, Any], main_force: dict[str, Any], zones: d
 
     peak = features["high120"]
     peak_distance = _pct(current, peak) if current and peak else None
-    peak_score = 82 if peak_distance is not None and peak_distance >= -1 and (features["volume_ratio"] or 0) >= 1.2 else 62 if peak_distance is not None and peak_distance >= -8 else 25 if peak_distance is not None else 0
-    peak_state = "PEAK_HOLD" if peak_score >= 82 and current and peak and current >= peak else "PEAK_BREAK" if peak_score >= 82 else "PEAK_APPROACH" if peak_score >= 62 else "PEAK_FAR"
-    patterns.append(_signal("BXDT_PEAK_001", _status_for(peak_score), peak_score if peak_score else None, subtype=peak_state, lifecycle="BREAKOUT" if peak_state == "PEAK_BREAK" else "TESTING" if peak_state == "PEAK_TEST" else "FORMING" if peak_state == "PEAK_APPROACH" else "NOT_FOUND", evidence=[_evidence("历史巅峰与当前价格距离", "peak_distance_pct", peak_distance), _evidence("突破后的量能", "volume_ratio", features["volume_ratio"])], next_confirmation=["突破后至少保持一个完整收盘周期", "量能和核心板块同步确认"], invalidation=["突破失败重新跌回巅峰下方", "高位放量滞涨"], chart_annotations=[{"type": "历史巅峰", "key_price": peak}], metrics={"historical_peak": _round(peak), "distance_pct": _round(peak_distance), "state": peak_state}))
+    peak_score = 48 if peak_distance is not None and peak_distance >= -8 else 25 if peak_distance is not None else 0
+    peak_state = "PEAK_TEST" if peak_distance is not None and peak_distance >= -1 else "PEAK_APPROACH" if peak_score else "PEAK_FAR"
+    peak_metrics = {"historical_peak": _round(peak), "distance_pct": _round(peak_distance), "state": peak_state, "direction": "RISK_OBSERVATION_UNTIL_HOLD", "book_verification": book_verification}
+    patterns.append(_signal("BXDT_PEAK_001", _status_for(peak_score), peak_score if peak_score else None, subtype=peak_state, lifecycle="TESTING" if peak_state == "PEAK_TEST" else "FORMING" if peak_state == "PEAK_APPROACH" else "NOT_FOUND", evidence=[_evidence("历史巅峰接近仅作风险观察", "peak_distance_pct", peak_distance), _evidence("书籍未给出120日/距离硬阈值", "book_verification", book_verification, "BOOK_VERIFICATION")], counter_evidence=[_evidence("高位峰值接近不等于巅峰超越确认", "peak_is_not_confirmation", True)], next_confirmation=["突破后至少保持一个完整收盘周期", "量能和核心板块同步确认", "区分健康高点与不健康顶点"], invalidation=["突破失败重新跌回巅峰下方", "高位放量滞涨"], chart_annotations=[{"type": "历史巅峰", "key_price": peak}], metrics=peak_metrics))
     detail = {"triangle": triangle_common, "triangle_type": triangle_type, "box": box_metrics, "neckline": _round(neckline), "up": {"higher_lows": higher_lows}, "bottom": {"low_position": low_position}, "capital": {"volume_base_score": _round(volume_base_score), "ma_flat": ma_flat}, "three_degree": degree, "peak": {"state": peak_state, "price": _round(peak)}}
     return patterns, detail
 
@@ -878,10 +934,16 @@ def _stars(features: dict[str, Any], zones: dict[str, Any], main_force: dict[str
     output: list[dict[str, Any]] = []
     for skill_id, name, matched, score, category, metrics in configs:
         status = _status_for(score)
+        # The book requires a subsequent price/volume response. This
+        # point-in-time sample has no future bar, so a threshold hit is only
+        # a forming candidate.
+        if matched and status == "CONFIRMED":
+            status = "FORMING"
         if matched and category == "攻击" and zones["zone"] == "风险C区":
             status = "POSSIBLE"
             score = min(score, 48)
         output.append(_signal(skill_id, status, score if score else None, subtype=name if matched else None, lifecycle="CONFIRMED" if status == "CONFIRMED" else "FORMING" if matched else "NOT_FOUND", evidence=[_evidence("星线本体与前置趋势、位置、量、均线、主力共同核验", "context_gate", matched), _evidence("星线实体/影线", "body_upper_lower", {"body": body, "upper": upper, "lower": lower}), _evidence("位置", "position120", position)], counter_evidence=[_evidence("只凭单根K线形状不能确认星线", "single_candle_only", True), _evidence("风险C区会压低攻击星线优先级", "risk_zone_priority", zones["zone"] == "风险C区")], next_confirmation=["下一交易日价格继续确认", "成交和板块/题材出现跟随"], invalidation=["关键支撑失守", "星线后续未能保持关键位", "反证占据主导"], conflicts=["风险C区 + 攻击之星：风险优先"] if category == "攻击" and zones["zone"] == "风险C区" else [], chart_annotations=[{"type": name, "key_price": features["close"], "trade_date": features["bars_end"]}], metrics=metrics))
+        output[-1]["evidence"].append(_evidence("工程阈值命中；尚缺书籍要求的后续价格/成交确认" if matched else "未命中工程代理阈值", "book_verification", matched, "BOOK_RULE"))
 
     classic_specs = [
         ("BXZX_CLASSIC_BOTTOM_001", "定海神针见底", lower >= 45 and lower > upper and (features["position120"] or 50) < 35 and support_or_reclaim(features), 70),
@@ -897,8 +959,13 @@ def _stars(features: dict[str, Any], zones: dict[str, Any], main_force: dict[str
     ]
     for skill_id, name, matched, score in classic_specs:
         status = _status_for(score if matched else 0)
+        if matched:
+            # Classic top/bottom shapes are candidates until follow-through.
+            status = "FORMING"
         output.append(_signal(skill_id, status, score if matched else None, subtype=name if matched else None, lifecycle="CONFIRMED" if status == "CONFIRMED" else "FORMING" if matched else "NOT_FOUND", evidence=[_evidence("经典星线本体", "classic_body", matched), _evidence("前置趋势/位置门槛", "context_gate", {"prior_up": prior_up, "prior_down": prior_down, "position120": position}), _evidence("影线比例", "upper_lower_wick", {"upper": upper, "lower": lower})], counter_evidence=[_evidence("经典星线必须等待后续确认", "follow_through_required", True)], next_confirmation=["后续价格不能立即破坏关键位", "成交与均线/主力证据继续配合"], invalidation=["跌破关键低点", "高位星线后继续创新高并有效保持"], chart_annotations=[{"type": name, "key_price": features["close"]}], metrics={"position120": position, "body_ratio": body, "upper_wick": upper, "lower_wick": lower}))
-    strongest = max((item for item in output if item["status"] != "NOT_FOUND"), key=lambda item: item.get("confidence") or 0, default=None)
+        output[-1]["evidence"].append(_evidence("顶部风险候选；需后续破位/失败确认" if "TOP" in skill_id else "底部候选；需后续价格确认", "book_verification", matched, "BOOK_RULE"))
+    top_ids = {"BXZX_CLASSIC_TOP_001", "BXZX_CLASSIC_TOP_002", "BXZX_CLASSIC_TOP_003", "BXZX_CLASSIC_TOP_004"}
+    strongest = max((item for item in output if item["status"] != "NOT_FOUND" and item["skill_id"] not in top_ids), key=lambda item: item.get("confidence") or 0, default=None)
     return output, {"strongest": strongest, "context_gate": {"prior_trend": "上涨" if prior_up else "下跌" if prior_down else "中性", "position": "高位" if position >= 72 else "中低位", "volume": "放量" if vr >= 1.5 else "正常/缩量", "zone": zones["zone"]}}
 
 
@@ -967,27 +1034,37 @@ def _stock_character(features: dict[str, Any]) -> dict[str, Any]:
 
 
 def _buy_point(features: dict[str, Any], zones: dict[str, Any], main_force: dict[str, Any], stars: list[dict[str, Any]], patterns: list[dict[str, Any]], risk: dict[str, Any]) -> dict[str, Any]:
-    active_stars = [item for item in stars if item.get("status") in {"POSSIBLE", "FORMING", "CONFIRMED"}]
+    active_stars = [item for item in stars if item.get("status") in {"POSSIBLE", "FORMING", "CONFIRMED"} and not item.get("skill_id", "").startswith("BXZX_CLASSIC_TOP")]
     active_patterns = [item for item in patterns if item.get("status") in {"POSSIBLE", "FORMING", "CONFIRMED"}]
     has_attack = any(item["skill_id"] in {"BXZX_009", "BXZX_010"} and item["status"] in {"FORMING", "CONFIRMED"} for item in active_stars)
     has_classic = any(item["skill_id"].startswith("BXZX_CLASSIC") and item["status"] in {"FORMING", "CONFIRMED"} for item in active_stars)
     danger = (risk.get("overall_score") or 0) >= 72 or zones["zone"] == "风险C区"
     if danger:
-        level = "臆想买点" if active_stars or active_patterns else "一般买点"
+        legacy_level = "臆想买点" if active_stars or active_patterns else "一般买点"
     elif has_attack and zones["zone"] in {"强势A区", "强势B区"} and main_force.get("direction") == "偏多":
-        level = "强势买点"
+        legacy_level = "强势买点"
     elif has_classic:
-        level = "经典买点"
+        legacy_level = "经典买点"
     elif zones["zone"] in {"强势A区", "强势B区"} and main_force.get("direction") == "偏多":
-        level = "一般买点"
+        legacy_level = "一般买点"
     else:
-        level = "臆想买点"
+        legacy_level = "臆想买点"
     requirements = {"强势买点": ["盘面吻合", "位置协调", "主力方向偏多", "量价和形态互证"], "经典买点": ["经典位置", "经典形态", "后续确认"], "一般买点": ["量价未明显透支", "健康调整", "再次进攻"], "臆想买点": ["不能只看急拉、缩量、下影或金叉", "补齐位置、主力、量和大盘证据"]}
+    blocked = danger
+    level = "仅研究观察" if blocked else legacy_level
+    permission = "BLOCK" if blocked else "RESEARCH_ONLY"
+    reason = (
+        "风险C区/高风险优先阻断积极买点；存在主动形态研究信号但仅供研究观察。"
+        if blocked and (active_stars or active_patterns)
+        else "风险C区/高风险优先阻断积极买点，当前未形成明确主动形态；仅供研究观察。"
+        if blocked
+        else "买点仅作为研究分类，尚未授权自动交易。"
+    )
     levels = []
     for name in ("强势买点", "经典买点", "一般买点", "臆想买点"):
-        active = level == name
+        active = not blocked and legacy_level == name
         levels.append({"name": name, "status": "CONFIRMED" if active else "NOT_FOUND", "matched": requirements[name] if active else [], "missing": [] if active else requirements[name]})
-    return {"level": level, "is_imagined": level == "臆想买点", "levels": levels, "matched_skills": [item["skill_id"] for item in active_stars + active_patterns], "missing_evidence": ["大势许可", "板块宽度", "后续确认"] if level in {"强势买点", "经典买点"} else requirements[level], "counter_evidence": ["风险C区优先", "单一K线/指标不能形成买点"], "note": "买点等级是研究分类，不是交易指令。"}
+    return {"level": level, "legacy_level": legacy_level, "effective_buy_permission": permission, "reason": reason, "is_imagined": level in {"臆想买点", "仅研究观察"}, "levels": levels, "matched_skills": [item["skill_id"] for item in active_stars + active_patterns], "missing_evidence": ["风险解除", "大势许可", "板块宽度", "后续确认"] if blocked else (["大势许可", "板块宽度", "后续确认"] if level in {"强势买点", "经典买点"} else requirements[level]), "counter_evidence": ["风险C区优先", "单一K线/指标不能形成买点"], "note": "买点等级是研究分类，不是交易指令；风险阻断时仅供研究观察。"}
 
 
 def _sell(risk: dict[str, Any], zones: dict[str, Any], stars: list[dict[str, Any]], features: dict[str, Any]) -> dict[str, Any]:
@@ -997,7 +1074,7 @@ def _sell(risk: dict[str, Any], zones: dict[str, Any], stars: list[dict[str, Any
     obvious = top_score >= 75 and (features["upper_wick"] or 0) >= 25 and (features["returns5"] or 0) <= 0
     meet = top_score >= 48
     c_zone = zones["zone"] == "风险C区"
-    return {"obvious_top": {"state": "TOP_CONFIRMED" if obvious else "TOP_FORMING" if top_score >= 48 else "TOP_WARNING" if top_score >= 28 else "NOT_FOUND", "evidence": ["高位放量/滞涨", "上影或价格推进效率下降"]}, "meet_top": {"state": "REJECTED_BY_TOP" if meet and (features["returns5"] or 0) < 0 else "APPROACHING_TOP" if meet else "NOT_FOUND", "evidence": ["历史顶部/密集成交区", f"压力分数={_round(top_score)}"]}, "c_zone": {"state": "C_EXIT" if c_zone and (risk.get("overall_score") or 0) >= 78 else "C_DEEPENING" if c_zone else "NOT_FOUND", "evidence": zones.get("reasons", [])}, "classic_top": {"state": "CONFIRMED" if classic_top else "NOT_FOUND", "matched": [item["name"] for item in classic_top]}, "risk_priority": "RISK" if c_zone or obvious or classic_top else "WATCH", "signals": [_signal("HQS_015", "CONFIRMED" if obvious else "POSSIBLE" if top_score >= 48 else "NOT_FOUND", top_score if top_score >= 28 else None, evidence=[_evidence("明显见顶需要多项证据共同出现", "top_score", top_score)], conflicts=["攻击星线不能抵消明显见顶"] if obvious else []), _signal("HQS_016", "FORMING" if meet else "NOT_FOUND", top_score if meet else None, evidence=[_evidence("遇顶不等于已经见顶", "historical_pressure", meet)]), _signal("HQS_017", "CONFIRMED" if c_zone else "NOT_FOUND", 82 if c_zone else None, evidence=[_evidence("读取A/B/C状态机", "zone", zones["zone"])])], "note": "明显遇顶与明显见顶分开；风险C区优先于题材和攻击信号。"}
+    return {"obvious_top": {"state": "TOP_CONFIRMED" if obvious else "TOP_FORMING" if top_score >= 48 else "TOP_WARNING" if top_score >= 28 else "NOT_FOUND", "evidence": ["高位放量/滞涨", "上影或价格推进效率下降"]}, "meet_top": {"state": "REJECTED_BY_TOP" if meet and (features["returns5"] or 0) < 0 else "APPROACHING_TOP" if meet else "NOT_FOUND", "evidence": ["历史顶部/密集成交区", f"压力分数={_round(top_score)}"]}, "c_zone": {"state": "C_EXIT" if c_zone and (risk.get("overall_score") or 0) >= 78 else "C_DEEPENING" if c_zone else "NOT_FOUND", "evidence": zones.get("reasons", [])}, "classic_top": {"state": "OBSERVING" if classic_top else "NOT_FOUND", "matched": [item["name"] for item in classic_top], "evidence": ["书籍顶部星线候选；尚缺后续破位/失败确认"] if classic_top else []}, "risk_priority": "RISK" if c_zone or obvious or classic_top else "WATCH", "signals": [_signal("HQS_015", "CONFIRMED" if obvious else "POSSIBLE" if top_score >= 48 else "NOT_FOUND", top_score if top_score >= 28 else None, evidence=[_evidence("明显见顶需要多项证据共同出现", "top_score", top_score)], conflicts=["攻击星线不能抵消明显见顶"] if obvious else []), _signal("HQS_016", "FORMING" if meet else "NOT_FOUND", top_score if meet else None, evidence=[_evidence("遇顶不等于已经见顶", "historical_pressure", meet)]), _signal("HQS_017", "CONFIRMED" if c_zone else "NOT_FOUND", 82 if c_zone else None, evidence=[_evidence("读取A/B/C状态机", "zone", zones["zone"])])], "note": "明显遇顶与明显见顶分开；风险C区优先于题材和攻击信号；顶部星线候选不升级为书籍确认。"}
 
 
 def _stacking(zones: dict[str, Any], main_force: dict[str, Any], ma: dict[str, Any], patterns: list[dict[str, Any]], stars: list[dict[str, Any]], theme: dict[str, Any], character: dict[str, Any], buy: dict[str, Any], sell: dict[str, Any]) -> dict[str, Any]:

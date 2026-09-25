@@ -39,6 +39,7 @@ import {
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import StockKlineButton from '@/components/StockKlineButton';
 import { apiFetch, friendlyApiError } from '@/lib/api';
+import WildmanAuthorityCard from '@/components/decision/WildmanAuthorityCard';
 
 type NullableNumber = number | null | undefined;
 
@@ -766,7 +767,7 @@ function TodayActionCenter({ forecast, supplement }: { forecast: ForecastSnapsho
     <section id="action-center" className="v5-panel mb-2 min-w-0">
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
         <div className="min-w-0"><div className="flex items-center gap-2"><Target size={15} className="shrink-0 text-accent" /><h2 className="text-sm font-semibold text-text">今日行动中心</h2></div><p className="mt-1 text-[10px] leading-4 text-text-secondary">先统一许可，再按当前阶段执行；系统只提供研究与风控边界，不替代你的下单决定。</p></div>
-        <div className="flex max-w-full flex-wrap items-center gap-2 text-[10px]"><span className="text-text-secondary">交易许可</span><span className={`rounded border border-border px-2 py-1 font-medium ${permissionTone}`}>{permission.label || readableStatus(code)}</span>{finite(permission.max_total_position_pct) && <span className="font-mono text-text-secondary">仓位上限 {permission.max_total_position_pct}%</span>}</div>
+        <div className="flex max-w-full flex-wrap items-center gap-2 text-[10px]"><span className="text-text-secondary">V4/数据闸门原上限</span><span className={`rounded border border-border px-2 py-1 font-medium ${permissionTone}`}>{permission.label || readableStatus(code)}</span>{finite(permission.max_total_position_pct) && <span className="font-mono text-text-secondary">原参考上限 {permission.max_total_position_pct}%</span>}</div>
       </div>
       <div className="grid min-w-0 gap-0 md:grid-cols-[minmax(0,1.05fr)_minmax(0,1.25fr)]">
         <div className="min-w-0 border-b border-border p-4 md:border-b-0 md:border-r">
@@ -1114,7 +1115,7 @@ function StrategyAdvice({ forecast, supplement }: { forecast: ForecastSnapshot; 
   const position = nonExecutable ? 0 : permission.max_total_position_pct;
   const action = permission.label || forecast.risk_preference.label || '等待验证';
   const sectors = (forecast.sector_forecasts || []).filter((item) => tone(item.state) === 'up').slice(0, 3).map((item) => item.name);
-  return <section className="v5-panel v5-advice-panel"><SectionHeader icon={SlidersHorizontal} title="今日策略建议" subtitle="服从今日行动中心的统一交易许可" /><div className="v5-advice-content"><div><span>仓位建议</span><strong className={toneClass(action)}>{finite(position) ? `控制在 ${position}% 内` : '等待数据确认'}</strong></div><div><span>风格建议</span><strong className={permissionCode === 'BLOCK' || permissionCode === 'NO_TRADE' ? 'text-down' : nonExecutable ? 'text-warn' : undefined}>{action}</strong></div><div><span>重点观察</span><div className="flex flex-wrap gap-1.5">{sectors.length ? sectors.map((item) => <span key={item} className="v5-tag">{item}</span>) : <span className="text-xs text-text-secondary">等待板块确认</span>}</div></div></div><div className="border-t border-border px-3 py-2 text-[9px] leading-4 text-warn">不输出“必涨、稳赚、强烈买入”；当前置信上限 {percent(forecast.data_health.confidence_ceiling_pct)}。</div></section>;
+  return <section className="v5-panel v5-advice-panel"><SectionHeader icon={SlidersHorizontal} title="今日策略建议" subtitle="服从今日行动中心的统一纪律参考；有效上限见野人哥主观点卡" /><div className="v5-advice-content"><div><span>V4/数据闸门原参考</span><strong className={toneClass(action)}>{finite(position) ? `原参考 ${position}% 内` : '等待数据确认'}</strong></div><div><span>风格建议</span><strong className={permissionCode === 'BLOCK' || permissionCode === 'NO_TRADE' ? 'text-down' : nonExecutable ? 'text-warn' : undefined}>{action}</strong></div><div><span>重点观察</span><div className="flex flex-wrap gap-1.5">{sectors.length ? sectors.map((item) => <span key={item} className="v5-tag">{item}</span>) : <span className="text-xs text-text-secondary">等待板块确认</span>}</div></div></div><div className="border-t border-border px-3 py-2 text-[9px] leading-4 text-warn">不输出“必涨、稳赚、强烈买入”；当前置信上限 {percent(forecast.data_health.confidence_ceiling_pct)}。</div></section>;
 }
 
 export default function MarketDecisionWorkbenchPage() {
@@ -1298,6 +1299,7 @@ export default function MarketDecisionWorkbenchPage() {
           {(notice || error) && <div className={`v5-notice ${error ? 'error' : ''}`}><span>{error || notice}</span><button type="button" onClick={() => { setNotice(''); setError(''); }} aria-label="关闭提示"><X size={13} /></button></div>}
 
           <div className="v5-content">
+            <WildmanAuthorityCard refreshKey={forecast.forecast_date} />
             <TodayActionCenter forecast={forecast} supplement={supplement} />
             <div className="v5-dashboard-grid"><div className="min-w-0"><ForecastTimeline forecast={forecast} onRefresh={() => void load(true)} skillFilters={skillFilters} onSkillFilterChange={(next) => void refreshSkillScope(next)} skillFilterBusy={skillFilterBusy} skillsLoading={skillsLoading} /></div><MarketStatePanel supplement={supplement} overview={overview} /><div id="events" className="min-w-0"><EventMonitor forecast={forecast} supplement={supplement} /></div></div>
 

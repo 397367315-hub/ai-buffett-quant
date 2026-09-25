@@ -29,6 +29,7 @@ import {
 import AddToPersonalPoolButton from '@/components/AddToPersonalPoolButton';
 import StockKlineButton from '@/components/StockKlineButton';
 import { apiFetch, friendlyApiError } from '@/lib/api';
+import WildmanAuthorityCard from '@/components/decision/WildmanAuthorityCard';
 
 interface WorkbenchMeta {
   contract_version?: string;
@@ -1193,6 +1194,7 @@ export default function MarketDecisionWorkbenchPage() {
         </div>
       </header>
 
+      <WildmanAuthorityCard refreshKey={data.meta.decision_date || data.meta.updated_at} />
       {notice && (
         <div className={`mb-4 border-l-2 px-3 py-2 text-xs ${notice.startsWith('已重新') ? 'border-up bg-up/5 text-up' : 'border-warn bg-warn/5 text-warn'}`}>
           {notice}
@@ -1335,7 +1337,7 @@ export default function MarketDecisionWorkbenchPage() {
         <MetricCell label="今日交易许可" primary={decision.trading_permission.label} secondary={decision.trading_permission.allows_new_position ? '可筛选高质量机会' : '不生成主动执行建议'} tone={permissionTone(decision.trading_permission.code).split(' ')[0]} />
         <MetricCell label="市场阶段" primary={decision.market_regime.label} secondary={`${decision.market_regime.code} · ${value(decision.market_regime.score)}分`} tone={stateTone(decision.market_regime.code).split(' ')[0]} />
         <MetricCell label="机会密度" primary={value(decision.opportunity_density.score)} secondary={`${decision.opportunity_density.label} · Alpha ${decision.opportunity_density.independent_alpha_count}`} tone={decision.opportunity_density.score != null && decision.opportunity_density.score >= 70 ? 'text-up' : decision.opportunity_density.score != null && decision.opportunity_density.score >= 45 ? 'text-warn' : 'text-down'} />
-        <MetricCell label="建议总仓上限" primary={`${decision.trading_permission.max_total_position_pct}%`} secondary="最终决策由用户掌握" tone={decision.trading_permission.max_total_position_pct > 35 ? 'text-up' : decision.trading_permission.max_total_position_pct > 0 ? 'text-warn' : 'text-down'} />
+        <MetricCell label="V4模型原参考上限" primary={`${decision.trading_permission.max_total_position_pct}%`} secondary="有效上限见野人哥主观点卡" tone={decision.trading_permission.max_total_position_pct > 35 ? 'text-up' : decision.trading_permission.max_total_position_pct > 0 ? 'text-warn' : 'text-down'} />
         <MetricCell label="条件单" primary={`${decision.conditional_orders.execute.length} / ${decision.conditional_orders.prepare.length} / ${decision.conditional_orders.alert.length}`} secondary="执行 / 准备 / 预警" tone="text-accent" />
       </section>
 
@@ -1440,7 +1442,7 @@ export default function MarketDecisionWorkbenchPage() {
               <ul className="mt-2 space-y-1.5 text-xs leading-5 text-text">
                 <li>· 主线：{data.ai_judgement.dominant_sectors.join('、') || '待识别'}</li>
                 <li>· 优先：{data.ai_judgement.preferred_strategies.join('、') || '暂无允许策略'}</li>
-                <li>· 总仓上限：{data.strategy_selector.max_total_position_pct}%</li>
+                <li>· V4模型原参考上限：{data.strategy_selector.max_total_position_pct}%（有效上限见野人哥主观点卡）</li>
               </ul>
             </div>
             <div>
@@ -1670,7 +1672,7 @@ export default function MarketDecisionWorkbenchPage() {
         <section className="overflow-hidden rounded-md border border-border bg-card">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <h2 className="flex items-center gap-2 text-sm font-semibold text-text"><Target size={15} className="text-accent" />今日策略许可</h2>
-            <span className="text-[10px] text-text-secondary">总仓 ≤ {data.strategy_selector.max_total_position_pct}%</span>
+            <span className="text-[10px] text-text-secondary">V4模型原参考上限 ≤ {data.strategy_selector.max_total_position_pct}% · 有效上限见主观点卡</span>
           </div>
           <div className="divide-y divide-border">
             {data.strategy_selector.strategies.map((strategy) => {

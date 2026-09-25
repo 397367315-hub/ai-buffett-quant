@@ -7,6 +7,7 @@ Shadow snapshot for replay and verification.
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable
@@ -48,6 +49,9 @@ from strong_stock_decision.v21_engine import (
     MarketRegimeEngine,
     PostMarketDecisionOrchestrator,
 )
+from strong_stock_decision.book_evidence import summarize_hunter_evidence
+from strong_stock_decision.candidate_review import summarize_candidate_review
+from strong_stock_decision.v2_engine import build_v2
 
 
 def _date(value: Any) -> date | None:
@@ -106,6 +110,58 @@ def _row_payload(row: Any) -> dict[str, Any]:
 class StrongStockV21Service:
     CANDIDATE_CACHE_PREFIX = "strong_stock_v21_full_market_v1"
     MAX_SHORTLIST = 120
+    MAX_BOOK_REVIEW = 40
+    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V1"
+    _overview_lock = asyncio.Lock()
+
+    @classmethod
+    def _overview_cache_key(cls, target: date, exclude_star_market: bool, exclude_gem: bool) -> str:
+        return f"{cls.SNAPSHOT_VERSION}:{target.isoformat()}:star{int(exclude_star_market)}:gem{int(exclude_gem)}"
+
+    async def _attach_book_reviews(self, candidates: list[dict[str, Any]], target: date, scan_metadata: dict[str, Any]) -> int:
+        rows = candidates[: self.MAX_BOOK_REVIEW]
+        symbols = list(dict.fromkeys(str(row.get("symbol") or "") for row in rows if row.get("symbol")))
+        if not symbols:
+            scan_metadata["book_reviewed_count"] = 0
+            scan_metadata["book_review_attempted_count"] = 0
+            source_date = _date(scan_metadata.get("data_date"))
+            scan_metadata["decision_date"] = target.isoformat()
+            scan_metadata["date_match"] = source_date == target
+            scan_metadata["data_quality"] = {"status": "COMPLETE" if source_date == target else "STALE", "source_date": source_date.isoformat() if source_date else None, "decision_date": target.isoformat()}
+            return 0
+        cutoff = target - timedelta(days=200)
+        async with async_session() as session:
+            bars = list((await session.execute(select(StockDailyBar).where(
+                StockDailyBar.stock_code.in_(symbols), StockDailyBar.trade_date >= cutoff,
+                StockDailyBar.trade_date <= target,
+            ).order_by(StockDailyBar.stock_code.asc(), StockDailyBar.trade_date.asc()))).scalars().all())
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for bar in bars:
+            grouped[str(bar.stock_code)].append({"trade_date": bar.trade_date, "open": bar.open_price, "close": bar.close_price, "high": bar.high_price, "low": bar.low_price, "volume": bar.volume, "amount": bar.amount, "change_pct": bar.change_pct})
+        reviewed = 0
+        selection_date = scan_metadata.get("data_date")
+        for row in rows:
+            symbol = str(row.get("symbol") or "")
+            point_bars = grouped.get(symbol, [])
+            source_date = (row.get("system_selection") or {}).get("run_date") or selection_date
+            legacy_zone = row.get("zone") if row.get("zone") not in {None, "UNKNOWN"} else None
+            legacy = {"best_trading_zone": {"zone": legacy_zone, "stage": row.get("zone_stage")}} if legacy_zone else None
+            v2 = build_v2({"symbol": symbol, "name": row.get("stock_name"), "bars": point_bars, "sector": None, "sector_flow": [], "source_status": {"source": "local_daily_bars"}}, legacy=legacy)
+            evidence = summarize_hunter_evidence(context={"bars": point_bars, "as_of": target.isoformat()}, zone=(v2.get("zones") or {}).get("zone"))
+            review = summarize_candidate_review(v2, evidence, decision_date=target.isoformat(), selection_date=source_date, bar_count=len(point_bars))
+            review["zone_source"] = "V1_EXISTING" if legacy_zone else "V2_RESEARCH_PROXY"
+            row.update({"book_review": review, "book_review_status": review.get("status"), "book_zone_state": (review.get("hunter") or {}).get("status"), "book_risk_state": "RISK" if review.get("risk_priority") else "NONE", "book_reviewed": (review.get("data_quality") or {}).get("status") == "AVAILABLE"})
+            reviewed += int(row["book_reviewed"])
+        for row in candidates[self.MAX_BOOK_REVIEW:]:
+            row.update({"book_review": {"status": "UNREVIEWED", "reason": "超过每次扫描40只本地审阅上限"}, "book_review_status": "UNREVIEWED", "book_reviewed": False})
+        scan_metadata["book_reviewed_count"] = reviewed
+        scan_metadata["book_review_attempted_count"] = len(rows)
+        scan_metadata["book_review_limit"] = self.MAX_BOOK_REVIEW
+        source_date = _date(scan_metadata.get("data_date"))
+        scan_metadata["decision_date"] = target.isoformat()
+        scan_metadata["date_match"] = source_date == target
+        scan_metadata["data_quality"] = {"status": "STALE" if source_date != target else "COMPLETE" if reviewed == len(rows) and rows else "PARTIAL", "source_date": source_date.isoformat() if source_date else None, "decision_date": target.isoformat(), "message": None if source_date == target and reviewed == len(rows) else "初筛来源日或本地日线证据不完整，三书结果仅保留待核验/观察"}
+        return reviewed
 
     def __init__(self) -> None:
         self.orchestrator = PostMarketDecisionOrchestrator()
@@ -151,7 +207,7 @@ class StrongStockV21Service:
             "failed_limit_rate": getattr(latest, "failed_limit_rate", None) if latest else None,
             "market_flow": getattr(latest_flow, "main_net_inflow", None) if latest_flow else None,
             "source": getattr(latest, "source", None) if latest else "market_sentiment_daily",
-            "data_date": target.isoformat(),
+            "data_date": _iso(getattr(latest, "trade_date", None)) if latest else None,
         }
         # A daily stock cache is the auditable fallback outside the session.
         # It is not labelled realtime and it is never used as a synthetic index.
@@ -169,7 +225,7 @@ class StrongStockV21Service:
             board_names: dict[tuple[str, str], str] = {}
             for kind, model in models:
                 rows = list((await session.execute(
-                    select(model).where(model.trade_date <= target).order_by(model.trade_date.asc()).limit(12000)
+                    select(model).where(model.trade_date <= target).order_by(desc(model.trade_date)).limit(12000)
                 )).scalars().all())
                 codes = list({str(row.board_code) for row in rows})
                 if codes:
@@ -181,7 +237,8 @@ class StrongStockV21Service:
                 by_date: dict[date, list[Any]] = defaultdict(list)
                 for row in rows:
                     by_date[row.trade_date].append(row)
-                for trade_day, day_rows in by_date.items():
+                for trade_day in sorted(by_date):
+                    day_rows = by_date[trade_day]
                     ordered = sorted(day_rows, key=lambda item: _num(item.main_net_inflow) if _num(item.main_net_inflow) is not None else -float("inf"), reverse=True)
                     for rank, row in enumerate(ordered, start=1):
                         code = str(row.board_code)
@@ -253,6 +310,7 @@ class StrongStockV21Service:
     async def _current_scan_candidates(
         self,
         *,
+        target: date,
         exclude_star_market: bool,
         exclude_gem: bool,
         refresh: bool,
@@ -272,7 +330,7 @@ class StrongStockV21Service:
 
         market_open = is_a_share_market_session(shanghai_now())
         source_result: dict[str, Any] = {}
-        should_fetch = refresh or market_open or not cached.get("stocks")
+        should_fetch = refresh or market_open or not cached.get("stocks") or _date(cached.get("data_date")) != target
         if should_fetch:
             try:
                 source_result = await collector.fetch_intelligent_selection_candidates(page_size=500)
@@ -380,6 +438,7 @@ class StrongStockV21Service:
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if current_scan:
             base_rows, scan_metadata = await self._current_scan_candidates(
+                target=target,
                 exclude_star_market=exclude_star_market,
                 exclude_gem=exclude_gem,
                 refresh=refresh,
@@ -449,8 +508,15 @@ class StrongStockV21Service:
         for candidate in base_rows:
             symbol = str(candidate.get("symbol") or "")
             zone = latest_zone.get(symbol)
+            zone_source_date = _date(getattr(zone, "trade_time", None)) if zone else None
+            canonical_zone = zone if zone_source_date == target else None
             main, consensus, theme, bar = latest_main.get(symbol), latest_consensus.get(symbol), latest_theme.get(symbol), latest_bar.get(symbol)
+            main_source_date = _date(getattr(main, "trade_time", None)) if main else None
+            consensus_source_date = _date(getattr(consensus, "trade_time", None)) if consensus else None
+            theme_source_date = _date(getattr(theme, "trade_time", None)) if theme else None
+            bar_source_date = _date(getattr(bar, "trade_date", None)) if bar else None
             universe = latest_universe.get(symbol)
+            universe_source_date = _date(getattr(universe, "trade_date", None)) if universe else None
             industry_name = str(getattr(universe, "industry", None) or candidate.get("sector_name") or "").strip() or None
             theme_name = getattr(theme, "theme_name", None) if theme else None
             result.append({
@@ -462,16 +528,16 @@ class StrongStockV21Service:
                 "sector_id": industry_names.get(industry_name, "UNKNOWN"),
                 "sector_name": industry_name or theme_name,
                 "sector_type": "industry" if industry_name else None,
-                "theme_name": theme_name,
-                "zone": zone.zone if zone else "UNKNOWN", "zone_stage": zone.zone_stage if zone else "UNKNOWN",
-                "main_force_state": getattr(main, "main_force_direction", None) if main else None,
+                "theme_name": theme_name if theme_source_date == target else None, "theme_source_date": theme_source_date.isoformat() if theme_source_date else None,
+                "zone": canonical_zone.zone if canonical_zone else "UNKNOWN", "zone_stage": canonical_zone.zone_stage if canonical_zone else "UNKNOWN", "zone_source_date": zone_source_date.isoformat() if zone_source_date else None,
+                "main_force_state": getattr(main, "main_force_direction", None) if main_source_date == target else None, "main_force_source_date": main_source_date.isoformat() if main_source_date else None,
                 "volume_price_state": None, "ma_state": None,
                 "big_pattern_state": None, "rising_star_state": None,
-                "three_books_consensus": getattr(consensus, "consensus_level", None) if consensus else None,
-                "risk_state": "C_RISK" if zone and ("C" in str(zone.zone) or "C_" in str(zone.zone_stage)) else None,
-                "close_price": getattr(bar, "close_price", None) if bar else candidate.get("close_price"),
-                "change_pct": getattr(bar, "change_pct", None) if bar else candidate.get("change_pct"),
-                "invalidation": ["交易区进入C区", "板块生命周期转为FADING"] if zone else ["等待V2.0交易区与板块生命周期确认"],
+                "three_books_consensus": getattr(consensus, "consensus_level", None) if consensus_source_date == target else None, "consensus_source_date": consensus_source_date.isoformat() if consensus_source_date else None,
+                "risk_state": "C_RISK" if canonical_zone and ("C" in str(canonical_zone.zone) or "C_" in str(canonical_zone.zone_stage)) else None,
+                "close_price": getattr(bar, "close_price", None) if bar_source_date == target else None,
+                "change_pct": getattr(bar, "change_pct", None) if bar_source_date == target else None, "bar_source_date": bar_source_date.isoformat() if bar_source_date else None, "universe_source_date": universe_source_date.isoformat() if universe_source_date else None,
+                "invalidation": ["交易区进入C区", "板块生命周期转为FADING"] if canonical_zone else ["等待V2.0交易区与板块生命周期确认"],
             })
         return result, scan_metadata
 
@@ -629,7 +695,13 @@ class StrongStockV21Service:
                 match = next((item for item in current if item.get("sector_name") == row["sector_name"]), None)
                 if match:
                     row["sector_id"] = match["sector_id"]
+        await self._attach_book_reviews(candidates, target, scan_metadata)
         opportunities = self.orchestrator.fusion.fuse(candidates, regime["regime"], lifecycle)
+        market_source_date = _date(market.get("data_date"))
+        sector_source_date = max((_date(row.get("trade_date")) for row in current if _date(row.get("trade_date"))), default=None)
+        source_dates_match = market_source_date == target and sector_source_date == target
+        scan_quality = scan_metadata.get("data_quality") or {}
+        overall_quality = "STALE" if not source_dates_match or scan_quality.get("status") == "STALE" else "COMPLETE" if scan_quality.get("status") == "COMPLETE" and current and market.get("up_count") is not None else "PARTIAL"
         payload = {
             "module_id": STRONG_STOCK_V21_VERSION,
             "bridge_version": MARKET_SECTOR_BRIDGE_VERSION,
@@ -643,7 +715,7 @@ class StrongStockV21Service:
             "migration": migration,
             "opportunities": opportunities,
             "candidate_scan": scan_metadata,
-            "data_quality": {"status": "COMPLETE" if current and market.get("up_count") is not None else "PARTIAL", "source_name": "MarketSentimentDaily + IndustryFundFlowDaily + ConceptFundFlowDaily + V2.0 snapshots", "source_time": target.isoformat(), "missing_fields": sorted({field for row in current for field in row.get("data_quality", {}).get("missing_fields", [])})},
+            "data_quality": {"status": overall_quality, "source_name": "MarketSentimentDaily + IndustryFundFlowDaily + ConceptFundFlowDaily + V2.0 snapshots", "source_time": market_source_date.isoformat() if market_source_date else None, "decision_date": target.isoformat(), "market_source_date": market_source_date.isoformat() if market_source_date else None, "sector_source_date": sector_source_date.isoformat() if sector_source_date else None, "candidate_scan": scan_quality, "missing_fields": sorted({field for row in current for field in row.get("data_quality", {}).get("missing_fields", [])})},
             "constraints": {"c_zone_overrides_attack": True, "automatic_trade": False, "future_data": False, "fund_migration_is_inference": True},
         }
         if persist:
@@ -700,13 +772,68 @@ class StrongStockV21Service:
         exclude_star_market: bool = True,
         exclude_gem: bool = True,
     ) -> dict[str, Any]:
-        return await self.build(
-            requested,
-            persist=refresh,
-            refresh=refresh,
-            exclude_star_market=exclude_star_market,
-            exclude_gem=exclude_gem,
-        )
+        target = await self._target_date(requested)
+        cache_key = self._overview_cache_key(target, exclude_star_market, exclude_gem)
+        now = datetime.utcnow()
+        ttl = timedelta(minutes=5 if is_a_share_market_session(shanghai_now()) else 60)
+
+        async def read_cache(*, allow_expired: bool = False) -> dict[str, Any] | None:
+            try:
+                async with async_session() as session:
+                    row = await session.get(MarketDataCache, cache_key)
+                payload = row.payload if row else None
+                if not row or not isinstance(payload, dict) or payload.get("cache_version") != self.SNAPSHOT_VERSION:
+                    return None
+                snapshot = payload.get("payload")
+                if not isinstance(snapshot, dict) or snapshot.get("trade_date") != target.isoformat():
+                    return None
+                updated_at = getattr(row, "updated_at", None)
+                quality = snapshot.get("data_quality") or {}
+                candidate_quality = quality.get("candidate_scan") or {}
+                low_quality = quality.get("status") != "COMPLETE" or candidate_quality.get("status") != "COMPLETE"
+                effective_ttl = timedelta(minutes=2 if is_a_share_market_session(shanghai_now()) else 5) if low_quality else ttl
+                if not allow_expired and (not isinstance(updated_at, datetime) or now - updated_at > effective_ttl):
+                    return None
+                return {**snapshot, "cache_used": True, "cache_key": cache_key}
+            except Exception:
+                return None
+
+        if not refresh:
+            cached = await read_cache()
+            if cached is not None:
+                return cached
+        async with self._overview_lock:
+            if not refresh:
+                cached = await read_cache()
+                if cached is not None:
+                    return cached
+            try:
+                payload = await self.build(target, persist=refresh, refresh=refresh, exclude_star_market=exclude_star_market, exclude_gem=exclude_gem)
+            except Exception as exc:
+                stale = await read_cache(allow_expired=True)
+                if stale is None:
+                    raise
+                quality = dict(stale.get("data_quality") or {})
+                quality["status"] = "STALE"
+                quality["cache_fallback_error"] = type(exc).__name__
+                stale["data_quality"] = quality
+                stale["cache_used"] = True
+                stale["cache_stale"] = True
+                stale["cache_fallback_error"] = type(exc).__name__
+                return stale
+            payload = {**payload, "cache_used": False, "cache_key": cache_key}
+            envelope = {"cache_version": self.SNAPSHOT_VERSION, "cached_at": now.isoformat(), "payload": payload}
+            try:
+                async with async_session() as session:
+                    row = await session.get(MarketDataCache, cache_key)
+                    if row is None:
+                        session.add(MarketDataCache(key=cache_key, payload=envelope))
+                    else:
+                        row.payload = envelope
+                    await session.commit()
+            except Exception:
+                pass
+            return payload
 
     async def regime(self, requested: date | None = None) -> dict[str, Any]:
         payload = await self.build(requested)

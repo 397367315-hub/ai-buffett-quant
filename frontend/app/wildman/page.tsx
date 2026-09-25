@@ -12,6 +12,7 @@ import { apiFetch, friendlyApiError } from '@/lib/api';
 import KlineChart, { type KlineRow } from '@/components/KlineChart';
 import WildmanAccountPanel from '@/components/wildman/WildmanAccountPanel';
 import WildmanMainlines from '@/components/wildman/WildmanMainlines';
+import WildmanAuthorityCard from '@/components/decision/WildmanAuthorityCard';
 
 type AnyMap = Record<string, any>;
 type ViewKey = 'dashboard' | 'cycle' | 'mainline' | 'candidates' | 'setups' | 'intraday' | 'risk' | 'plan' | 'review' | 'classic';
@@ -125,6 +126,11 @@ function mainlinePassedCount(row: AnyMap): number {
   return steps.filter((item: AnyMap) => item?.passed === true).length;
 }
 
+function discoveryStatus(row: AnyMap): string {
+  const status = String(row?.candidate_discovery?.status || '').trim().toLowerCase();
+  return ['candidate', 'watch', 'unknown', 'excluded'].includes(status) ? status : 'unknown';
+}
+
 function cycleConfirmed(cycle: AnyMap): boolean {
   const quality = cycle?.data_quality;
   const qualityText = typeof quality === 'string'
@@ -157,7 +163,7 @@ function Panel({ title, icon: Icon, meta, children, className = '' }: { title: s
 
 function Fact({ label, value, detail }: { label: string; value: ReactNode; detail?: ReactNode }) {
   return <div className="min-w-0 border-b border-border py-2.5 last:border-0">
-    <div className="flex min-w-0 items-center justify-between gap-3 text-xs"><span className="text-text-secondary">{label}</span><b className="text-right font-medium text-text">{value}</b></div>
+    <div className="flex min-w-0 items-center justify-between gap-3 text-xs"><span className="text-text-secondary">{label === '仓位参考' ? '野人哥周期原参考' : label}</span><b className="text-right font-medium text-text">{value}</b></div>
     {detail && <div className="mt-1 text-[10px] leading-4 text-text-secondary">{detail}</div>}
   </div>;
 }
@@ -582,7 +588,9 @@ export default function WildmanPage() {
     try {
       const params = new URLSearchParams({ refresh: String(refresh), exclude_star_market: String(excludeStar), exclude_gem: String(excludeGem) });
       const response = await apiFetch<{ data: AnyMap }>(`/wildman/dashboard?${params}`, { timeoutMs: 120000, signal: controller.signal });
-      if (!controller.signal.aborted) setPayload(response.data);
+      if (!controller.signal.aborted) {
+        setPayload({ ...response.data, scope_comparable: excludeStar && excludeGem });
+      }
     } catch (caught) { if (!controller.signal.aborted) setError(friendlyApiError(caught, '野人哥交易决策模块暂时不可用')); }
     finally { if (!controller.signal.aborted) { setLoading(false); setRefreshing(false); } }
   }, [excludeGem, excludeStar]);
@@ -696,7 +704,7 @@ export default function WildmanPage() {
 
   const renderView = () => {
     if (!payload) return null;
-    if (view === 'dashboard') return <div className="space-y-4"><div className="grid gap-4 xl:grid-cols-[1.1fr_1fr_1fr]"><Panel title="今天能不能做" icon={Gauge} meta={payload.trade_date}><div className="flex items-center justify-between gap-3"><div><div className="text-[10px] text-text-secondary">当前周期</div><div className="mt-1 text-xl font-semibold text-text">{cycle.cycle}</div><div className="mt-1 text-xs text-text-secondary">{cycle.cycle_node}</div></div><div className="text-right"><div className="text-[10px] text-text-secondary">仓位参考</div><b className="mt-1 block font-mono text-lg text-accent">{cycle.position_range}</b></div></div><div className="mt-4 grid grid-cols-2 gap-3"><div className="border-l-2 border-up pl-3"><div className="text-[10px] text-text-secondary">允许</div>{(cycle.allowed_actions || []).map((item: string) => <div key={item} className="mt-1 text-xs text-text">{item}</div>)}</div><div className="border-l-2 border-down pl-3"><div className="text-[10px] text-text-secondary">禁止</div>{(cycle.forbidden_actions || []).map((item: string) => <div key={item} className="mt-1 text-xs text-text">{item}</div>)}</div></div></Panel><Panel title="主线候选" icon={Radar} meta={`${payload.mainlines?.length || 0}个候选`}>{(payload.mainlines || []).slice(0, 6).map((row: AnyMap) => { const confirmed = row.confirmed === true || (row.confirmed === undefined && row.state === '核心主线确认'); const count = mainlinePassedCount(row); return <div key={row.theme_id} className="flex min-w-0 items-center justify-between gap-3 border-b border-border py-2.5 last:border-0"><div className="min-w-0"><div className="break-words text-xs text-text">{row.theme_name}</div><div className="mt-1 text-[10px] text-text-secondary">五步 {count}/5 · 触发 {safe(row.trigger_date)}</div></div><span className={`shrink-0 rounded border px-2 py-1 text-[10px] ${confirmed ? 'border-up/30 bg-up/5 text-up' : 'border-warn/30 bg-warn/5 text-warn'}`}>{confirmed ? '核心主线确认' : '主线候选'}</span></div>; })}</Panel><Panel title="风险与数据" icon={ShieldAlert}><Fact label="风险否决" value={`${payload.reject_pool?.length || 0}只`} /><Fact label="模式内候选" value={`${focus.length}只`} /><Fact label="数据日期" value={payload.source_status?.data_date || payload.trade_date} /><Fact label="优先数据源" value={sourceText(payload.source_status?.preferred_provider || payload.source_status?.source)} detail={Array.isArray(payload.source_status?.daily_sources) ? `日级：${payload.source_status.daily_sources.map((item: unknown) => sourceText(item)).join('、')}` : '按后端实际返回来源展示'} /><Fact label="主线归类" value={safe(payload.source_status?.theme_basis, '行业归类代理')} detail="行业归类不能直接等同跨行业概念真主线，需结合题材证据核验" /><Fact label="Level-2" value="按需核验" detail="打开候选详情后按股读取实际provider、逐笔委托与十档盘口" /><Fact label="规则版本" value={payload.rule_version} /></Panel></div><Panel title="今日重点候选" icon={Target} meta="按角色与节点排序">{renderCandidates(focus.slice(0, 9))}</Panel></div>;
+    if (view === 'dashboard') return <div className="space-y-4"><WildmanAuthorityCard fallback={{ trade_date: payload.trade_date, cycle: cycle.cycle, position_range: cycle.position_range, mainline: (payload.mainlines || [])[0]?.theme_name }} scopeComparable={excludeStar && excludeGem} /><div className="grid gap-4 xl:grid-cols-[1.1fr_1fr_1fr]"><Panel title="今天能不能做" icon={Gauge} meta={payload.trade_date}><div className="flex items-center justify-between gap-3"><div><div className="text-[10px] text-text-secondary">当前周期</div><div className="mt-1 text-xl font-semibold text-text">{cycle.cycle}</div><div className="mt-1 text-xs text-text-secondary">{cycle.cycle_node}</div></div><div className="text-right"><div className="text-[10px] text-text-secondary">野人哥周期原参考</div><b className="mt-1 block font-mono text-lg text-accent">{cycle.position_range}</b></div></div><div className="mt-4 grid grid-cols-2 gap-3"><div className="border-l-2 border-up pl-3"><div className="text-[10px] text-text-secondary">允许</div>{(cycle.allowed_actions || []).map((item: string) => <div key={item} className="mt-1 text-xs text-text">{item}</div>)}</div><div className="border-l-2 border-down pl-3"><div className="text-[10px] text-text-secondary">禁止</div>{(cycle.forbidden_actions || []).map((item: string) => <div key={item} className="mt-1 text-xs text-text">{item}</div>)}</div></div></Panel><Panel title="主线候选" icon={Radar} meta={`${payload.mainlines?.length || 0}个候选`}>{(payload.mainlines || []).slice(0, 6).map((row: AnyMap) => { const confirmed = row.confirmed === true || (row.confirmed === undefined && row.state === '核心主线确认'); const discovery = discoveryStatus(row); const count = mainlinePassedCount(row); const discoveryLabel = discovery === 'candidate' ? '主线候选' : discovery === 'watch' ? '观察中' : discovery === 'excluded' ? '排除' : '待核验'; return <div key={row.theme_id} className="flex min-w-0 items-center justify-between gap-3 border-b border-border py-2.5 last:border-0"><div className="min-w-0"><div className="break-words text-xs text-text">{row.theme_name}</div><div className="mt-1 text-[10px] text-text-secondary">五步 {count}/5 · 触发 {safe(row.trigger_date)} · 发现 {discoveryLabel}</div></div><span className={`shrink-0 rounded border px-2 py-1 text-[10px] ${confirmed ? 'border-up/30 bg-up/5 text-up' : discovery === 'candidate' ? 'border-accent/30 bg-accent/5 text-accent' : 'border-warn/30 bg-warn/5 text-warn'}`}>{confirmed ? '核心主线确认' : discoveryLabel}</span></div>; })}</Panel><Panel title="风险与数据" icon={ShieldAlert}><Fact label="风险否决" value={`${payload.reject_pool?.length || 0}只`} /><Fact label="模式内候选" value={`${focus.length}只`} /><Fact label="数据日期" value={payload.source_status?.data_date || payload.trade_date} /><Fact label="优先数据源" value={sourceText(payload.source_status?.preferred_provider || payload.source_status?.source)} detail={Array.isArray(payload.source_status?.daily_sources) ? `日级：${payload.source_status.daily_sources.map((item: unknown) => sourceText(item)).join('、')}` : '按后端实际返回来源展示'} /><Fact label="主线归类" value={safe(payload.source_status?.theme_basis, '行业归类代理')} detail="行业归类不能直接等同跨行业概念真主线，需结合题材证据核验" /><Fact label="Level-2" value="按需核验" detail="打开候选详情后按股读取实际provider、逐笔委托与十档盘口" /><Fact label="规则版本" value={payload.rule_version} /></Panel></div><Panel title="今日重点候选" icon={Target} meta="按角色与节点排序">{renderCandidates(focus.slice(0, 9))}</Panel></div>;
     if (view === 'cycle') return <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr]"><Panel title="情绪周期状态机" icon={Activity}><CycleStages cycle={cycle} /><div className="mt-4 text-xs leading-6 text-text-secondary">冰点试错 → 启动确认加 → 主升做分歧 → 高潮减 → 退潮空仓</div></Panel><Panel title="周期证据" icon={ListChecks}><RuleRows rows={cycle.evidence || []} /></Panel></div>;
     if (view === 'mainline') return <WildmanMainlines rows={payload.mainlines || []} />;
     if (view === 'candidates') return <div className="space-y-5"><LeaderSupplementTable />{roleGroups.map((group) => <Panel key={group.role} title={group.role} icon={Target} meta={`${group.rows.length}只`}>{renderCandidates(group.rows)}</Panel>)}</div>;
