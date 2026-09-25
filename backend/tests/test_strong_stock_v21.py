@@ -344,6 +344,19 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["cache_used"])
         self.assertEqual(rebuild.await_count, 1)
 
+    async def test_cached_scan_preserves_original_total_scanned_count(self):
+        target = date(2026, 8, 28)
+        service = StrongStockV21Service()
+        cache_key = service._candidate_cache_key(exclude_star_market=True, exclude_gem=True)
+        stocks = [{"code": f"600{index:03d}", "name": "测试"} for index in range(120)]
+        async with self.session_factory() as session:
+            session.add(MarketDataCache(key=cache_key, payload={"stocks": stocks, "data_date": target.isoformat(), "total_scanned": 5557, "source": "cache"}))
+            await session.commit()
+        with patch("services.strong_stock_v21.is_a_share_market_session", return_value=False), patch("services.strong_stock_v21.collector.fetch_intelligent_selection_candidates", new=AsyncMock(side_effect=AssertionError("cached same-day scan should be reused"))):
+            rows, metadata = await service._current_scan_candidates(target=target, exclude_star_market=True, exclude_gem=True, refresh=False)
+        self.assertEqual(len(rows), 120)
+        self.assertEqual(metadata["total_scanned"], 5557)
+
     async def test_book_review_window_covers_old_crash_within_400_bars(self):
         target = date(2026, 8, 28)
         bars = []

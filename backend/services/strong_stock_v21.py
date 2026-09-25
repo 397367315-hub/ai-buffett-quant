@@ -111,7 +111,7 @@ class StrongStockV21Service:
     CANDIDATE_CACHE_PREFIX = "strong_stock_v21_full_market_v1"
     MAX_SHORTLIST = 120
     MAX_BOOK_REVIEW = 40
-    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V6"
+    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V7"
     _overview_lock = asyncio.Lock()
 
     @classmethod
@@ -349,7 +349,7 @@ class StrongStockV21Service:
             }
 
         raw_rows = [item for item in source_result.get("stocks") or [] if isinstance(item, dict)]
-        total_scanned = int(source_result.get("scan_total") or source_result.get("total") or len(raw_rows))
+        total_scanned = int(source_result.get("scan_total") or source_result.get("total_scanned") or source_result.get("total") or len(raw_rows))
         filtered_counts = {"star_market": 0, "gem": 0, "invalid": 0}
         selected: list[dict[str, Any]] = []
         for item in raw_rows:
