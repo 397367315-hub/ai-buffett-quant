@@ -111,12 +111,12 @@ class StrongStockV21Service:
     CANDIDATE_CACHE_PREFIX = "strong_stock_v21_full_market_v1"
     MAX_SHORTLIST = 120
     MAX_BOOK_REVIEW = 40
-    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V1"
+    SNAPSHOT_VERSION = "STRONG_STOCK_V21_OVERVIEW_CACHE_V2"
     _overview_lock = asyncio.Lock()
 
     @classmethod
-    def _overview_cache_key(cls, target: date, exclude_star_market: bool, exclude_gem: bool) -> str:
-        return f"{cls.SNAPSHOT_VERSION}:{target.isoformat()}:star{int(exclude_star_market)}:gem{int(exclude_gem)}"
+    def _overview_cache_key(cls, target: date, exclude_star_market: bool, exclude_gem: bool, scan_mode: str = "historical") -> str:
+        return f"{cls.SNAPSHOT_VERSION}:{target.isoformat()}:{scan_mode}:star{int(exclude_star_market)}:gem{int(exclude_gem)}"
 
     async def _attach_book_reviews(self, candidates: list[dict[str, Any]], target: date, scan_metadata: dict[str, Any]) -> int:
         rows = candidates[: self.MAX_BOOK_REVIEW]
@@ -445,6 +445,7 @@ class StrongStockV21Service:
             )
         else:
             base_rows = await self._load_system_selection_candidates(target)
+            source_run_date = next(((row.get("system_selection") or {}).get("run_date") for row in base_rows if (row.get("system_selection") or {}).get("run_date")), None)
             before_filter = len(base_rows)
             base_rows = [
                 row for row in base_rows
@@ -454,7 +455,7 @@ class StrongStockV21Service:
             scan_metadata = {
                 "source": "stock_selection_runs",
                 "source_label": "历史全市场系统扫描快照",
-                "data_date": target.isoformat(),
+                "data_date": source_run_date,
                 "is_realtime": False,
                 "cache_used": True,
                 "total_scanned": before_filter,
@@ -773,7 +774,8 @@ class StrongStockV21Service:
         exclude_gem: bool = True,
     ) -> dict[str, Any]:
         target = await self._target_date(requested)
-        cache_key = self._overview_cache_key(target, exclude_star_market, exclude_gem)
+        scan_mode = "current" if requested is None or requested >= shanghai_now().date() else "historical"
+        cache_key = self._overview_cache_key(target, exclude_star_market, exclude_gem, scan_mode)
         now = datetime.utcnow()
         ttl = timedelta(minutes=5 if is_a_share_market_session(shanghai_now()) else 60)
 
@@ -785,7 +787,7 @@ class StrongStockV21Service:
                 if not row or not isinstance(payload, dict) or payload.get("cache_version") != self.SNAPSHOT_VERSION:
                     return None
                 snapshot = payload.get("payload")
-                if not isinstance(snapshot, dict) or snapshot.get("trade_date") != target.isoformat():
+                if not isinstance(snapshot, dict) or snapshot.get("trade_date") != target.isoformat() or payload.get("scan_mode") != scan_mode:
                     return None
                 updated_at = getattr(row, "updated_at", None)
                 quality = snapshot.get("data_quality") or {}
@@ -808,7 +810,7 @@ class StrongStockV21Service:
                 if cached is not None:
                     return cached
             try:
-                payload = await self.build(target, persist=refresh, refresh=refresh, exclude_star_market=exclude_star_market, exclude_gem=exclude_gem)
+                payload = await self.build(requested, persist=refresh, refresh=refresh, exclude_star_market=exclude_star_market, exclude_gem=exclude_gem)
             except Exception as exc:
                 stale = await read_cache(allow_expired=True)
                 if stale is None:
@@ -822,7 +824,7 @@ class StrongStockV21Service:
                 stale["cache_fallback_error"] = type(exc).__name__
                 return stale
             payload = {**payload, "cache_used": False, "cache_key": cache_key}
-            envelope = {"cache_version": self.SNAPSHOT_VERSION, "cached_at": now.isoformat(), "payload": payload}
+            envelope = {"cache_version": self.SNAPSHOT_VERSION, "scan_mode": scan_mode, "cached_at": now.isoformat(), "payload": payload}
             try:
                 async with async_session() as session:
                     row = await session.get(MarketDataCache, cache_key)

@@ -253,6 +253,25 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
             await service.overview(target)
         self.assertEqual(build_mock.await_count, 1)
 
+    async def test_overview_preserves_none_vs_historical_build_semantics(self):
+        target = date(2026, 8, 28)
+        payload = {"trade_date": target.isoformat(), "market": {}, "opportunities": [], "data_quality": {"status": "COMPLETE", "candidate_scan": {"status": "COMPLETE"}}}
+        service = StrongStockV21Service()
+        with patch.object(service, "_target_date", new=AsyncMock(return_value=target)), patch.object(service, "build", new=AsyncMock(return_value=payload)) as build_mock:
+            await service.overview(None, refresh=True)
+            await service.overview(target, refresh=True)
+        self.assertIsNone(build_mock.await_args_list[0].args[0])
+        self.assertEqual(build_mock.await_args_list[1].args[0], target)
+
+    async def test_overview_cache_separates_current_and_historical_modes(self):
+        target = date(2026, 8, 28)
+        payload = {"trade_date": target.isoformat(), "market": {}, "opportunities": [], "data_quality": {"status": "COMPLETE", "candidate_scan": {"status": "COMPLETE"}}}
+        service = StrongStockV21Service()
+        with patch.object(service, "_target_date", new=AsyncMock(return_value=target)), patch.object(service, "build", new=AsyncMock(return_value=payload)) as build_mock:
+            await service.overview(None, refresh=True)
+            await service.overview(target, refresh=False)
+        self.assertEqual(build_mock.await_count, 2)
+
     async def test_build_failure_returns_expired_same_day_snapshot_as_stale(self):
         target = date(2026, 8, 28)
         payload = {"trade_date": target.isoformat(), "market": {}, "opportunities": [], "data_quality": {"status": "COMPLETE", "candidate_scan": {"status": "COMPLETE"}}}
@@ -279,6 +298,23 @@ class StrongStockV21ServiceTests(unittest.IsolatedAsyncioTestCase):
         history, latest = await StrongStockV21Service()._sector_rows(target, "industry")
         self.assertEqual([row["trade_date"] for row in history["BK1"]], [(target - timedelta(days=2)).isoformat(), target.isoformat()])
         self.assertEqual(latest[0]["trade_date"], target.isoformat())
+
+    async def test_historical_scan_metadata_never_fabricates_target_date(self):
+        target = date(2026, 8, 28)
+        service = StrongStockV21Service()
+        with patch.object(service, "_load_system_selection_candidates", new=AsyncMock(return_value=[])):
+            rows, metadata = await service._candidate_rows(target, current_scan=False, exclude_star_market=True, exclude_gem=True, refresh=False)
+        self.assertEqual(rows, [])
+        self.assertIsNone(metadata["data_date"])
+
+    async def test_historical_scan_preserves_run_date_when_all_rows_filtered(self):
+        target = date(2026, 8, 28)
+        service = StrongStockV21Service()
+        source = [{"symbol": "688001", "system_selection": {"run_date": "2026-08-27"}}]
+        with patch.object(service, "_load_system_selection_candidates", new=AsyncMock(return_value=source)):
+            rows, metadata = await service._candidate_rows(target, current_scan=False, exclude_star_market=True, exclude_gem=True, refresh=False)
+        self.assertEqual(rows, [])
+        self.assertEqual(metadata["data_date"], "2026-08-27")
 
 
 if __name__ == "__main__":

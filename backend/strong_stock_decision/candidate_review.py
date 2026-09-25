@@ -30,12 +30,13 @@ def _signal_brief(signal: dict[str, Any]) -> dict[str, Any]:
 
 def unknown_review(decision_date: str, reasons: list[str], *, source_date: str | None = None, risk_priority: bool = False) -> dict[str, Any]:
     return {
-        "status": "RISK" if risk_priority else "UNVERIFIED",
-        "label": "书籍风险优先" if risk_priority else "三书待核验",
+        "status": "UNVERIFIED",
+        "label": "风险待核验" if risk_priority else "三书待核验",
         "decision_date": decision_date,
         "source_date": source_date,
         "source": "local_daily_bars",
-        "risk_priority": risk_priority,
+        "risk_priority": False,
+        "risk_observation": risk_priority,
         "hunter": {"zone": None, "status": "UNKNOWN", "evidence": None},
         "big_pattern": {"status": "UNKNOWN", "signals": []},
         "star": {"status": "UNKNOWN", "positive": [], "risk": []},
