@@ -1,0 +1,6094 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.trading-roundtable.invalid/spec/models.schema.json",
+  "title": "交易圆桌 v1 核心模型",
+  "description": "规格草案；不是实现。每个端点绑定$defs模型；根入口仅用于离线核心对象验证。金额分、比率Decimal字符串、时间UTC。",
+  "$defs": {
+    "Error": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request_id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "details": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "field": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "field",
+                  "reason"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "request_id",
+            "retryable",
+            "details"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "SourceRef": {
+      "type": "object",
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "authority_type": {
+          "type": "string",
+          "enum": [
+            "exchange",
+            "issuer",
+            "vendor",
+            "user",
+            "synthetic"
+          ]
+        },
+        "locator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "published_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "citation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "source_id",
+        "authority_type",
+        "locator",
+        "content_sha256",
+        "retrieved_at",
+        "published_at",
+        "citation"
+      ],
+      "additionalProperties": false
+    },
+    "Evidence": {
+      "type": "object",
+      "properties": {
+        "evidence_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "api_fact",
+            "user_statement",
+            "book_principle",
+            "rule_derivation",
+            "research_hypothesis"
+          ]
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "available_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "first_observed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "time_precision": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "date_only",
+            "unknown"
+          ]
+        },
+        "availability_basis": {
+          "type": "string",
+          "enum": [
+            "recorded_observation",
+            "authoritative_publication",
+            "unknown"
+          ]
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "field_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "type": [
+            "string",
+            "integer",
+            "boolean",
+            "null",
+            "object",
+            "array"
+          ],
+          "description": "只保存证据原值。对象/数组中的数值同样禁用浮点金额；金额为分、比率为Decimal字符串。"
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "money_minor",
+            "price_decimal",
+            "shares",
+            "ratio",
+            "count",
+            "text",
+            "boolean",
+            "json",
+            "none"
+          ]
+        },
+        "quality": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "unverified",
+            "missing",
+            "conflict"
+          ]
+        },
+        "related_evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        }
+      },
+      "required": [
+        "evidence_id",
+        "kind",
+        "snapshot_id",
+        "symbol",
+        "observed_at",
+        "available_at",
+        "first_observed_at",
+        "time_precision",
+        "availability_basis",
+        "captured_at",
+        "source_ref",
+        "field_path",
+        "value",
+        "unit",
+        "quality",
+        "related_evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "SnapshotMetadata": {
+      "type": "object",
+      "properties": {
+        "quote_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "latest_completed_session_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timezone": {
+          "const": "Asia/Shanghai"
+        },
+        "feed_precision": {
+          "type": "string",
+          "enum": [
+            "daily_bar",
+            "date_snapshot",
+            "intraday_snapshot",
+            "tick",
+            "mixed",
+            "unknown"
+          ]
+        },
+        "source_mode": {
+          "type": "string",
+          "enum": [
+            "provider_api",
+            "file_import",
+            "user_manual",
+            "fixture",
+            "mixed"
+          ]
+        },
+        "freshness": {
+          "type": "string",
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ]
+        },
+        "freshness_reason": {
+          "type": "string"
+        },
+        "quality": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "missing_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "universe_policy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "universe_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "price_basis": {
+          "type": "string",
+          "enum": [
+            "raw",
+            "as_of_adjusted",
+            "mixed",
+            "unknown"
+          ]
+        },
+        "adjustment_policy_version": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calendar_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "is_synthetic": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "quote_date",
+        "session_date",
+        "captured_at",
+        "generated_at",
+        "latest_completed_session_date",
+        "timezone",
+        "feed_precision",
+        "source_mode",
+        "freshness",
+        "freshness_reason",
+        "quality",
+        "missing_fields",
+        "source_ids",
+        "universe_policy_id",
+        "universe_fingerprint",
+        "price_basis",
+        "adjustment_policy_version",
+        "calendar_version",
+        "is_synthetic"
+      ],
+      "additionalProperties": false
+    },
+    "InstrumentQuote": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "board": {
+          "type": "string",
+          "enum": [
+            "SH_MAIN",
+            "SZ_MAIN",
+            "CHINEXT",
+            "STAR",
+            "BSE",
+            "unknown"
+          ]
+        },
+        "lot_size": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "is_st": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "listed_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "suspended": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price_limit_rule_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_price_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prev_close_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "upper_limit_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lower_limit_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quote_observed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        }
+      },
+      "required": [
+        "symbol",
+        "name",
+        "board",
+        "lot_size",
+        "is_st",
+        "listed_date",
+        "suspended",
+        "price_limit_rule_id",
+        "last_price_decimal",
+        "prev_close_decimal",
+        "upper_limit_decimal",
+        "lower_limit_decimal",
+        "quote_observed_at",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "DailyBar": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+        },
+        "session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "open_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "high_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "low_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "close_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "volume_shares": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "amount_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bar_status": {
+          "type": "string",
+          "enum": [
+            "final",
+            "partial",
+            "unknown"
+          ]
+        },
+        "adjustment": {
+          "type": "string",
+          "enum": [
+            "raw",
+            "forward",
+            "backward"
+          ]
+        },
+        "adjustment_as_of": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "available_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        }
+      },
+      "required": [
+        "symbol",
+        "session_date",
+        "open_decimal",
+        "high_decimal",
+        "low_decimal",
+        "close_decimal",
+        "volume_shares",
+        "amount_minor",
+        "bar_status",
+        "adjustment",
+        "adjustment_as_of",
+        "available_at",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "Metric": {
+      "type": "object",
+      "properties": {
+        "metric_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "enum": [
+            "ratio",
+            "count",
+            "money_minor",
+            "price_decimal",
+            "shares",
+            "multiple"
+          ]
+        },
+        "rule_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "available_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        }
+      },
+      "required": [
+        "metric_id",
+        "symbol",
+        "value",
+        "unit",
+        "rule_version",
+        "available_at",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "SourceConflict": {
+      "type": "object",
+      "properties": {
+        "conflict_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "field_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          },
+          "minItems": 2
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "unresolved",
+            "primary_source_selected",
+            "manual_review"
+          ]
+        },
+        "selected_evidence_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "conflict_id",
+        "field_path",
+        "evidence_ids",
+        "resolution",
+        "selected_evidence_id",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "CorporateAction": {
+      "type": "object",
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "symbol": {
+          "type": "string",
+          "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+        },
+        "action_type": {
+          "type": "string",
+          "enum": [
+            "cash_dividend",
+            "split",
+            "rights_issue",
+            "other"
+          ]
+        },
+        "announced_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "available_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "record_session_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ex_session_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pay_session_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cash_dividend_per_share_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ex_reference_deduction_per_share_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "split_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tax_policy_version": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        }
+      },
+      "required": [
+        "action_id",
+        "symbol",
+        "action_type",
+        "announced_at",
+        "available_at",
+        "record_session_date",
+        "ex_session_date",
+        "pay_session_date",
+        "cash_dividend_per_share_decimal",
+        "ex_reference_deduction_per_share_decimal",
+        "split_ratio",
+        "tax_policy_version",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "MarketSnapshot": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "metadata": {
+          "$ref": "#/$defs/SnapshotMetadata"
+        },
+        "instruments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InstrumentQuote"
+          }
+        },
+        "daily_bars": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DailyBar"
+          }
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Metric"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceConflict"
+          }
+        },
+        "corporate_actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CorporateAction"
+          }
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "schema_version",
+        "snapshot_id",
+        "metadata",
+        "instruments",
+        "daily_bars",
+        "metrics",
+        "evidence",
+        "conflicts",
+        "corporate_actions",
+        "fingerprint"
+      ],
+      "additionalProperties": false
+    },
+    "SeatDefinition": {
+      "type": "object",
+      "properties": {
+        "seat_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "legacy_seat_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rule_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "selector",
+            "context",
+            "reviewer",
+            "confirmer",
+            "mixed"
+          ]
+        },
+        "horizons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "short",
+              "swing",
+              "long"
+            ]
+          },
+          "minItems": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "screen",
+              "context",
+              "confirm",
+              "review",
+              "challenge"
+            ]
+          }
+        },
+        "required_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unavailable_behavior": {
+          "const": "unknown"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "registry_order": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 13
+        }
+      },
+      "required": [
+        "seat_id",
+        "legacy_seat_id",
+        "name",
+        "skill_path",
+        "skill_sha256",
+        "rule_version",
+        "role",
+        "horizons",
+        "capabilities",
+        "required_inputs",
+        "unavailable_behavior",
+        "enabled",
+        "registry_order"
+      ],
+      "additionalProperties": false
+    },
+    "SeatRegistry": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "const": "1.0.0"
+        },
+        "registry_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "seats": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SeatDefinition"
+          },
+          "minItems": 13,
+          "maxItems": 13
+        }
+      },
+      "required": [
+        "schema_version",
+        "registry_version",
+        "fingerprint",
+        "seats"
+      ],
+      "additionalProperties": false
+    },
+    "RunFingerprints": {
+      "type": "object",
+      "properties": {
+        "cycle_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "snapshot_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "registry_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "skill_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rule_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "provider_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_config_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "user_context_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "cycle_id",
+        "snapshot_fingerprint",
+        "registry_fingerprint",
+        "skill_sha256",
+        "rule_version",
+        "prompt_sha256",
+        "provider_id",
+        "model_id",
+        "model_config_sha256",
+        "code_revision",
+        "user_context_sha256",
+        "replay_id"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionResult": {
+      "type": "object",
+      "properties": {
+        "condition_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "met",
+            "failed",
+            "unknown",
+            "inapplicable"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "missing_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "condition_id",
+        "description",
+        "result",
+        "evidence_ids",
+        "missing_inputs"
+      ],
+      "additionalProperties": false
+    },
+    "Candidate": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+        },
+        "seat_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "horizon": {
+          "type": "string",
+          "enum": [
+            "short",
+            "swing",
+            "long"
+          ]
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "conditions_met",
+            "conditions_failed",
+            "watch",
+            "unknown"
+          ]
+        },
+        "condition_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "seat_id",
+        "horizon",
+        "verdict",
+        "condition_ids",
+        "evidence_ids",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "SeatRun": {
+      "type": "object",
+      "properties": {
+        "seat_run_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "case_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seat_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "round": {
+          "type": "string",
+          "enum": [
+            "initial",
+            "challenge",
+            "final"
+          ]
+        },
+        "run_state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "partial",
+            "failed",
+            "skipped"
+          ]
+        },
+        "applicability": {
+          "type": "string",
+          "enum": [
+            "applicable",
+            "inapplicable",
+            "unknown"
+          ]
+        },
+        "applicability_reason": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "conditions_met",
+            "conditions_failed",
+            "watch",
+            "unknown"
+          ]
+        },
+        "candidate_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Candidate"
+          }
+        },
+        "condition_results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConditionResult"
+          }
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "missing_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "explanation": {
+          "type": "string"
+        },
+        "counter_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "challenged_seat_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "fingerprints": {
+          "$ref": "#/$defs/RunFingerprints"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "symbols": {
+          "type": "array",
+          "description": "这次运行研究过的标的（ADR-011）。",
+          "items": {
+            "type": "string"
+          }
+        },
+        "horizon": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "seat_run_id",
+        "job_id",
+        "case_id",
+        "seat_id",
+        "snapshot_id",
+        "round",
+        "run_state",
+        "applicability",
+        "applicability_reason",
+        "verdict",
+        "candidate_count",
+        "candidates",
+        "condition_results",
+        "evidence_ids",
+        "missing_inputs",
+        "explanation",
+        "counter_evidence",
+        "challenged_seat_run_ids",
+        "fingerprints",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "RoleAssignment": {
+      "type": "object",
+      "properties": {
+        "seat_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "validator",
+            "discipline",
+            "context"
+          ]
+        }
+      },
+      "required": [
+        "seat_id",
+        "role"
+      ],
+      "additionalProperties": false
+    },
+    "RoundtableCase": {
+      "type": "object",
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "supersedes_case_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "cycle_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+          }
+        },
+        "horizon": {
+          "type": "string",
+          "enum": [
+            "short",
+            "swing",
+            "long",
+            "multi"
+          ]
+        },
+        "seat_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          },
+          "minItems": 1,
+          "maxItems": 13,
+          "uniqueItems": true
+        },
+        "primary_strategy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "role_assignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoleAssignment"
+          },
+          "minItems": 1,
+          "maxItems": 13
+        },
+        "llm_mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "optional",
+            "required"
+          ]
+        },
+        "provider_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "preparing",
+            "initial_round",
+            "challenge_round",
+            "synthesizing",
+            "succeeded",
+            "partial",
+            "failed"
+          ]
+        },
+        "seat_run_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "final_result": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "summary": {
+                  "type": "string"
+                },
+                "agreements": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "disagreements": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "confirmation_conditions": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ConditionResult"
+                  }
+                },
+                "invalidation_conditions": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/ConditionResult"
+                  }
+                },
+                "missing_inputs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "evidence_ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+                  }
+                },
+                "executed_return_ratio": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                      "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "summary",
+                "agreements",
+                "disagreements",
+                "confirmation_conditions",
+                "invalidation_conditions",
+                "missing_inputs",
+                "evidence_ids",
+                "executed_return_ratio"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "case_id",
+        "supersedes_case_id",
+        "job_id",
+        "cycle_id",
+        "snapshot_id",
+        "title",
+        "question",
+        "symbols",
+        "horizon",
+        "seat_ids",
+        "primary_strategy_id",
+        "role_assignments",
+        "llm_mode",
+        "provider_id",
+        "model_id",
+        "state",
+        "seat_run_ids",
+        "final_result",
+        "created_at",
+        "finished_at",
+        "replay_id"
+      ],
+      "additionalProperties": false
+    },
+    "PlanRule": {
+      "type": "object",
+      "properties": {
+        "rule_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rule_origin": {
+          "type": "string",
+          "enum": [
+            "author_quote",
+            "editorial_summary",
+            "engineering_policy",
+            "user_rule"
+          ]
+        },
+        "origin_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rule_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "entry",
+            "exit",
+            "invalidation",
+            "cancel",
+            "time_exit",
+            "position"
+          ]
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threshold_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deadline_session_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        }
+      },
+      "required": [
+        "rule_id",
+        "description",
+        "rule_origin",
+        "origin_ref",
+        "source_version",
+        "rule_version",
+        "kind",
+        "symbol",
+        "price_decimal",
+        "threshold_ratio",
+        "deadline_session_date",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "DecisionPlan": {
+      "type": "object",
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "previous_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "change_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effective_from": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "portfolio_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis_portfolio_revision": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "case_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "frozen"
+          ]
+        },
+        "primary_strategy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "research",
+            "simulation",
+            "user_trade_record"
+          ]
+        },
+        "execution_eligibility": {
+          "type": "string",
+          "enum": [
+            "eligible",
+            "ineligible",
+            "unknown"
+          ]
+        },
+        "execution_eligibility_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "planned_shares": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hypothesis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+          },
+          "minItems": 1
+        },
+        "horizon": {
+          "type": "string",
+          "enum": [
+            "short",
+            "swing",
+            "long"
+          ]
+        },
+        "entry_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanRule"
+          }
+        },
+        "exit_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanRule"
+          }
+        },
+        "cancel_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanRule"
+          }
+        },
+        "time_exit_rule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanRule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit_deadline": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "invalidation_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanRule"
+          }
+        },
+        "risk_budget_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_position_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "benchmark_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evaluation_window": {
+          "type": "object",
+          "properties": {
+            "start_session_date": {
+              "type": "string",
+              "format": "date"
+            },
+            "end_session_date": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          "required": [
+            "start_session_date",
+            "end_session_date"
+          ],
+          "additionalProperties": false
+        },
+        "fee_model_version": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "frozen_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frozen_hash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "plan_id",
+        "version",
+        "previous_version",
+        "change_reason",
+        "effective_from",
+        "portfolio_id",
+        "basis_portfolio_revision",
+        "case_id",
+        "snapshot_id",
+        "status",
+        "primary_strategy_id",
+        "purpose",
+        "execution_eligibility",
+        "execution_eligibility_reasons",
+        "planned_shares",
+        "title",
+        "hypothesis",
+        "symbols",
+        "horizon",
+        "entry_rules",
+        "exit_rules",
+        "cancel_rules",
+        "time_exit_rule",
+        "exit_deadline",
+        "invalidation_rules",
+        "risk_budget_minor",
+        "max_position_ratio",
+        "benchmark_id",
+        "evaluation_window",
+        "fee_model_version",
+        "created_at",
+        "frozen_at",
+        "frozen_hash",
+        "replay_id"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "frozen"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "frozen_at": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "Z$",
+                "description": "UTC RFC3339，必须以Z结尾。"
+              },
+              "frozen_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "frozen_at": {
+                "type": "null"
+              },
+              "frozen_hash": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "purpose": {
+                "const": "simulation"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "symbols": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+                },
+                "minItems": 1,
+                "maxItems": 1
+              },
+              "portfolio_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+              },
+              "basis_portfolio_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ReviewResult": {
+      "type": "object",
+      "properties": {
+        "review_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "plan_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frozen_hash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "review_kind": {
+          "type": "string",
+          "enum": [
+            "preflight",
+            "post_trade"
+          ]
+        },
+        "preflight_eligibility": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "eligible",
+                "ineligible",
+                "unknown"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "as_of_snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "run_state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "partial",
+            "failed",
+            "skipped"
+          ]
+        },
+        "directional_price_return_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_return_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executed_return_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "benchmark_return_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_drawdown_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rule_adherence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConditionResult"
+          }
+        },
+        "corporate_action_evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "trade_event_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "missing_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "review_id",
+        "job_id",
+        "plan_id",
+        "plan_version",
+        "frozen_hash",
+        "review_kind",
+        "preflight_eligibility",
+        "as_of_snapshot_id",
+        "run_state",
+        "directional_price_return_ratio",
+        "total_return_ratio",
+        "executed_return_ratio",
+        "benchmark_return_ratio",
+        "max_drawdown_ratio",
+        "rule_adherence",
+        "corporate_action_evidence_ids",
+        "trade_event_ids",
+        "missing_inputs",
+        "conclusions",
+        "created_at",
+        "replay_id"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "review_kind": {
+                "const": "preflight"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "directional_price_return_ratio": {
+                "type": "null"
+              },
+              "total_return_ratio": {
+                "type": "null"
+              },
+              "executed_return_ratio": {
+                "type": "null"
+              },
+              "benchmark_return_ratio": {
+                "type": "null"
+              },
+              "max_drawdown_ratio": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "frozen_hash": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "preflight_eligibility": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "FeeBreakdown": {
+      "type": "object",
+      "properties": {
+        "commission_minor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+        },
+        "stamp_minor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+        },
+        "transfer_minor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+        },
+        "total_minor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+        },
+        "fee_model_version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "commission_minor",
+        "stamp_minor",
+        "transfer_minor",
+        "total_minor",
+        "fee_model_version"
+      ],
+      "additionalProperties": false
+    },
+    "JournalEvent": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "portfolio_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "opening_balance",
+            "cash_adjustment",
+            "paper_fill",
+            "manual_trade_record",
+            "watch_added",
+            "watch_removed",
+            "note",
+            "correction"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "paper",
+            "user_reported",
+            "imported_legacy"
+          ]
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "side": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "buy",
+                "sell"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shares": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gross_amount_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "net_cash_delta_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)$",
+              "description": "带符号人民币整数分字符串；数据库范围-9223372036854775808..9223372036854775807。禁止负零。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fees": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FeeBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "corrects_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "correction_action": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "void",
+                "replace"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "corrected_event_type": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "opening_balance",
+                "cash_adjustment",
+                "paper_fill",
+                "manual_trade_record",
+                "watch_added",
+                "watch_removed",
+                "note"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "legacy_trade_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "prev_event_hash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "event_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        }
+      },
+      "required": [
+        "event_id",
+        "portfolio_id",
+        "sequence",
+        "event_type",
+        "mode",
+        "effective_at",
+        "recorded_at",
+        "session_date",
+        "symbol",
+        "side",
+        "shares",
+        "price_decimal",
+        "gross_amount_minor",
+        "net_cash_delta_minor",
+        "fees",
+        "snapshot_id",
+        "plan_id",
+        "plan_version",
+        "corrects_event_id",
+        "correction_action",
+        "corrected_event_type",
+        "legacy_trade_id",
+        "note",
+        "prev_event_hash",
+        "event_hash",
+        "replay_id",
+        "evidence_ids"
+      ],
+      "additionalProperties": false
+    },
+    "Position": {
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+        },
+        "shares": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "available_shares": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cost_basis_minor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+        },
+        "last_price_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "market_value_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unrealized_pnl_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)$",
+              "description": "带符号人民币整数分字符串；数据库范围-9223372036854775808..9223372036854775807。禁止负零。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unrealized_return_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "valuation_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "symbol",
+        "shares",
+        "available_shares",
+        "cost_basis_minor",
+        "last_price_decimal",
+        "market_value_minor",
+        "unrealized_pnl_minor",
+        "unrealized_return_ratio",
+        "valuation_snapshot_id"
+      ],
+      "additionalProperties": false
+    },
+    "Portfolio": {
+      "type": "object",
+      "properties": {
+        "portfolio_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "paper",
+            "user_reported"
+          ]
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cash_minor": {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)$",
+          "description": "带符号人民币整数分字符串；数据库范围-9223372036854775808..9223372036854775807。禁止负零。"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Position"
+          }
+        },
+        "market_value_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_equity_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)$",
+              "description": "带符号人民币整数分字符串；数据库范围-9223372036854775808..9223372036854775807。禁止负零。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quality": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "missing_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "last_event_sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "portfolio_id",
+        "mode",
+        "revision",
+        "cash_minor",
+        "positions",
+        "market_value_minor",
+        "total_equity_minor",
+        "quality",
+        "missing_inputs",
+        "last_event_sequence",
+        "replay_id"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyImportResult": {
+      "type": "object",
+      "properties": {
+        "import_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "portfolio_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted_event_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "duplicate_event_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "rejected_rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "legacy_trade_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "legacy_trade_id",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "cash_reconciliation_delta_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)$",
+              "description": "带符号人民币整数分字符串；数据库范围-9223372036854775808..9223372036854775807。禁止负零。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "validated",
+            "committed",
+            "rejected"
+          ]
+        },
+        "backup_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        }
+      },
+      "required": [
+        "import_id",
+        "dry_run",
+        "source_sha256",
+        "portfolio_id",
+        "accepted_event_count",
+        "duplicate_event_count",
+        "rejected_rows",
+        "cash_reconciliation_delta_minor",
+        "status",
+        "backup_manifest_path",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    "ReplaySession": {
+      "type": "object",
+      "properties": {
+        "replay_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "active",
+            "completed",
+            "revealed",
+            "failed"
+          ]
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+          }
+        },
+        "start_session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "end_session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "cursor_session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "knowledge_cutoff_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "strict_as_of": {
+          "const": true
+        },
+        "revealed": {
+          "type": "boolean"
+        },
+        "visible_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calendar_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "data_archive_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "isolated_portfolio_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "revealed_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "replay_id",
+        "job_id",
+        "state",
+        "symbols",
+        "start_session_date",
+        "end_session_date",
+        "cursor_session_date",
+        "knowledge_cutoff_at",
+        "strict_as_of",
+        "revealed",
+        "visible_snapshot_id",
+        "calendar_version",
+        "data_archive_fingerprint",
+        "isolated_portfolio_id",
+        "created_at",
+        "revealed_at"
+      ],
+      "additionalProperties": false
+    },
+    "ValidationRun": {
+      "type": "object",
+      "properties": {
+        "validation_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "partial",
+            "failed",
+            "skipped"
+          ]
+        },
+        "target_type": {
+          "type": "string",
+          "enum": [
+            "seat",
+            "plan",
+            "case"
+          ]
+        },
+        "target_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "target_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dataset_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rule_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "calendar_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fee_model_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_model_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "window": {
+          "type": "object",
+          "properties": {
+            "start_session_date": {
+              "type": "string",
+              "format": "date"
+            },
+            "end_session_date": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          "required": [
+            "start_session_date",
+            "end_session_date"
+          ],
+          "additionalProperties": false
+        },
+        "split_policy": {
+          "type": "string",
+          "enum": [
+            "walk_forward",
+            "holdout",
+            "full_sample_descriptive"
+          ]
+        },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "sample_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "executed_trade_count": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "win_rate_ratio": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                  "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "expectancy_r": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                  "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "max_drawdown_ratio": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                  "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "excess_return_ratio": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                  "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "directional_price_return_ratio": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                  "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "execution_return_ratio": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                  "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "sample_count",
+            "executed_trade_count",
+            "win_rate_ratio",
+            "expectancy_r",
+            "max_drawdown_ratio",
+            "excess_return_ratio",
+            "directional_price_return_ratio",
+            "execution_return_ratio"
+          ],
+          "additionalProperties": false
+        },
+        "limit_notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evaluation_manifest": {
+          "$ref": "#/$defs/EvaluationManifestRecord"
+        }
+      },
+      "required": [
+        "validation_id",
+        "job_id",
+        "state",
+        "target_type",
+        "target_id",
+        "target_version",
+        "dataset_fingerprint",
+        "rule_version",
+        "calendar_version",
+        "fee_model_version",
+        "execution_model_version",
+        "seed",
+        "window",
+        "split_policy",
+        "metrics",
+        "limit_notes",
+        "evidence_ids",
+        "created_at",
+        "finished_at",
+        "evaluation_manifest"
+      ],
+      "additionalProperties": false
+    },
+    "AlertEvent": {
+      "type": "object",
+      "properties": {
+        "alert_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "rule_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "condition_met",
+            "invalidation_met",
+            "data_stale",
+            "review_due"
+          ]
+        },
+        "dedupe_key": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "unread",
+            "acknowledged"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "acknowledged_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "alert_id",
+        "rule_id",
+        "plan_id",
+        "plan_version",
+        "snapshot_id",
+        "symbol",
+        "kind",
+        "dedupe_key",
+        "state",
+        "message",
+        "evidence_ids",
+        "created_at",
+        "acknowledged_at"
+      ],
+      "additionalProperties": false
+    },
+    "CardDeck": {
+      "type": "object",
+      "properties": {
+        "deck_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "case",
+            "plan",
+            "review"
+          ]
+        },
+        "source_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "source_version": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cards": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "card_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+              },
+              "front": {
+                "type": "string",
+                "minLength": 1
+              },
+              "back": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+                }
+              }
+            },
+            "required": [
+              "card_id",
+              "front",
+              "back",
+              "evidence_ids"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        }
+      },
+      "required": [
+        "deck_id",
+        "version",
+        "title",
+        "source_type",
+        "source_id",
+        "source_version",
+        "cards",
+        "created_at"
+      ],
+      "additionalProperties": false
+    },
+    "Job": {
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "snapshot",
+            "seat",
+            "case",
+            "review",
+            "replay",
+            "validation"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "running",
+            "succeeded",
+            "partial",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "phase": {
+          "type": "string"
+        },
+        "completed_units": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "total_units": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resource_type": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "snapshot",
+                "seat_run",
+                "case",
+                "review",
+                "replay",
+                "validation"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resource_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "job_id",
+        "kind",
+        "state",
+        "phase",
+        "completed_units",
+        "total_units",
+        "resource_type",
+        "resource_id",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "attempt",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "JobAccepted": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "$ref": "#/$defs/Job"
+        },
+        "status_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resource_url": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "job",
+        "status_url",
+        "resource_url"
+      ],
+      "additionalProperties": false
+    },
+    "HealthData": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "degraded",
+            "unavailable"
+          ]
+        },
+        "api_ready": {
+          "type": "boolean"
+        },
+        "database_ready": {
+          "type": "boolean"
+        },
+        "latest_snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "quality": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ]
+        },
+        "freshness": {
+          "type": "string",
+          "enum": [
+            "fresh",
+            "stale",
+            "unknown"
+          ]
+        },
+        "quote_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "latest_completed_session_date": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "missing_inputs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "checked_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "enabled_phases": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "P0",
+              "P1",
+              "P2",
+              "P3",
+              "P4"
+            ]
+          }
+        }
+      },
+      "required": [
+        "status",
+        "api_ready",
+        "database_ready",
+        "latest_snapshot_id",
+        "quality",
+        "freshness",
+        "quote_date",
+        "latest_completed_session_date",
+        "missing_inputs",
+        "checked_at",
+        "enabled_phases"
+      ],
+      "additionalProperties": false
+    },
+    "SnapshotCreateRequest": {
+      "type": "object",
+      "properties": {
+        "session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "source_mode": {
+          "type": "string",
+          "enum": [
+            "provider_api",
+            "file_import"
+          ]
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+          }
+        },
+        "allow_stale": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_date",
+        "source_mode",
+        "symbols",
+        "allow_stale"
+      ],
+      "additionalProperties": false
+    },
+    "SeatRunRequest": {
+      "type": "object",
+      "properties": {
+        "seat_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+          }
+        },
+        "cycle_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "llm_mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "optional",
+            "required"
+          ]
+        },
+        "provider_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "user_context_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "seat_id",
+        "snapshot_id",
+        "symbols",
+        "cycle_id",
+        "llm_mode",
+        "provider_id",
+        "model_id",
+        "user_context_id",
+        "replay_id"
+      ],
+      "additionalProperties": false
+    },
+    "CaseCreateRequest": {
+      "type": "object",
+      "properties": {
+        "supersedes_case_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+          }
+        },
+        "horizon": {
+          "type": "string",
+          "enum": [
+            "short",
+            "swing",
+            "long",
+            "multi"
+          ]
+        },
+        "seat_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          },
+          "minItems": 1,
+          "maxItems": 13,
+          "uniqueItems": true
+        },
+        "primary_strategy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "role_assignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoleAssignment"
+          },
+          "minItems": 1,
+          "maxItems": 13
+        },
+        "llm_mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "optional",
+            "required"
+          ]
+        },
+        "provider_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "user_context_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "supersedes_case_id",
+        "snapshot_id",
+        "title",
+        "question",
+        "symbols",
+        "horizon",
+        "seat_ids",
+        "primary_strategy_id",
+        "role_assignments",
+        "llm_mode",
+        "provider_id",
+        "model_id",
+        "user_context_id",
+        "replay_id"
+      ],
+      "additionalProperties": false
+    },
+    "PlanCreateRequest": {
+      "type": "object",
+      "properties": {
+        "change_reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effective_from": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "portfolio_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "basis_portfolio_revision": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "case_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "primary_strategy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "research",
+            "simulation",
+            "user_trade_record"
+          ]
+        },
+        "planned_shares": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cancel_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanRule"
+          }
+        },
+        "time_exit_rule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanRule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit_deadline": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hypothesis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+          },
+          "minItems": 1
+        },
+        "horizon": {
+          "type": "string",
+          "enum": [
+            "short",
+            "swing",
+            "long"
+          ]
+        },
+        "entry_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanRule"
+          }
+        },
+        "exit_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanRule"
+          }
+        },
+        "invalidation_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanRule"
+          }
+        },
+        "risk_budget_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_position_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "benchmark_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evaluation_window": {
+          "type": "object",
+          "properties": {
+            "start_session_date": {
+              "type": "string",
+              "format": "date"
+            },
+            "end_session_date": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          "required": [
+            "start_session_date",
+            "end_session_date"
+          ],
+          "additionalProperties": false
+        },
+        "fee_model_version": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "change_reason",
+        "effective_from",
+        "portfolio_id",
+        "basis_portfolio_revision",
+        "case_id",
+        "snapshot_id",
+        "primary_strategy_id",
+        "purpose",
+        "planned_shares",
+        "cancel_rules",
+        "time_exit_rule",
+        "exit_deadline",
+        "title",
+        "hypothesis",
+        "symbols",
+        "horizon",
+        "entry_rules",
+        "exit_rules",
+        "invalidation_rules",
+        "risk_budget_minor",
+        "max_position_ratio",
+        "benchmark_id",
+        "evaluation_window",
+        "fee_model_version",
+        "replay_id"
+      ],
+      "additionalProperties": false
+    },
+    "PlanVersionRequest": {
+      "type": "object",
+      "properties": {
+        "base_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content": {
+          "$ref": "#/$defs/PlanCreateRequest"
+        }
+      },
+      "required": [
+        "base_version",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "PlanFreezeRequest": {
+      "type": "object",
+      "properties": {
+        "expected_version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "expected_version"
+      ],
+      "additionalProperties": false
+    },
+    "ReviewCreateRequest": {
+      "type": "object",
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "plan_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frozen_hash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "review_kind": {
+          "type": "string",
+          "enum": [
+            "preflight",
+            "post_trade"
+          ]
+        },
+        "as_of_snapshot_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        }
+      },
+      "required": [
+        "plan_id",
+        "plan_version",
+        "frozen_hash",
+        "review_kind",
+        "as_of_snapshot_id"
+      ],
+      "additionalProperties": false
+    },
+    "JournalEventCreateRequest": {
+      "type": "object",
+      "properties": {
+        "portfolio_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "opening_balance",
+            "cash_adjustment",
+            "paper_fill",
+            "manual_trade_record",
+            "watch_added",
+            "watch_removed",
+            "note",
+            "correction"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "paper",
+            "user_reported",
+            "imported_legacy"
+          ]
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "symbol": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "side": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "buy",
+                "sell"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shares": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "price_decimal": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+              "description": "人民币元/股Decimal字符串，保留来源精度。每股股息及除息扣减同样不得预先舍入至分。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "net_cash_delta_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^-?(0|[1-9][0-9]*)$",
+              "description": "带符号人民币整数分字符串；数据库范围-9223372036854775808..9223372036854775807。禁止负零。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan_version": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "corrects_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "correction_action": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "void",
+                "replace"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "corrected_event_type": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "opening_balance",
+                "cash_adjustment",
+                "paper_fill",
+                "manual_trade_record",
+                "watch_added",
+                "watch_removed",
+                "note"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "type": "string"
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_portfolio_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "reported_fees": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FeeBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "portfolio_id",
+        "event_type",
+        "mode",
+        "effective_at",
+        "symbol",
+        "side",
+        "shares",
+        "price_decimal",
+        "net_cash_delta_minor",
+        "snapshot_id",
+        "plan_id",
+        "plan_version",
+        "corrects_event_id",
+        "correction_action",
+        "corrected_event_type",
+        "note",
+        "replay_id",
+        "expected_portfolio_revision",
+        "evidence_ids",
+        "reported_fees"
+      ],
+      "additionalProperties": false
+    },
+    "PortfolioCreateRequest": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "paper",
+            "user_reported"
+          ]
+        },
+        "initial_cash_minor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "mode",
+        "initial_cash_minor",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "LegacyImportRequest": {
+      "type": "object",
+      "properties": {
+        "dry_run": {
+          "type": "boolean"
+        },
+        "source_kind": {
+          "type": "string",
+          "enum": [
+            "uploaded_json",
+            "browser_local_storage",
+            "panel_legacy_files"
+          ]
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "ledger_json_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ledger_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "trades_jsonl_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trades_sha256": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "allow_cash_adjustment": {
+          "const": false
+        }
+      },
+      "required": [
+        "dry_run",
+        "source_kind",
+        "source_sha256",
+        "ledger_json_text",
+        "ledger_sha256",
+        "trades_jsonl_text",
+        "trades_sha256",
+        "allow_cash_adjustment"
+      ],
+      "additionalProperties": false
+    },
+    "ReplayCreateRequest": {
+      "type": "object",
+      "properties": {
+        "symbols": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]{6}\\.(SH|SZ|BJ)$"
+          },
+          "minItems": 1
+        },
+        "start_session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "end_session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "strict_as_of": {
+          "const": true
+        },
+        "data_archive_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "initial_cash_minor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$",
+          "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+        }
+      },
+      "required": [
+        "symbols",
+        "start_session_date",
+        "end_session_date",
+        "strict_as_of",
+        "data_archive_fingerprint",
+        "initial_cash_minor"
+      ],
+      "additionalProperties": false
+    },
+    "ReplayStepRequest": {
+      "type": "object",
+      "properties": {
+        "expected_cursor_session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "steps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "expected_cursor_session_date",
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    "ReplayRevealRequest": {
+      "type": "object",
+      "properties": {
+        "expected_cursor_session_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "acknowledge_training_end": {
+          "const": true
+        }
+      },
+      "required": [
+        "expected_cursor_session_date",
+        "acknowledge_training_end"
+      ],
+      "additionalProperties": false
+    },
+    "EvaluationManifestInput": {
+      "type": "object",
+      "properties": {
+        "target_type": {
+          "type": "string",
+          "enum": [
+            "seat",
+            "plan",
+            "case"
+          ]
+        },
+        "target_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "target_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dataset_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rule_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "calendar_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fee_model_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_model_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "window": {
+          "type": "object",
+          "properties": {
+            "start_session_date": {
+              "type": "string",
+              "format": "date"
+            },
+            "end_session_date": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          "required": [
+            "start_session_date",
+            "end_session_date"
+          ],
+          "additionalProperties": false
+        },
+        "split_policy": {
+          "type": "string",
+          "enum": [
+            "walk_forward",
+            "holdout",
+            "full_sample_descriptive"
+          ]
+        },
+        "hypothesis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "code_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "universe_policy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "universe_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "sample_selection_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inclusion_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "exclusion_criteria": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "training_window": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "start_session_date": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "end_session_date": {
+                  "type": "string",
+                  "format": "date"
+                }
+              },
+              "required": [
+                "start_session_date",
+                "end_session_date"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "benchmark_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "baseline_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allocation_budget_minor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "description": "人民币整数分的十进制字符串；数据库INTEGER，范围0..9223372036854775807。API不转JS number。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trial_budget": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "statistical_plan": {
+          "type": "object",
+          "properties": {
+            "primary_metric": {
+              "type": "string",
+              "minLength": 1
+            },
+            "secondary_metrics": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "null_hypothesis": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minimum_sample_size": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "confidence_interval_method": {
+              "type": "string",
+              "minLength": 1
+            },
+            "significance_level_ratio": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$",
+                  "description": "Decimal十进制字符串；比例0.05表示5%，不得传5或\"5%\"。"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "multiple_testing_policy": {
+              "type": "string",
+              "minLength": 1
+            },
+            "outlier_policy": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "primary_metric",
+            "secondary_metrics",
+            "null_hypothesis",
+            "minimum_sample_size",
+            "confidence_interval_method",
+            "significance_level_ratio",
+            "multiple_testing_policy",
+            "outlier_policy"
+          ],
+          "additionalProperties": false
+        },
+        "stopping_rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "condition_id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "condition_id",
+              "description"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "target_type",
+        "target_id",
+        "target_version",
+        "dataset_fingerprint",
+        "rule_version",
+        "calendar_version",
+        "fee_model_version",
+        "execution_model_version",
+        "seed",
+        "window",
+        "split_policy",
+        "hypothesis",
+        "skill_sha256",
+        "code_revision",
+        "universe_policy_id",
+        "universe_fingerprint",
+        "sample_selection_policy",
+        "inclusion_criteria",
+        "exclusion_criteria",
+        "training_window",
+        "benchmark_id",
+        "baseline_policy",
+        "allocation_budget_minor",
+        "trial_budget",
+        "statistical_plan",
+        "stopping_rules"
+      ],
+      "additionalProperties": false
+    },
+    "EvaluationManifestRecord": {
+      "type": "object",
+      "properties": {
+        "manifest_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content": {
+          "$ref": "#/$defs/EvaluationManifestInput"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "frozen_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "frozen_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "manifest_id",
+        "version",
+        "content",
+        "created_at",
+        "frozen_at",
+        "frozen_hash"
+      ],
+      "additionalProperties": false
+    },
+    "ValidationCreateRequest": {
+      "type": "object",
+      "properties": {
+        "evaluation_manifest": {
+          "$ref": "#/$defs/EvaluationManifestInput"
+        }
+      },
+      "required": [
+        "evaluation_manifest"
+      ],
+      "additionalProperties": false
+    },
+    "SessionContext": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "live",
+            "replay"
+          ]
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "knowledge_cutoff_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "csrf_token": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        }
+      },
+      "required": [
+        "session_id",
+        "mode",
+        "replay_id",
+        "knowledge_cutoff_at",
+        "context_revision",
+        "csrf_token",
+        "created_at",
+        "expires_at"
+      ],
+      "additionalProperties": false
+    },
+    "SessionBootstrapRequest": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "SessionContextChangeRequest": {
+      "type": "object",
+      "properties": {
+        "expected_context_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "live",
+            "replay"
+          ]
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "acknowledge_training_end": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "expected_context_revision",
+        "mode",
+        "replay_id",
+        "acknowledge_training_end"
+      ],
+      "additionalProperties": false
+    },
+    "PlanLifecycleEvent": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "plan_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frozen_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "activated",
+            "trigger_observed",
+            "cancelled",
+            "expired",
+            "execution_unfilled",
+            "execution_filled"
+          ]
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "condition_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "journal_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previous_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "event_id",
+        "plan_id",
+        "plan_version",
+        "frozen_hash",
+        "event_type",
+        "effective_at",
+        "recorded_at",
+        "snapshot_id",
+        "condition_ids",
+        "journal_event_id",
+        "previous_event_id",
+        "reason",
+        "replay_id"
+      ],
+      "additionalProperties": false
+    },
+    "PlanLifecycleEventCreateRequest": {
+      "type": "object",
+      "properties": {
+        "plan_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "frozen_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "activated",
+            "trigger_observed",
+            "cancelled",
+            "expired",
+            "execution_unfilled",
+            "execution_filled"
+          ]
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "snapshot_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "condition_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+          }
+        },
+        "journal_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_previous_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "plan_version",
+        "frozen_hash",
+        "event_type",
+        "effective_at",
+        "snapshot_id",
+        "condition_ids",
+        "journal_event_id",
+        "reason",
+        "expected_previous_event_id"
+      ],
+      "additionalProperties": false
+    },
+    "PortfolioControlEvent": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "portfolio_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "control_type": {
+          "const": "cooldown"
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "enabled",
+            "released",
+            "expired"
+          ]
+        },
+        "policy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "scheduled_end_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "related_control_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previous_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "replay_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "event_id",
+        "portfolio_id",
+        "control_type",
+        "event_type",
+        "policy_id",
+        "policy_version",
+        "effective_at",
+        "scheduled_end_at",
+        "recorded_at",
+        "related_control_event_id",
+        "previous_event_id",
+        "reason",
+        "replay_id"
+      ],
+      "additionalProperties": false
+    },
+    "PortfolioControlEventCreateRequest": {
+      "type": "object",
+      "properties": {
+        "control_type": {
+          "const": "cooldown"
+        },
+        "event_type": {
+          "type": "string",
+          "enum": [
+            "enabled",
+            "released",
+            "expired"
+          ]
+        },
+        "policy_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "effective_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$",
+          "description": "UTC RFC3339，必须以Z结尾。"
+        },
+        "scheduled_end_at": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "Z$",
+              "description": "UTC RFC3339，必须以Z结尾。"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "related_control_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_previous_event_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "control_type",
+        "event_type",
+        "policy_id",
+        "policy_version",
+        "effective_at",
+        "scheduled_end_at",
+        "related_control_event_id",
+        "reason",
+        "expected_previous_event_id"
+      ],
+      "additionalProperties": false
+    },
+    "AlertAcknowledgeRequest": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "const": "acknowledged"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "additionalProperties": false
+    },
+    "DeckCreateRequest": {
+      "type": "object",
+      "properties": {
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "case",
+            "plan",
+            "review"
+          ]
+        },
+        "source_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+        },
+        "source_version": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "source_type",
+        "source_id",
+        "source_version",
+        "title"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/MarketSnapshot"
+    },
+    {
+      "$ref": "#/$defs/SeatRegistry"
+    },
+    {
+      "$ref": "#/$defs/SeatRun"
+    },
+    {
+      "$ref": "#/$defs/RoundtableCase"
+    },
+    {
+      "$ref": "#/$defs/DecisionPlan"
+    },
+    {
+      "$ref": "#/$defs/ReviewResult"
+    },
+    {
+      "$ref": "#/$defs/JournalEvent"
+    },
+    {
+      "$ref": "#/$defs/Portfolio"
+    },
+    {
+      "$ref": "#/$defs/ReplaySession"
+    },
+    {
+      "$ref": "#/$defs/ValidationRun"
+    },
+    {
+      "$ref": "#/$defs/AlertEvent"
+    },
+    {
+      "$ref": "#/$defs/CardDeck"
+    },
+    {
+      "$ref": "#/$defs/Job"
+    },
+    {
+      "$ref": "#/$defs/Error"
+    },
+    {
+      "$ref": "#/$defs/EvaluationManifestRecord"
+    },
+    {
+      "$ref": "#/$defs/SessionContext"
+    },
+    {
+      "$ref": "#/$defs/PlanLifecycleEvent"
+    },
+    {
+      "$ref": "#/$defs/PortfolioControlEvent"
+    }
+  ]
+}

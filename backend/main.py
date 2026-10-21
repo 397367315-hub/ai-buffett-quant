@@ -22,6 +22,8 @@ from api.stock_selection_review_routes import router as stock_selection_review_r
 from api.wildman_routes import router as wildman_router
 from api.wildman_account_routes import router as wildman_account_router
 from api.decision_authority_routes import router as decision_authority_router
+from api.roundtable_routes import router as roundtable_router
+from api.roundtable_legacy_routes import router as roundtable_legacy_router
 from database import init_db
 from config import settings
 from services.data_collector import collector
@@ -54,9 +56,15 @@ async def lifespan(app: FastAPI):
     await weekend_research_service.resume_incomplete_runs()
     await midday_research_service.resume_incomplete_runs()
     await start_scheduler(collector)
-    yield
-    if scheduler.running:
-        scheduler.shutdown(wait=False)
+    try:
+        yield
+    finally:
+        try:
+            from services.roundtable_host import close_roundtable_runtime
+            await close_roundtable_runtime()
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
@@ -93,7 +101,12 @@ app.add_middleware(
         "Cache-Control",
         "Pragma",
         "X-Requested-With",
+        "X-Roundtable-Session",
+        "X-CSRF-Token",
+        "Idempotency-Key",
+        "X-Replay-Id",
     ],
+    expose_headers=["Content-Disposition", "X-Request-Id"],
 )
 
 
@@ -121,6 +134,8 @@ app.include_router(stock_selection_review_router)
 app.include_router(wildman_router)
 app.include_router(wildman_account_router)
 app.include_router(decision_authority_router)
+app.include_router(roundtable_legacy_router)
+app.include_router(roundtable_router)
 
 
 @app.get("/")

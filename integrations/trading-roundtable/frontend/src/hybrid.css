@@ -1,0 +1,75 @@
+/* 两套外壳共用的最外层规则（不进入 .legacy-shell / .v1-shell 各自的作用域）。
+ * 上一版五页的样式在 legacy/legacy.css，新工作台的样式在 v1.css，都由 tools/scope_css.py 生成。 */
+html, body, #root { margin: 0; min-height: 100%; }
+body { background: #f5f2ed; color: #1a2d42; font-synthesis: none; -webkit-font-smoothing: antialiased; }
+
+.legacy-shell { min-height: 100vh; }
+.v1-shell { min-height: 100vh; }
+
+/* 侧栏多了两项（环境概览、案例研究）：桌面端收紧一点间距，窗口很矮时侧栏可滚动 */
+.legacy-shell .rail-nav { margin-top: 48px; gap: 10px; overflow-y: auto; min-height: 0; }
+.legacy-shell .rail-nav::-webkit-scrollbar { width: 0; }
+.legacy-shell .rail-foot { margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.legacy-shell .rail-bottom { margin-top: 0; }
+.legacy-shell .rail-lab { opacity: .5; }
+.legacy-shell .rail-lab:hover, .legacy-shell .rail-lab:focus-visible, .legacy-shell .rail-lab[aria-current="page"] { opacity: 1; }
+
+/* 嵌在上一版内容区里的新版页面：状态条与页面同宽，去掉重复的左右留白 */
+.legacy-shell .v1-embed .statusband { margin: 0 0 16px; }
+.legacy-shell .v1-embed .workspace { padding-left: 0; padding-right: 0; }
+.legacy-shell .v1-embed .wsnav { display: none; }
+
+/* 手机宽度：底部导航条变横向，项目变多后允许横向滑动，不挤成两行 */
+@media (max-width: 570px) {
+  .legacy-shell .rail { padding: 8px 10px; gap: 6px; }
+  .legacy-shell .rail-nav { margin: 0; gap: 2px; overflow-x: auto; overflow-y: hidden; }
+  .legacy-shell .rail-button { width: 38px; height: 42px; }
+  .legacy-shell .rail-symbol { width: 32px; height: 32px; }
+  .legacy-shell .rail-foot { flex-direction: row; gap: 2px; }
+  .legacy-shell .rail-bottom { display: none; }
+}
+
+
+/* 候选详情里的 K 线：均线图例（点一下隐藏/显示） */
+.legacy-shell .cand-chart-box { display: grid; gap: 6px; }
+.legacy-shell .cand-ma-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.legacy-shell .ma-chip { font: inherit; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid currentColor; background: transparent; cursor: pointer; }
+.legacy-shell .ma-chip[aria-pressed="false"] { opacity: .35; text-decoration: line-through; }
+.legacy-shell .cand-ma-hint { font-size: 11px; color: #8b929b; }
+.legacy-shell .cand-chart-note { margin: 0; font-size: 11px; color: #8b929b; }
+
+
+/* 标的范围开关（上一版的「仅主板 / 含创业板」） */
+.legacy-shell .scope-switch { display: inline-flex; border: 1px solid #d8d0c2; border-radius: 999px; overflow: hidden; background: #fffdfa; }
+.legacy-shell .scope-btn { font: inherit; font-size: 12px; padding: 7px 13px; border: 0; background: transparent; color: #6b7683; cursor: pointer; }
+.legacy-shell .scope-btn + .scope-btn { border-left: 1px solid #e9e5dd; }
+.legacy-shell .scope-btn.on { background: #11263c; color: #f5f2ed; font-weight: 600; }
+.legacy-shell .scope-btn:disabled { opacity: .6; cursor: progress; }
+
+/* ── 席位抽屉里的「AI 大脑」（ADR-012）：跟随上一版外壳的密度，不引入新配色 ── */
+.legacy-shell .seat-ai { display: grid; gap: 8px; }
+.legacy-shell .seat-ai-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.legacy-shell .seat-ai-state { font-size: 12px; color: var(--muted); }
+.legacy-shell .seat-ai-state b { color: var(--ink); font-weight: 700; }
+.legacy-shell .seat-ai-controls { display: flex; gap: 6px; align-items: center; }
+.legacy-shell .seat-ai-controls select { height: 30px; border: 1px solid var(--line); border-radius: 8px; padding: 0 8px; background: #fff; color: var(--ink); font-size: 12px; }
+.legacy-shell .outline-btn.mini { padding: 6px 10px; font-size: 12px; border-radius: 8px; display: inline-flex; align-items: center; gap: 6px; }
+.legacy-shell .seat-ai-picks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+.legacy-shell .seat-ai-pick { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--ink); cursor: pointer; }
+.legacy-shell .seat-ai-pick:hover { border-color: var(--gold); }
+.legacy-shell .seat-ai-pick.is-on { border-color: var(--gold); background: #fdf6e8; font-weight: 600; }
+.legacy-shell .seat-ai-ask { display: flex; gap: 8px; }
+.legacy-shell .seat-ai-ask input { flex: 1; min-width: 0; height: 36px; border: 1px solid var(--line); border-radius: 9px; padding: 0 10px; font-size: 13px; color: var(--ink); background: #fff; }
+.legacy-shell .seat-ai-ask .solid-btn { padding: 8px 14px; font-size: 12px; white-space: nowrap; }
+.legacy-shell .seat-ai-toggle { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; color: var(--muted); }
+.legacy-shell .seat-ai-context { font-size: 12px; color: var(--muted); margin: 0; }
+.legacy-shell .seat-ai-err { font-size: 12px; color: #b23a2e; margin: 0; }
+.legacy-shell .seat-ai-answer { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #fffdf8; display: grid; gap: 6px; }
+.legacy-shell .seat-ai-text { margin: 0; font-size: 13px; line-height: 1.65; color: var(--ink); }
+.legacy-shell .seat-ai-steps summary, .legacy-shell .seat-ai-refs summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.legacy-shell .seat-ai-steps ol, .legacy-shell .seat-ai-refs ul { margin: 6px 0 0; padding-left: 18px; font-size: 12px; color: var(--ink); display: grid; gap: 3px; }
+.legacy-shell .seat-ai-quote { display: block; color: var(--muted); }
+.legacy-shell .seat-ai-miss { margin: 0; font-size: 12px; color: #8a6d3b; }
+.legacy-shell .seat-ai-audit { margin: 0; font-size: 11px; color: var(--muted); }
+.legacy-shell .seat-ai-round { margin-top: 8px; }

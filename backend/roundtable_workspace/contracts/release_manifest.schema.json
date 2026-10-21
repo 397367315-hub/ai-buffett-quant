@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReleaseManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "release_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "ready_for_user_acceptance",
+        "user_confirmed",
+        "deploying",
+        "deployed",
+        "deployment_failed",
+        "rolled_back"
+      ]
+    },
+    "source_revision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "contract_version": {
+      "type": "string"
+    },
+    "database_migration_version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "enabled_phases": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "P0",
+          "P1",
+          "P2",
+          "P3",
+          "P4"
+        ]
+      }
+    },
+    "disabled_features": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "acceptance_report_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "preview_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "pending",
+            "confirmed",
+            "declined"
+          ]
+        },
+        "release_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confirmed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "release_id",
+        "confirmed_at",
+        "reference"
+      ]
+    },
+    "deployment_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "production_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private_backend": {
+          "type": "boolean"
+        },
+        "persistent_storage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authentication": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "project_id",
+        "production_url",
+        "private_backend",
+        "persistent_storage",
+        "authentication"
+      ]
+    },
+    "backup_restore_evidence_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rollback_evidence_ref": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "known_limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "release_id",
+    "state",
+    "source_revision",
+    "source_sha256",
+    "contract_version",
+    "database_migration_version",
+    "enabled_phases",
+    "disabled_features",
+    "acceptance_report_refs",
+    "preview_url",
+    "confirmation",
+    "deployment_target",
+    "backup_restore_evidence_ref",
+    "rollback_evidence_ref",
+    "known_limitations"
+  ]
+}

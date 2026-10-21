@@ -1,9 +1,10 @@
 [build]
-  command = "npm run build"
+  command = "npm run build:roundtable && npm run build"
   publish = ".next"
 
 [build.environment]
   NEXT_PUBLIC_API_URL = "https://ai-buffett-backend.onrender.com"
+  VITE_ROUNDTABLE_API_BASE = "https://ai-buffett-backend.onrender.com/api/v1/roundtable"
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"

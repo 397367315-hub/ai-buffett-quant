@@ -1,0 +1,1318 @@
+{
+  "schema_version": "1.0.0",
+  "execution_status": "not_run",
+  "operations": [
+    {
+      "scenario_operation_id": "ablation_protocol_validate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/ablation_protocol_validate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "acceptance_artifact_scan",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/acceptance_artifact_scan.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "acceptance_report_generate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/acceptance_report_generate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "adversarial_http_requests",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/adversarial_http_requests.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "alert_capability_preflight",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/alert_capability_preflight.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "alert_clock_advance",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/alert_clock_advance.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "alert_feed_disconnect",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/alert_feed_disconnect.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "alert_feed_reconnect",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/alert_feed_reconnect.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "alert_session_enable",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/alert_session_enable.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "async_job_submit",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/async_job_submit.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "behavior_summary",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/behavior_summary.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "browser_acceptance_flow",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/browser_acceptance_flow.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "browser_network_cache_export_audit",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/browser_network_cache_export_audit.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "browser_open",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/browser_open.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "browser_reload",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/browser_reload.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "browser_replay_open",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/browser_replay_open.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "business_readiness_check",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/business_readiness_check.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "calendar_fault_set",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/calendar_fault_set.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "candidate_universe_build",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/candidate_universe_build.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "card_page_render",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/card_page_render.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "case_create",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_cases",
+      "wire": {
+        "path": "/api/v1/cases",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/case_create.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "case_history_get",
+      "binding_kind": "http",
+      "openapi_operation_id": "get_api_v1_cases_case_id",
+      "wire": {
+        "path": "/api/v1/cases/{case_id}",
+        "method": "GET",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/case_history_get.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "case_supersede",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_cases",
+      "wire": {
+        "path": "/api/v1/cases",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/case_supersede.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "checklist_submit",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/checklist_submit.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "clock_set",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/clock_set.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "concurrent_plan_amend",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/concurrent_plan_amend.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "control_state_rebuild_from_events",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/control_state_rebuild_from_events.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "cooldown_activate",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_portfolios_portfolio_id_controls_events",
+      "wire": {
+        "path": "/api/v1/portfolios/{portfolio_id}/controls/events",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/cooldown_activate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "cooldown_override",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_portfolios_portfolio_id_controls_events",
+      "wire": {
+        "path": "/api/v1/portfolios/{portfolio_id}/controls/events",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/cooldown_override.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "cooldown_rule_register",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/cooldown_rule_register.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "corporate_action_calculate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/corporate_action_calculate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "cost_matched_evaluation_validate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/cost_matched_evaluation_validate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "csrf_write_attack_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/csrf_write_attack_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "database_backup",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/database_backup.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "database_integrity_assert",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/database_integrity_assert.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "database_restore_to_temp",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/database_restore_to_temp.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "db_reopen",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/db_reopen.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "deployment_persistence_restore",
+      "binding_kind": "deployment_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/deployment_persistence_restore.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "deployment_rollback",
+      "binding_kind": "deployment_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/deployment_rollback.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "direction_return_calculate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/direction_return_calculate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "discipline_review",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/discipline_review.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_enqueue",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_validations",
+      "wire": {
+        "path": "/api/v1/validations",
+        "method": "POST",
+        "phase": "P2"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_enqueue.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_integrity_fault",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_integrity_fault.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_manifest_freeze",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_manifest_freeze.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_manifest_freeze_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_manifest_freeze_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_manifest_patch",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_manifest_patch.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_run_to_budget",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_run_to_budget.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_schedule_next",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_schedule_next.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_split_validate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_split_validate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_status_get",
+      "binding_kind": "http",
+      "openapi_operation_id": "get_api_v1_validations_validation_id",
+      "wire": {
+        "path": "/api/v1/validations/{validation_id}",
+        "method": "GET",
+        "phase": "P2"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_status_get.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "evaluation_worker_inspect",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/evaluation_worker_inspect.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "fault_inject",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/fault_inject.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "force_provider_error",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/force_provider_error.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "future_action_patch",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/future_action_patch.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "future_fixture_replace",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/future_fixture_replace.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "health_get",
+      "binding_kind": "http",
+      "openapi_operation_id": "get_api_v1_health_data",
+      "wire": {
+        "path": "/api/v1/health/data",
+        "method": "GET",
+        "phase": "P0"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/health_get.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "historical_llm_validation_run",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/historical_llm_validation_run.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "http_fault_set",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/http_fault_set.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "instrument_status_set",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/instrument_status_set.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "job_poll",
+      "binding_kind": "http",
+      "openapi_operation_id": "get_api_v1_jobs_job_id",
+      "wire": {
+        "path": "/api/v1/jobs/{job_id}",
+        "method": "GET",
+        "phase": "P0"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/job_poll.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "journal_event_append",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_journal_events",
+      "wire": {
+        "path": "/api/v1/journal/events",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/journal_event_append.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "legacy_data_request_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/legacy_data_request_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "legacy_evaluation_import",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/legacy_evaluation_import.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "legacy_import",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_portfolio_import_legacy",
+      "wire": {
+        "path": "/api/v1/portfolio/import-legacy",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/legacy_import.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "legacy_import_resume",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_portfolio_import_legacy",
+      "wire": {
+        "path": "/api/v1/portfolio/import-legacy",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/legacy_import_resume.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "llm_response_validate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/llm_response_validate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "market_width_render",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/market_width_render.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "money_round_trip",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/money_round_trip.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "normalize_provider_rows",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/normalize_provider_rows.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_amend",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_plans_plan_id_versions",
+      "wire": {
+        "path": "/api/v1/plans/{plan_id}/versions",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/plan_amend.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_amend_validate_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/plan_amend_validate_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_draft_create",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_plans",
+      "wire": {
+        "path": "/api/v1/plans",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/plan_draft_create.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_effective_version_resolve",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/plan_effective_version_resolve.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_freeze",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_plans_plan_id_freeze",
+      "wire": {
+        "path": "/api/v1/plans/{plan_id}/freeze",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/plan_freeze.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_freeze_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/plan_freeze_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_freeze_retry",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/plan_freeze_retry.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_preflight",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/plan_preflight.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "plan_version_get",
+      "binding_kind": "http",
+      "openapi_operation_id": "get_api_v1_plans_plan_id_versions_version",
+      "wire": {
+        "path": "/api/v1/plans/{plan_id}/versions/{version}",
+        "method": "GET",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/plan_version_get.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "portfolio_mark",
+      "binding_kind": "http",
+      "openapi_operation_id": "get_api_v1_portfolios_portfolio_id",
+      "wire": {
+        "path": "/api/v1/portfolios/{portfolio_id}",
+        "method": "GET",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/portfolio_mark.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "price_series_adjust",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/price_series_adjust.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "price_series_normalize",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/price_series_normalize.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "process_restart",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/process_restart.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "production_data_acceptance",
+      "binding_kind": "deployment_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/production_data_acceptance.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "prospective_observation_settle",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/prospective_observation_settle.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "provider_fault_set",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/provider_fault_set.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "psychology_rules_render",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/psychology_rules_render.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "quote_append",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/quote_append.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "release_confirmation_binding",
+      "binding_kind": "deployment_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/release_confirmation_binding.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "release_without_confirmation",
+      "binding_kind": "deployment_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/release_without_confirmation.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "remote_auth_boundary",
+      "binding_kind": "deployment_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/remote_auth_boundary.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "replay_data_request",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/replay_data_request.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "replay_fact_inject",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/replay_fact_inject.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "replay_payload_get",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/replay_payload_get.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "replay_run",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/replay_run.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "replay_scoped_attack_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/replay_scoped_attack_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "replay_universe_get",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/replay_universe_get.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "return_calculate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/return_calculate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "review_create",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_reviews",
+      "wire": {
+        "path": "/api/v1/reviews",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/review_create.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "risk_action_preflight_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/risk_action_preflight_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "roundtable_summarize",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/roundtable_summarize.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "rule_origin_validate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/rule_origin_validate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "seat_adapter_run",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/seat_adapter_run.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "seat_registry_import",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/seat_registry_import.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "seat_run",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_seat_runs",
+      "wire": {
+        "path": "/api/v1/seat-runs",
+        "method": "POST",
+        "phase": "P1"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/seat_run.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "secret_canary_inject",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/secret_canary_inject.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "server_config_inspect",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/server_config_inspect.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "session_authenticate",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/session_authenticate.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "session_resolve",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/session_resolve.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_command_validate_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_command_validate_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_commands_concurrent",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_commands_concurrent.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_execute",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_execute.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_fee_round_trip",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_fee_round_trip.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_preflight",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_preflight.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_preflight_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_preflight_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_reset",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_reset.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_resolve",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_resolve.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "simulation_sell_preflight",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/simulation_sell_preflight.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "snapshot_build",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_snapshots",
+      "wire": {
+        "path": "/api/v1/snapshots",
+        "method": "POST",
+        "phase": "P0"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/snapshot_build.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "snapshot_classify",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/snapshot_classify.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "snapshot_get",
+      "binding_kind": "http",
+      "openapi_operation_id": "get_api_v1_snapshots_snapshot_id",
+      "wire": {
+        "path": "/api/v1/snapshots/{snapshot_id}",
+        "method": "GET",
+        "phase": "P0"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/snapshot_get.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "snapshot_ingest",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/snapshot_ingest.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "snapshot_render_projection",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/snapshot_render_projection.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "snapshot_request",
+      "binding_kind": "http",
+      "openapi_operation_id": "post_api_v1_snapshots",
+      "wire": {
+        "path": "/api/v1/snapshots",
+        "method": "POST",
+        "phase": "P0"
+      },
+      "driver_to_implement": "tests/acceptance/drivers/snapshot_request.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "source_manifest_capture",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/source_manifest_capture.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "source_registration_dry_run",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/source_registration_dry_run.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "stage_modules_disable",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/stage_modules_disable.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "statistical_oracle_run",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/statistical_oracle_run.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "statistical_report_build",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/statistical_report_build.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "unauthenticated_data_request_matrix",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/unauthenticated_data_request_matrix.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "untrusted_origin_post",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/untrusted_origin_post.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "user_position_import",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/user_position_import.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "validation_batch_run",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/validation_batch_run.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "validation_claim_check",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/validation_claim_check.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "validation_page_render",
+      "binding_kind": "browser",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/browser/validation_page_render.ts",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "validation_protocol_freeze",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/validation_protocol_freeze.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    },
+    {
+      "scenario_operation_id": "validation_protocol_update",
+      "binding_kind": "domain_or_fault_scenario",
+      "openapi_operation_id": null,
+      "wire": null,
+      "driver_to_implement": "tests/acceptance/drivers/validation_protocol_update.py",
+      "status": "not_implemented",
+      "rule": "Driver must exercise actual implementation and evidence, never synthesize PASS from expected values."
+    }
+  ]
+}

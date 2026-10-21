@@ -1,0 +1,4329 @@
+{
+ "version": 1,
+ "source": {
+  "openapi": "3.1.0",
+  "info_version": "0.0.481",
+  "title": "猫爪数据接口文档",
+  "spec_file": "numcat-openapi.json"
+ },
+ "ops": [
+  {
+   "op": "reference_stock_fengk-kp",
+   "apiname": "fengk_kp",
+   "path": "/api/reference-proxy/stock/fengk-kp",
+   "tag": "三方数据",
+   "summary": "最强风口",
+   "fields": "tradedate,symbol,name,rank,strength,pct_chg,main_net_amount,main_buy_amount,main_sell_amount,signal_time,selected_themes",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260618",
+     "desc": "查询单个交易日，格式：YYYYMMDD。不传时按平台最新交易日规则查询。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_fundflow-kp",
+   "apiname": "fundflow_kp",
+   "path": "/api/reference-proxy/theme/fundflow-kp",
+   "tag": "三方数据",
+   "summary": "主力净额",
+   "fields": "tradedate,symbol,name,main_net_amount,main_buy_amount,main_sell_amount,auction_main_net_amount,auction_main_buy_amount,auction_main_sell_amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "601138,600584",
+     "desc": "一个或多个股票代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日查询日期，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "区间开始日期，格式：YYYYMMDD；只传 startdate 时查询该日至最新交易日，不能与 tradedate 同时传。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "区间结束日期，格式：YYYYMMDD；只传 enddate 时按单日查询该日期，不能与 tradedate 同时传；startdate 晚于 enddate 时返回参数错误。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    },
+    "filters": {
+     "type": "array",
+     "required": false,
+     "example": "[{\"field\":\"main_net_amount\",\"op\":\"gt\",\"value\":0}]",
+     "desc": "字段筛选条件数组；每项包含 field、op、value，也可使用 operator 与 conditions 组合 AND/OR 条件。"
+    },
+    "order_by": {
+     "type": "string",
+     "required": false,
+     "example": "main_net_amount",
+     "desc": "排序字段，默认按主力净额排序。"
+    },
+    "order_dir": {
+     "type": "string",
+     "required": false,
+     "example": "desc",
+     "desc": "排序方向。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "6000",
+     "desc": "分页条数，默认及最大均为 6000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_lib-detail-kp",
+   "apiname": "theme_lib_detail_kp",
+   "path": "/api/reference-proxy/theme/lib-detail-kp",
+   "tag": "三方数据",
+   "summary": "题材库详情",
+   "fields": "",
+   "params": {
+    "theme_id": {
+     "type": "string",
+     "required": true,
+     "example": "25",
+     "desc": "题材 ID。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_lib-kp",
+   "apiname": "theme_lib_kp",
+   "path": "/api/reference-proxy/theme/lib-kp",
+   "tag": "三方数据",
+   "summary": "题材库",
+   "fields": "theme_id,name",
+   "params": {
+    "theme_ids": {
+     "type": "string/array",
+     "required": false,
+     "example": "25,118",
+     "desc": "一个或多个题材 ID，支持单个 ID、英文逗号分隔字符串或数组。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_reason",
+   "apiname": "theme_reason",
+   "path": "/api/reference-proxy/theme/reason",
+   "tag": "三方数据",
+   "summary": "板块原因",
+   "fields": "tradedate,symbol,name,source,reason",
+   "params": {
+    "source": {
+     "type": "string",
+     "required": true,
+     "example": "xgb",
+     "desc": "必填且只能指定一个来源。xgb 表示选股宝热点解读，jygs 表示韭菜公社异动解析。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "801165k,801194k",
+     "desc": "一个或多个三方板块代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日查询日期，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "区间开始日期，格式：YYYYMMDD；只传 startdate 时查询该日至最新交易日，不能与 tradedate 同时传。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "区间结束日期，格式：YYYYMMDD；只传 enddate 时按单日查询该日期，不能与 tradedate 同时传；startdate 晚于 enddate 时返回参数错误。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_theme_auc_kp",
+   "apiname": "theme_auc_kp",
+   "path": "/api/reference-proxy/theme/theme_auc_kp",
+   "tag": "三方数据",
+   "summary": "板块竞价",
+   "fields": "source_day,group,group_rank,theme_symbol,theme_name,bid_volume_burst,abnormal_amount,bid_volume,main_net_amount",
+   "params": {
+    "groups": {
+     "type": "string/array",
+     "required": false,
+     "example": "List1,List2",
+     "desc": "List1=今日新增竞价异动，List2=昨日爆发板块延续异动，List3=其它异动板块。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "801033,801062",
+     "desc": "一个或多个板块代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260617",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不传时返回最新缓存。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_fund-flow_northbound",
+   "apiname": "northbound_flow",
+   "path": "/api/reference-proxy/fund-flow/northbound",
+   "tag": "互联互通",
+   "summary": "资金流向统计",
+   "fields": "tradedate,hgt,sgt,north_money,ggt_ss,ggt_sz,south_money",
+   "params": {
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_fund-flow_northbound-holding",
+   "apiname": "northbound_holding",
+   "path": "/api/reference-proxy/fund-flow/northbound-holding",
+   "tag": "互联互通",
+   "summary": "持股明细",
+   "fields": "symbol,trade_date,name,vol,ratio,exchange",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "exchange": {
+     "type": "string",
+     "required": false,
+     "example": "—",
+     "desc": "类型，SH为沪股通、SZ为深股通、HK为港股通；多个值用英文逗号分隔"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_fund-flow_northbound-top10",
+   "apiname": "northbound_top10",
+   "path": "/api/reference-proxy/fund-flow/northbound-top10",
+   "tag": "互联互通",
+   "summary": "陆股通十大成交",
+   "fields": "trade_date,code,name,close,change,rank,market_type,amount,net_amount,buy,sell",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "market_type": {
+     "type": "string",
+     "required": false,
+     "example": "—",
+     "desc": "市场类型，1为沪市，3为深市；多个值用英文逗号分隔"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_fund-flow_southbound-daily",
+   "apiname": "southbound_daily",
+   "path": "/api/reference-proxy/fund-flow/southbound-daily",
+   "tag": "互联互通",
+   "summary": "港股通成交统计",
+   "fields": "trade_date,buy_amount,buy_volume,sell_amount,sell_volume",
+   "params": {
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_fund-flow_southbound-flow-minute",
+   "apiname": "southbound_flow_minute",
+   "path": "/api/reference-proxy/fund-flow/southbound-flow-minute",
+   "tag": "互联互通",
+   "summary": "南向资金分钟",
+   "fields": "tradedate,trademin,ggt_ss_net_cum,ggt_ss_buy_cum,ggt_ss_sell_cum,ggt_ss_turnover_cum,ggt_sz_net_cum,ggt_sz_buy_cum,ggt_sz_sell_cum,ggt_sz_turnover_cum,south_net_cum,south_buy_cum,south_sell_cum,south_turnover_cum",
+   "params": {
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "1610",
+     "desc": "精确观测分钟；不能与分钟范围同时使用"
+    },
+    "starttrademin": {
+     "type": "string",
+     "required": false,
+     "example": "0900",
+     "desc": "开始观测分钟（含）"
+    },
+    "endtrademin": {
+     "type": "string",
+     "required": false,
+     "example": "1610",
+     "desc": "结束观测分钟（含）"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "1000",
+     "desc": "返回行数"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_fund-flow_southbound-top10",
+   "apiname": "southbound_top10",
+   "path": "/api/reference-proxy/fund-flow/southbound-top10",
+   "tag": "互联互通",
+   "summary": "港股通十大成交",
+   "fields": "trade_date,code,name,close,p_change,rank,market_type,amount,net_amount,sh_amount,sh_net_amount,sh_buy,sh_sell,sz_amount,sz_net_amount,sz_buy,sz_sell",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "market_type": {
+     "type": "string",
+     "required": false,
+     "example": "—",
+     "desc": "市场类型，2为港股通（沪），4为港股通（深）；多个值用英文逗号分隔"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_calendar_by-date",
+   "apiname": "tradecal",
+   "path": "/api/reference-proxy/calendar/by-date",
+   "tag": "交易日历",
+   "summary": "指定交易日",
+   "fields": "",
+   "params": {
+    "tradedate": {
+     "type": "string",
+     "required": true,
+     "example": "20260413",
+     "desc": "指定日期，格式 YYYYMMDD；若该日非交易日，返回该日之前最近交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_calendar_latest",
+   "apiname": "tradecal",
+   "path": "/api/reference-proxy/calendar/latest",
+   "tag": "交易日历",
+   "summary": "最新交易日",
+   "fields": "",
+   "params": {},
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_calendar_range",
+   "apiname": "tradecal",
+   "path": "/api/reference-proxy/calendar/range",
+   "tag": "交易日历",
+   "summary": "区间列表",
+   "fields": "",
+   "params": {
+    "startdate": {
+     "type": "string",
+     "required": true,
+     "example": "20260414",
+     "desc": "开始日期，格式 YYYYMMDD。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": true,
+     "example": "20260430",
+     "desc": "结束日期，格式 YYYYMMDD。"
+    },
+    "end_latest": {
+     "type": "boolean",
+     "required": false,
+     "example": "true",
+     "desc": "是否将结束日期限制在当前可用最新交易日。默认 true；查询未来日期时传 false。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_calendar_recent-days",
+   "apiname": "tradecal",
+   "path": "/api/reference-proxy/calendar/recent-days",
+   "tag": "交易日历",
+   "summary": "交易日偏移",
+   "fields": "",
+   "params": {
+    "tradedate_offset": {
+     "type": "integer",
+     "required": true,
+     "example": "-1",
+     "desc": "相对最新交易日的偏移量，0 表示最新交易日，-1 表示前一个交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_calendar_recent-list",
+   "apiname": "tradecal",
+   "path": "/api/reference-proxy/calendar/recent-list",
+   "tag": "交易日历",
+   "summary": "近N日列表",
+   "fields": "",
+   "params": {
+    "recentdays": {
+     "type": "integer",
+     "required": true,
+     "example": "10",
+     "desc": "返回最近 N 个交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_calendar_start-to-latest",
+   "apiname": "tradecal",
+   "path": "/api/reference-proxy/calendar/start-to-latest",
+   "tag": "交易日历",
+   "summary": "起始至最新",
+   "fields": "",
+   "params": {
+    "startdate": {
+     "type": "string",
+     "required": true,
+     "example": "20260403",
+     "desc": "开始日期，格式 YYYYMMDD。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_tick",
+   "apiname": "tick",
+   "path": "/api/reference-proxy/stock/tick",
+   "tag": "分笔行情",
+   "summary": "分笔快照",
+   "fields": "symbol,time,high,open,close,low,vol,amount,pct_chg,bid1,bid2,bid3,bid4,bid5,bid_vol1,bid_vol2,bid_vol3,bid_vol4,bid_vol5,ask1,ask2,ask3,ask4,ask5,ask_vol1,ask_vol2,ask_vol3,ask_vol4,ask_vol5",
+   "params": {
+    "type": {
+     "type": "integer",
+     "required": false,
+     "example": "1",
+     "desc": "快照类型，0 表示集合竞价快照，1 表示盘中分笔快照。"
+    },
+    "asset": {
+     "type": "string",
+     "required": false,
+     "example": "stock",
+     "desc": "资产类型，固定为 stock。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "交易日期，格式：YYYYMMDD。不传时默认当前可用最新交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_tick-fd",
+   "apiname": "tick_fd",
+   "path": "/api/reference-proxy/stock/tick-fd",
+   "tag": "分笔行情",
+   "summary": "分笔封单",
+   "fields": "symbol,tradedate,trademin,time,fd_amount,bid1,bid_vol1,close",
+   "params": {
+    "symbol": {
+     "type": "string",
+     "required": true,
+     "example": "603177",
+     "desc": "单只股票代码，支持 6 位代码或带交易所后缀代码。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260618",
+     "desc": "交易日期，格式：YYYYMMDD。不传时默认当前可用最新交易日。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "1455",
+     "desc": "交易分钟，格式 HHMM，例如 0925。不传则返回该股票当日全部可用分钟。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_tick-history",
+   "apiname": "tick_history",
+   "path": "/api/reference-proxy/stock/tick-history",
+   "tag": "分笔行情",
+   "summary": "分笔历史",
+   "fields": "tradedate,symbol,time,close,vol,amount,transaction_num,bid1,ask1,bid_vol1,ask_vol1",
+   "params": {
+    "asset": {
+     "type": "string",
+     "required": false,
+     "example": "stock",
+     "desc": "资产类型，固定为 stock。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。 普通历史明细的日期范围跨月时，只查询结束日期所在月份：开始日期调整为该月第一天，结束日期不变；同月和单日范围不变。例如 20241225–20250403 实际查询 20250401–20250403；成功或无数据响应的 message 会说明请"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。 跨月时保留该结束日期，仅调整开始日期至结束月份第一天。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。 解析出的范围跨月时，仅查询结束月份第一天至结束日期，实际返回可能不足 N 个交易日。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    },
+    "order_dir": {
+     "type": "string",
+     "required": false,
+     "example": "asc",
+     "desc": "普通明细按交易日期和快照时间排序，asc=升序、desc=降序。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "6000",
+     "desc": "增强查询返回行数，默认 6000，最大 6000；旧版单标的单日查询不设置默认 limit。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "增强查询偏移量，用于分页。"
+    },
+    "start_time": {
+     "type": "string",
+     "required": false,
+     "example": "09:30:00",
+     "desc": "普通明细的起始时间，格式 HH:MM:SS 或 HH:MM:SS.mmm，包含该边界；不能与 trademin 同时传。"
+    },
+    "end_time": {
+     "type": "string",
+     "required": false,
+     "example": "10:00:00",
+     "desc": "普通明细的结束时间，格式 HH:MM:SS 或 HH:MM:SS.mmm，不包含该边界；不能与 trademin 同时传。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_tick_stream_v1",
+   "apiname": "",
+   "path": "/api/reference-proxy/stock/tick_stream_v1",
+   "tag": "分笔行情",
+   "summary": "分笔订阅",
+   "fields": "",
+   "params": {},
+   "stream": true,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_dividend",
+   "apiname": "finance_dividend",
+   "path": "/api/reference-proxy/finance/dividend",
+   "tag": "分红融资",
+   "summary": "分红送转",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,div_proc,stk_div,cash_div,record_date,ex_date,pay_date",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_minute",
+   "apiname": "minute",
+   "path": "/api/reference-proxy/stock/minute",
+   "tag": "分钟行情",
+   "summary": "1分",
+   "fields": "tradedate,symbol,trademin,time,open,high,low,close,vol,amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260520",
+     "desc": "交易日期，格式：YYYYMMDD。不传时默认当前可用最新交易日。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "0935",
+     "desc": "交易分钟，格式 HHMM，需使用 1m 周期实际收盘桶，例如 0935；交易时段为 0930～1130、1301～1500。传入 symbols 但不传本参数时返回标的当日可用分钟序列；symbols 和本参数都不传时，最新交易日取当前周期桶，历史交易日取最新可用桶。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "1m",
+     "desc": "分钟频率，1 分钟接口固定为 1m，通常不需要传。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_minute-15m",
+   "apiname": "minute",
+   "path": "/api/reference-proxy/stock/minute-15m",
+   "tag": "分钟行情",
+   "summary": "15分",
+   "fields": "tradedate,symbol,trademin,time,open,high,low,close,vol,amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260520",
+     "desc": "交易日期，格式：YYYYMMDD。不传时默认当前可用最新交易日。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "0945",
+     "desc": "交易分钟，格式 HHMM，需使用 15m 周期实际收盘桶，例如 0945；交易时段为 0930～1130、1301～1500。传入 symbols 但不传本参数时返回标的当日可用分钟序列；symbols 和本参数都不传时，最新交易日取当前周期桶，历史交易日取最新可用桶。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "15m",
+     "desc": "分钟频率，本接口固定为 15m。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_minute-30m",
+   "apiname": "minute",
+   "path": "/api/reference-proxy/stock/minute-30m",
+   "tag": "分钟行情",
+   "summary": "30分",
+   "fields": "tradedate,symbol,trademin,time,open,high,low,close,vol,amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260520",
+     "desc": "交易日期，格式：YYYYMMDD。不传时默认当前可用最新交易日。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "1000",
+     "desc": "交易分钟，格式 HHMM，需使用 30m 周期实际收盘桶，例如 1000；交易时段为 0930～1130、1301～1500。传入 symbols 但不传本参数时返回标的当日可用分钟序列；symbols 和本参数都不传时，最新交易日取当前周期桶，历史交易日取最新可用桶。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "30m",
+     "desc": "分钟频率，本接口固定为 30m。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_minute-5m",
+   "apiname": "minute",
+   "path": "/api/reference-proxy/stock/minute-5m",
+   "tag": "分钟行情",
+   "summary": "5分",
+   "fields": "tradedate,symbol,trademin,time,open,high,low,close,vol,amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260520",
+     "desc": "交易日期，格式：YYYYMMDD。不传时默认当前可用最新交易日。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "0935",
+     "desc": "交易分钟，格式 HHMM，需使用 5m 周期实际收盘桶，例如 0935；交易时段为 0930～1130、1301～1500。传入 symbols 但不传本参数时返回标的当日可用分钟序列；symbols 和本参数都不传时，最新交易日取当前周期桶，历史交易日取最新可用桶。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "5m",
+     "desc": "分钟频率，本接口固定为 5m。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_minute-60m",
+   "apiname": "minute",
+   "path": "/api/reference-proxy/stock/minute-60m",
+   "tag": "分钟行情",
+   "summary": "60分",
+   "fields": "tradedate,symbol,trademin,time,open,high,low,close,vol,amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260520",
+     "desc": "交易日期，格式：YYYYMMDD。不传时默认当前可用最新交易日。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "1030",
+     "desc": "交易分钟，格式 HHMM，需使用 1h 周期实际收盘桶，例如 1030；交易时段为 0930～1130、1301～1500。传入 symbols 但不传本参数时返回标的当日可用分钟序列；symbols 和本参数都不传时，最新交易日取当前周期桶，历史交易日取最新可用桶。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "1h",
+     "desc": "分钟频率，本接口固定为 1h。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_minute-file-download",
+   "apiname": "file_download",
+   "path": "/api/reference-proxy/stock/minute-file-download",
+   "tag": "分钟行情",
+   "summary": "文件下载",
+   "fields": "",
+   "params": {
+    "data_type": {
+     "type": "string",
+     "required": true,
+     "example": "stock_minute",
+     "desc": "股票分钟文件。"
+    },
+    "year": {
+     "type": "integer",
+     "required": true,
+     "example": "2026",
+     "desc": "2010年至当前年份，实际可下载范围以已发布文件为准。"
+    }
+   },
+   "stream": false,
+   "download": true,
+   "source": "spec"
+  },
+  {
+   "op": "reference_market_emoindic-daily",
+   "apiname": "emoindic_daily",
+   "path": "/api/reference-proxy/market/emoindic-daily",
+   "tag": "市场统计",
+   "summary": "情绪周期",
+   "fields": "tradedate,s2,s3,s4,s5,s6,s7,s8,s9,s10,am,am_diff,mf_main,mf_auction_main,u,u5,promotion_candidate_count,u6,u12,d3,fp108,l1,l1_amount,l2,l2_amount,l3,l3_amount,l2up,l2up_amount,yes_l2up_amount,l3up,l3up_amount,yes_l3up_amount,l4up,l4up_amount,yes_l4up_amount,l17,l21,l22,l2up_rate,ztwme,ztwme20,ztwme_count,owfd_overnight,owfd_0920,owfd_0925,owfd_0925_count,deep_retrace_count,am_pred,am_pred_pct,am_pred_diff",
+   "params": {
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "10",
+     "desc": "最近 N 个交易日，最小值为 1；不能与 tradedate/startdate/enddate 同时传。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_market_theme-stat-daily",
+   "apiname": "theme_daily",
+   "path": "/api/reference-proxy/market/theme-stat-daily",
+   "tag": "市场统计",
+   "summary": "统计指数",
+   "fields": "tradedate,symbol,name,type,open,high,low,close,pre_close,change,pct_chg,vol,amount,servertime",
+   "params": {
+    "type": {
+     "type": "string",
+     "required": true,
+     "example": "tj",
+     "desc": "数据分类，固定为 tj（统计指数）。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "880003,880005",
+     "desc": "一个或多个统计指数代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_market_theme-style-daily",
+   "apiname": "theme_daily",
+   "path": "/api/reference-proxy/market/theme-style-daily",
+   "tag": "市场统计",
+   "summary": "风格板块",
+   "fields": "tradedate,symbol,name,type,open,high,low,close,pre_close,change,pct_chg,vol,amount,servertime",
+   "params": {
+    "type": {
+     "type": "string",
+     "required": true,
+     "example": "fg",
+     "desc": "数据分类，固定为 fg（风格及固定专题板块）。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "880774,880863",
+     "desc": "一个或多个风格及固定专题板块代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_index_indexdaily",
+   "apiname": "indexdaily",
+   "path": "(vendor) 指数日线",
+   "tag": "指数",
+   "summary": "指数日线（收盘/涨跌幅）",
+   "fields": "tradedate,symbol,name,close,pre_close,pct_chg",
+   "params": {
+    "symbols": {
+     "type": "array",
+     "required": false,
+     "example": [
+      "000001.SH"
+     ],
+     "desc": "指数代码"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20261021",
+     "desc": "交易日 YYYYMMDD"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "extra"
+  },
+  {
+   "op": "reference_stock_daily",
+   "apiname": "daily",
+   "path": "/api/reference-proxy/stock/daily",
+   "tag": "日周月行情",
+   "summary": "日",
+   "fields": "tradedate,symbol,name,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,000002",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日/单周期查询日期，格式：YYYYMMDD。周线/月线为周期结束交易日；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日或最新周期。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "区间开始日期，格式：YYYYMMDD；只传 startdate 时查询该日至最新交易日，不能与 tradedate 同时传。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "区间结束日期，格式：YYYYMMDD；只传 enddate 时按单日查询该日期，不能与 tradedate 同时传；startdate 晚于 enddate 时返回参数错误。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_monthly",
+   "apiname": "monthly",
+   "path": "/api/reference-proxy/stock/monthly",
+   "tag": "日周月行情",
+   "summary": "月",
+   "fields": "tradedate,symbol,name,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,000002",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日/单周期查询日期，格式：YYYYMMDD。周线/月线为周期结束交易日；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日或最新周期。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "区间开始日期，格式：YYYYMMDD；只传 startdate 时查询该日至最新交易日，不能与 tradedate 同时传。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "区间结束日期，格式：YYYYMMDD；只传 enddate 时按单日查询该日期，不能与 tradedate 同时传；startdate 晚于 enddate 时返回参数错误。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_weekly",
+   "apiname": "weekly",
+   "path": "/api/reference-proxy/stock/weekly",
+   "tag": "日周月行情",
+   "summary": "周",
+   "fields": "tradedate,symbol,name,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,000002",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日/单周期查询日期，格式：YYYYMMDD。周线/月线为周期结束交易日；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日或最新周期。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "区间开始日期，格式：YYYYMMDD；只传 startdate 时查询该日至最新交易日，不能与 tradedate 同时传。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "区间结束日期，格式：YYYYMMDD；只传 enddate 时按单日查询该日期，不能与 tradedate 同时传；startdate 晚于 enddate 时返回参数错误。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_concept",
+   "apiname": "theme_concept",
+   "path": "/api/reference-proxy/theme/concept",
+   "tag": "板块指数",
+   "summary": "概念板块",
+   "fields": "",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "880904,880905",
+     "desc": "多个概念板块代码过滤条件。"
+    },
+    "symbol": {
+     "type": "string/array",
+     "required": false,
+     "example": "880904",
+     "desc": "单个或多个概念板块代码，例如 880904。"
+    },
+    "name": {
+     "type": "string",
+     "required": false,
+     "example": "智能",
+     "desc": "概念板块名称模糊搜索。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_daily",
+   "apiname": "theme_daily",
+   "path": "/api/reference-proxy/theme/daily",
+   "tag": "板块指数",
+   "summary": "日线行情",
+   "fields": "tradedate,symbol,name,type,open,high,low,close,pct_chg,amount",
+   "params": {
+    "type": {
+     "type": "string",
+     "required": false,
+     "example": "yjhy",
+     "desc": "板块分类。`gn=概念`、`hy=行业`、`fg=风格/固定专题`、`tj=统计板块`、`yjhy=研究行业`；不传返回前四类。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "880904,880905",
+     "desc": "板块代码过滤条件。"
+    },
+    "symbol": {
+     "type": "string/array",
+     "required": false,
+     "example": "880904",
+     "desc": "板块代码过滤条件。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260205",
+     "desc": "指定交易日，格式：YYYYMMDD；不传任何日期参数时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260203",
+     "desc": "开始日期，格式：YYYYMMDD。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260205",
+     "desc": "结束日期，格式：YYYYMMDD。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_industry",
+   "apiname": "theme_industry",
+   "path": "/api/reference-proxy/theme/industry",
+   "tag": "板块指数",
+   "summary": "行业板块",
+   "fields": "",
+   "params": {
+    "type": {
+     "type": "string",
+     "required": false,
+     "example": "yjhy",
+     "desc": "行业体系：hy=普通行业，yjhy=研究行业。不传返回两套行业全量。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "880301,880302",
+     "desc": "多个行业板块代码过滤条件。"
+    },
+    "symbol": {
+     "type": "string/array",
+     "required": false,
+     "example": "880301",
+     "desc": "单个或多个行业板块代码，例如 880301。"
+    },
+    "name": {
+     "type": "string",
+     "required": false,
+     "example": "煤炭",
+     "desc": "行业板块名称模糊搜索。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_members",
+   "apiname": "theme_members",
+   "path": "/api/reference-proxy/theme/members",
+   "tag": "板块指数",
+   "summary": "成份股",
+   "fields": "",
+   "params": {
+    "type": {
+     "type": "string/array",
+     "required": false,
+     "example": "gn,hy",
+     "desc": "板块分类。`gn=概念`、`hy=行业`、`fg=风格/固定专题`、`tj=统计板块`、`yjhy=研究行业`；指定板块代码时可省略，未指定板块代码时默认返回 gn/hy/fg/tj。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "881322,880529",
+     "desc": "多个板块代码过滤条件；按代码查询时无需同时传 type。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "002236,300308",
+     "desc": "可选股票代码过滤条件。"
+    },
+    "symbol": {
+     "type": "string/array",
+     "required": false,
+     "example": "002236",
+     "desc": "可选股票代码过滤条件。"
+    },
+    "theme_symbol": {
+     "type": "string/array",
+     "required": false,
+     "example": "881322",
+     "desc": "单个或多个板块代码；按代码查询时无需同时传 type。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_limit-pool",
+   "apiname": "limit_pool",
+   "path": "/api/reference-proxy/stock/limit-pool",
+   "tag": "涨停打板",
+   "summary": "涨跌停池",
+   "fields": "tradedate,symbol,name,type,is_break,limit_times,pre_limit_times,fd_amount,first_time,last_time,open_times,limit_detail,limit_type,close,pct_chg,amount",
+   "params": {
+    "type": {
+     "type": "string/array",
+     "required": false,
+     "example": "u",
+     "desc": "涨跌停类型：u=涨停，d=跌停，ub=涨停炸板，db=跌停炸板，bu=大涨，bd=大跌。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    },
+    "is_break": {
+     "type": "boolean",
+     "required": false,
+     "example": "false",
+     "desc": "是否断板。true 表示上一交易日以涨停收盘、当日未封住涨停，且当前不处于跌停或跌停炸板；false 表示不满足该条件。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_limit-pool-yes",
+   "apiname": "limit_pool_yes",
+   "path": "/api/reference-proxy/stock/limit-pool-yes",
+   "tag": "涨停打板",
+   "summary": "昨日涨停",
+   "fields": "tradedate,symbol,name,type,pre_type,is_break,pre_limit_times,pre_fd_amount,prev_fd_amount,pre_pct_chg,pre_amount,prev_turnover_rate_f,auc_pct_chg,auc_amt,auc_vol_ratio,auc_turnover,first_time,last_time,open_times,limit_type,latest_theme_names_xgb",
+   "params": {
+    "type": {
+     "type": "string/array",
+     "required": false,
+     "example": "u",
+     "desc": "涨跌停类型：u=涨停，d=跌停，ub=涨停炸板，db=跌停炸板，bu=大涨，bd=大跌。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "请求交易日，格式：YYYYMMDD；接口返回该日期上一交易日的股票池。不传时以最新交易日为请求日期。"
+    },
+    "is_break": {
+     "type": "boolean",
+     "required": false,
+     "example": "false",
+     "desc": "是否断板。true 表示上一交易日以涨停收盘、当日未封住涨停，且当前不处于跌停或跌停炸板；false 表示不满足该条件。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_limit_event_v2_history",
+   "apiname": "limit_event_v2_history",
+   "path": "/api/reference-proxy/stock/limit_event_v2_history",
+   "tag": "涨停打板",
+   "summary": "历史异动",
+   "fields": "tradedate,symbol,name,time,event,servertime,last_price,limit_price,amount,turnover_rate,fd_amount,trade_amount_3s,fd_decrease_12s,fd_decrease_rate_12s,limit_times,open_times",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "event_types": {
+     "type": "array",
+     "required": false,
+     "example": "[1,2,3,4]",
+     "desc": "限定异动事件编号；不传或传空数组时返回全部 12 类事件。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_stream_limit_event_v2",
+   "apiname": "",
+   "path": "/api/reference-proxy/stock/stream_limit_event_v2",
+   "tag": "涨停打板",
+   "summary": "异动订阅",
+   "fields": [
+    "tradedate",
+    "servertime",
+    "last_price",
+    "limit_price",
+    "amount",
+    "turnover_rate",
+    "fd_amount",
+    "trade_amount_3s",
+    "fd_decrease_12s",
+    "fd_decrease_rate_12s",
+    "limit_times",
+    "open_times"
+   ],
+   "params": {},
+   "stream": true,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_jx-authentic",
+   "apiname": "thememembers_jx",
+   "path": "/api/reference-proxy/theme/jx-authentic",
+   "tag": "精选板块",
+   "summary": "最正宗",
+   "fields": "",
+   "params": {
+    "level": {
+     "type": "string",
+     "required": false,
+     "example": "parent",
+     "desc": "提供一级板块最正宗个股，固定为 parent。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "801165k,801194k",
+     "desc": "精选板块代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "002199,600734",
+     "desc": "一个或多个股票代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "tag": {
+     "type": "string",
+     "required": false,
+     "example": "authentic",
+     "desc": "最正宗标签，固定为 authentic。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_jx-long",
+   "apiname": "thememembers_jx",
+   "path": "/api/reference-proxy/theme/jx-long",
+   "tag": "精选板块",
+   "summary": "龙排名",
+   "fields": "",
+   "params": {
+    "level": {
+     "type": "string",
+     "required": false,
+     "example": "parent",
+     "desc": "提供一级板块龙排名个股，固定为 parent。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "803023k,801730k",
+     "desc": "精选板块代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "003032,300996",
+     "desc": "一个或多个股票代码，支持单个代码、英文逗号分隔字符串或数组；过滤后 `symbols` 只保留原始相对顺序，数组位置不代表绝对排名。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260805",
+     "desc": "可选交易日期，格式 YYYYMMDD；不传时查询最新已完整发布的交易日。日期合法但尚无完整快照时返回业务码 1002。"
+    },
+    "tag": {
+     "type": "string",
+     "required": false,
+     "example": "long",
+     "desc": "龙排名标签，固定为 long。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_jx-members",
+   "apiname": "thememembers_jx",
+   "path": "/api/reference-proxy/theme/jx-members",
+   "tag": "精选板块",
+   "summary": "股票池",
+   "fields": "",
+   "params": {
+    "level": {
+     "type": "string",
+     "required": false,
+     "example": "child",
+     "desc": "parent 代表一级板块，child 代表二级板块；不填此参数，默认返回全部一级板块。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "801841k",
+     "desc": "精选板块代码，支持单个代码、英文逗号分隔字符串或数组。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000009,300308",
+     "desc": "一个或多个股票代码，支持单个代码、英文逗号分隔字符串或数组。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_minute-stat",
+   "apiname": "thememinute_jx",
+   "path": "/api/reference-proxy/theme/minute-stat",
+   "tag": "精选板块",
+   "summary": "5分统计",
+   "fields": "tradedate,trademin,theme_symbol,theme_name,level,p_symbol,window_start,window_end,pct_chg,strength,chg_speed,amount,turnover_rate",
+   "params": {
+    "level": {
+     "type": "string",
+     "required": false,
+     "example": "parent",
+     "desc": "固定为 parent，仅返回一级板块。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "801165k",
+     "desc": "精选板块代码，支持单个、英文逗号分隔字符串或数组。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单个交易日，格式：YYYYMMDD；与其它日期参数互斥，默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260722",
+     "desc": "区间开始日期，格式：YYYYMMDD；仅传时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "区间结束日期，格式：YYYYMMDD；仅传时按该日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "3",
+     "desc": "最近 N 个交易日；与其它日期参数互斥。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "0930",
+     "desc": "单个 5 分钟统计桶，格式：HHMM；范围 0930-1130、1305-1500，与分钟范围参数互斥。"
+    },
+    "start_trademin": {
+     "type": "string",
+     "required": false,
+     "example": "0930",
+     "desc": "5 分钟范围起始桶，格式：HHMM；与 trademin 互斥。"
+    },
+    "end_trademin": {
+     "type": "string",
+     "required": false,
+     "example": "1455",
+     "desc": "5 分钟范围结束桶，格式：HHMM；与 trademin 互斥。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "600",
+     "desc": "返回条数，默认 600，最大 6000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "偏移量，用于翻页。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_themedaily_jx",
+   "apiname": "themedaily_jx",
+   "path": "/api/reference-proxy/theme/themedaily_jx",
+   "tag": "精选板块",
+   "summary": "一级板块",
+   "fields": "tradedate,theme_symbol,theme_name,level,p_symbol,pct_chg,strength",
+   "params": {
+    "level": {
+     "type": "string",
+     "required": false,
+     "example": "parent",
+     "desc": "板块层级：parent=一级，child=二级，all=全部；默认 parent。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "801165k",
+     "desc": "精选板块代码，支持单个、英文逗号分隔字符串或数组。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单个交易日，格式：YYYYMMDD；与其它日期参数互斥，默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "区间开始日期，格式：YYYYMMDD；仅传时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "区间结束日期，格式：YYYYMMDD；仅传时按该日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日；与其它日期参数互斥。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的偏移：0=最新，-1=上一交易日；与其它日期参数互斥。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "600",
+     "desc": "返回条数：parent/child 默认 600，all 默认 1000，最大 6000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "偏移量，用于翻页。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_themedaily_jx-child",
+   "apiname": "themedaily_jx",
+   "path": "/api/reference-proxy/theme/themedaily_jx-child",
+   "tag": "精选板块",
+   "summary": "二级板块",
+   "fields": "tradedate,theme_symbol,theme_name,level,p_symbol,pct_chg,strength",
+   "params": {
+    "level": {
+     "type": "string",
+     "required": false,
+     "example": "child",
+     "desc": "板块层级：parent=一级，child=二级，all=全部；默认 child。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "801841k",
+     "desc": "精选板块代码，支持单个、英文逗号分隔字符串或数组。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单个交易日，格式：YYYYMMDD；与其它日期参数互斥，默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "区间开始日期，格式：YYYYMMDD；仅传时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "区间结束日期，格式：YYYYMMDD；仅传时按该日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日；与其它日期参数互斥。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的偏移：0=最新，-1=上一交易日；与其它日期参数互斥。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "600",
+     "desc": "返回条数：parent/child 默认 600，all 默认 1000，最大 6000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "偏移量，用于翻页。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_theme_themefundflow-jx",
+   "apiname": "themefundflow_jx",
+   "path": "/api/reference-proxy/theme/themefundflow-jx",
+   "tag": "精选板块",
+   "summary": "当日资金流向",
+   "fields": "tradedate,trademin,theme_symbol,theme_name,level,p_symbol,main_net_amount,main_buy_amount,main_sell_amount",
+   "params": {
+    "level": {
+     "type": "string",
+     "required": false,
+     "example": "all",
+     "desc": "板块层级：parent=一级，child=二级，all=全部；默认 all。"
+    },
+    "theme_symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "801841k",
+     "desc": "精选板块代码，支持单个、英文逗号分隔字符串或数组，最多 1000 个。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "1002",
+     "desc": "单个捕获分钟，格式：HHMM 或 HH:MM；范围 0929-1131、1259-1501，与分钟范围参数互斥。"
+    },
+    "start_trademin": {
+     "type": "string",
+     "required": false,
+     "example": "1000",
+     "desc": "分钟范围起点，格式：HHMM 或 HH:MM；与 trademin 互斥。"
+    },
+    "end_trademin": {
+     "type": "string",
+     "required": false,
+     "example": "1030",
+     "desc": "分钟范围终点，格式：HHMM 或 HH:MM；与 trademin 互斥。"
+    },
+    "order_by": {
+     "type": "string",
+     "required": false,
+     "example": "main_net_amount",
+     "desc": "排序字段；默认 main_net_amount，分钟序列默认 theme_symbol。"
+    },
+    "order_dir": {
+     "type": "string",
+     "required": false,
+     "example": "desc",
+     "desc": "排序方向：asc=升序，desc=降序。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "6000",
+     "desc": "返回条数，默认及最大 6000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "偏移量，用于翻页。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_capital",
+   "apiname": "finance_capital",
+   "path": "/api/reference-proxy/finance/capital",
+   "tag": "股本股东",
+   "summary": "股本变动",
+   "fields": "symbol,event_date,announce_date,revision_no,version_ambiguous,total_capital,circulating_capital,restrict_circulating_capital,free_float_capital",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_holder-number",
+   "apiname": "finance_holder_number",
+   "path": "/api/reference-proxy/finance/holder-number",
+   "tag": "股本股东",
+   "summary": "股东户数",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,holder_num",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_top10-float-holder",
+   "apiname": "finance_top10_float_holder",
+   "path": "/api/reference-proxy/finance/top10-float-holder",
+   "tag": "股本股东",
+   "summary": "十大流通股东",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,rank,holder_name,hold_amount,hold_ratio",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_top10-holder",
+   "apiname": "finance_top10_holder",
+   "path": "/api/reference-proxy/finance/top10-holder",
+   "tag": "股本股东",
+   "summary": "十大股东",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,rank,holder_name,hold_amount,hold_ratio",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_adj-factor",
+   "apiname": "adj_factor",
+   "path": "/api/reference-proxy/stock/adj-factor",
+   "tag": "股票数据",
+   "summary": "复权因子",
+   "fields": "tradedate,symbol,name,code,adj_factor",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_basic",
+   "apiname": "stockbasic",
+   "path": "/api/reference-proxy/stock/basic",
+   "tag": "股票数据",
+   "summary": "基本信息",
+   "fields": "code,symbol,name,area,industry,fullname,enname,cnspell,market,exchange,curr_type,list_status,list_date,delist_date,is_hs,act_name,act_ent_type",
+   "params": {
+    "symbols": {
+     "type": "string",
+     "required": false,
+     "example": "000001,600000,300750",
+     "desc": "股票代码，支持单个或多个逗号分隔；不传则默认全市场标的。"
+    },
+    "keyword": {
+     "type": "string",
+     "required": false,
+     "example": "平安",
+     "desc": "关键词，按股票代码或名称检索。"
+    },
+    "list_status": {
+     "type": "string",
+     "required": false,
+     "example": "L",
+     "desc": "上市状态：L=上市，D=退市，P=暂停上市。默认 L。"
+    },
+    "market": {
+     "type": "string",
+     "required": false,
+     "example": "主板",
+     "desc": "市场类型，如 主板、创业板、科创板、北交所。"
+    },
+    "exchange": {
+     "type": "string",
+     "required": false,
+     "example": "SSE",
+     "desc": "交易所代码，如 SSE、SZSE、BSE。"
+    },
+    "industry": {
+     "type": "string",
+     "required": false,
+     "example": "银行",
+     "desc": "所属行业。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_hotstock",
+   "apiname": "hotstock",
+   "path": "/api/reference-proxy/stock/hotstock",
+   "tag": "股票数据",
+   "summary": "实时热搜",
+   "fields": "s,rank,tradedate,type",
+   "params": {
+    "type": {
+     "type": "string",
+     "required": true,
+     "example": "xq&resou",
+     "desc": "热搜类型。支持 ths&normal=同花顺&热股&大家都在看；ths&skyrocket=同花顺&热股&快速飙升中；ths&tech=同花顺&热股&技术交易派；ths&value=同花顺&热股&价值投资派；ths&trend=同花顺&热股&趋势投资派；xq&biaos=雪球&飙升榜；xq&repin=雪球&热评榜；x"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260611",
+     "desc": "可选交易日期，格式：YYYYMMDD；不传时返回最新缓存。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_new-share",
+   "apiname": "new_share",
+   "path": "/api/reference-proxy/stock/new-share",
+   "tag": "股票数据",
+   "summary": "新股发行",
+   "fields": "symbol,name,market,subscription_code,subscription_date,issue_price,listed_date,subscription_limit,ballot_rate,issue_quantity,online_issue_quantity,pe,industry_pe",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "688835.SH",
+     "desc": "证券代码，支持六位代码或带 .SH/.SZ/.BJ 后缀的完整代码。"
+    },
+    "market": {
+     "type": "string",
+     "required": false,
+     "example": "SH",
+     "desc": "市场：SH=上海、SZ=深圳、BJ=北京。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260801",
+     "desc": "申购日期下限，格式：YYYYMMDD。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260831",
+     "desc": "申购日期上限，格式：YYYYMMDD。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "200",
+     "desc": "返回条数，默认 200，最大 6000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_pricelimit",
+   "apiname": "pricelimit",
+   "path": "/api/reference-proxy/stock/pricelimit",
+   "tag": "股票数据",
+   "summary": "涨跌停价",
+   "fields": "tradedate,symbol,name,pre_close,up_limit,down_limit",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_screening",
+   "apiname": "screening",
+   "path": "/api/reference-proxy/stock/screening",
+   "tag": "股票数据",
+   "summary": "实时选股",
+   "fields": "tradedate,symbol,name,close,pct_chg,amount,turnover_rate_f,free_float_mv,type,limit_times,fd_amount,auc_pct_chg,auc_net_amount,auc_amt,theme_names_kpl,reason_main_kpl",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_stk-factor-pro",
+   "apiname": "stk_factor_pro",
+   "path": "/api/reference-proxy/stock/stk-factor-pro",
+   "tag": "股票数据",
+   "summary": "复权行情",
+   "fields": "tradedate,symbol,name,open,open_hfq,open_qfq,high,high_hfq,high_qfq,low,low_hfq,low_qfq,close,close_hfq,close_qfq,pre_close,change,pct_chg,vol,amount,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,free_share,total_mv,circ_mv,adj_factor",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "688256,000001",
+     "desc": "股票代码列表；不传 symbol/symbols 则默认全市场标的。"
+    },
+    "symbol": {
+     "type": "string",
+     "required": false,
+     "example": "688256",
+     "desc": "单只 6 位股票代码。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260508",
+     "desc": "单日查询日期，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传任何日期参数时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260501",
+     "desc": "区间开始日期，格式：YYYYMMDD。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260508",
+     "desc": "区间结束日期，格式：YYYYMMDD。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_valuation",
+   "apiname": "valuation",
+   "path": "/api/reference-proxy/stock/valuation",
+   "tag": "股票数据",
+   "summary": "估值指标",
+   "fields": "tradedate,symbol,name,code,close,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,free_share,free_mv,total_mv,circ_mv",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_margin_detail",
+   "apiname": "margin_detail",
+   "path": "/api/reference-proxy/margin/detail",
+   "tag": "融资融券",
+   "summary": "个股交易明细",
+   "fields": "tradedate,symbol,name,exchange,financing_balance,financing_buy_amount,financing_repayment_amount,securities_lending_balance,securities_lending_sell_quantity,securities_lending_outstanding_quantity,securities_lending_repayment_quantity,margin_balance",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "600000,510050.SH",
+     "desc": "证券代码，支持六位代码或带市场后缀的完整代码；支持股票和 ETF。不传则查询全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日查询日期，格式：YYYYMMDD。不传 tradedate 时返回该数据集最新完整入库日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个已完整入库交易日；以该数据集的完整入库日为准，不能与 tradedate/startdate/enddate 同时使用。"
+    },
+    "exchange": {
+     "type": "string",
+     "required": false,
+     "example": "SSE",
+     "desc": "交易所代码：SSE=上海证券交易所，SZSE=深圳证券交易所，BSE=北京证券交易所。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_margin_securities",
+   "apiname": "margin_securities",
+   "path": "/api/reference-proxy/margin/securities",
+   "tag": "融资融券",
+   "summary": "两融标的",
+   "fields": "tradedate,symbol,name,exchange",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "600000,510050.SH",
+     "desc": "证券代码，支持六位代码或带市场后缀的完整代码；支持股票和 ETF。不传则查询全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日查询日期，格式：YYYYMMDD。不传 tradedate 时返回该数据集最新完整入库日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个已完整入库交易日；以该数据集的完整入库日为准，不能与 tradedate/startdate/enddate 同时使用。"
+    },
+    "exchange": {
+     "type": "string",
+     "required": false,
+     "example": "SSE",
+     "desc": "交易所代码：SSE=上海证券交易所，SZSE=深圳证券交易所，BSE=北京证券交易所。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_margin_summary",
+   "apiname": "margin_summary",
+   "path": "/api/reference-proxy/margin/summary",
+   "tag": "融资融券",
+   "summary": "两融概况",
+   "fields": "tradedate,exchange,financing_balance,financing_buy_amount,financing_repayment_amount,securities_lending_balance,securities_lending_sell_quantity,securities_lending_outstanding_quantity,margin_balance",
+   "params": {
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日查询日期，格式：YYYYMMDD。不传 tradedate 时返回该数据集最新完整入库日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个已完整入库交易日；以该数据集的完整入库日为准，不能与 tradedate/startdate/enddate 同时使用。"
+    },
+    "exchange": {
+     "type": "string",
+     "required": false,
+     "example": "SSE",
+     "desc": "交易所代码：SSE=上海证券交易所，SZSE=深圳证券交易所，BSE=北京证券交易所。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_margin_transfer-financing",
+   "apiname": "transfer_financing",
+   "path": "/api/reference-proxy/margin/transfer-financing",
+   "tag": "融资融券",
+   "summary": "转融资",
+   "fields": "tradedate,opening_balance,auction_amount,reborrow_amount,repayment_amount,closing_balance",
+   "params": {
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日查询日期，格式：YYYYMMDD。不传 tradedate 时返回该数据集最新完整入库日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个已完整入库交易日；以该数据集的完整入库日为准，不能与 tradedate/startdate/enddate 同时使用。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_balance-sheet",
+   "apiname": "finance_balance_sheet",
+   "path": "/api/reference-proxy/finance/balance-sheet",
+   "tag": "财务数据",
+   "summary": "资产负债表",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,total_assets,total_liab,total_hldr_eqy_exc_min_int",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_cash-flow",
+   "apiname": "finance_cash_flow",
+   "path": "/api/reference-proxy/finance/cash-flow",
+   "tag": "财务数据",
+   "summary": "现金流量表",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,n_cashflow_act,n_cashflow_inv_act,n_cash_flows_fnc_act",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_disclosure-date",
+   "apiname": "finance_disclosure_date",
+   "path": "/api/reference-proxy/finance/disclosure-date",
+   "tag": "财务数据",
+   "summary": "财报披露计划",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,pre_date,actual_date,modify_date",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_express",
+   "apiname": "finance_express",
+   "path": "/api/reference-proxy/finance/express",
+   "tag": "财务数据",
+   "summary": "业绩快报",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,revenue,operate_profit,total_profit,n_income,total_assets,total_hldr_eqy_exc_min_int,diluted_eps,diluted_roe,yoy_net_profit,bps,perf_summary,update_flag,is_audit,remark",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_forecast",
+   "apiname": "finance_forecast",
+   "path": "/api/reference-proxy/finance/forecast",
+   "tag": "财务数据",
+   "summary": "业绩预告",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,forecast_type,p_change_min,p_change_max,net_profit_min,net_profit_max,last_parent_net,first_ann_date,change_reason,update_flag,summary",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_income-statement",
+   "apiname": "finance_income_statement",
+   "path": "/api/reference-proxy/finance/income-statement",
+   "tag": "财务数据",
+   "summary": "利润表",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,total_revenue,revenue,operate_profit,n_income",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_indicator",
+   "apiname": "finance_indicator",
+   "path": "/api/reference-proxy/finance/indicator",
+   "tag": "财务数据",
+   "summary": "财务指标",
+   "fields": "symbol,report_date,announce_date,revision_no,version_ambiguous,eps,roe,roa,debt_to_assets,update_flag",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_finance_announcement",
+   "apiname": "finance_announcement",
+   "path": "/api/reference-proxy/finance/announcement",
+   "tag": "资讯",
+   "summary": "公告",
+   "fields": "symbol,event_date,title,summary,announcement_type,content_url",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "业务日期区间开始日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "业务日期区间结束日期。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "period": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确报告期，例如 20260331；不能与 date/startdate/enddate 同时传。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260331",
+     "desc": "精确业务日期。报表类按报告期匹配，事件类按事件日期匹配；不能与 period/startdate/enddate 同时传。"
+    },
+    "ann_startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260101",
+     "desc": "披露日期区间开始日期。"
+    },
+    "ann_enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20261231",
+     "desc": "披露日期区间结束日期。"
+    },
+    "as_of": {
+     "type": "string",
+     "required": false,
+     "example": "2026-07-24T12:00:00+08:00",
+     "desc": "只返回该时点已经披露的数据，支持 YYYYMMDD、YYYY-MM-DD 或 ISO 8601 时间；不传表示当前时点。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个业务记录的最新已披露版本；all 返回全部历史版本。"
+    },
+    "keyword": {
+     "type": "string",
+     "required": false,
+     "example": "业绩说明会",
+     "desc": "标题或摘要关键词。"
+    },
+    "announcement_type": {
+     "type": "string/array",
+     "required": false,
+     "example": "—",
+     "desc": "按统一公告类型筛选：financial_report=财务报告，other=其他，unknown=未知。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_interactive-qa",
+   "apiname": "interactive_qa",
+   "path": "/api/reference-proxy/interactive-qa",
+   "tag": "资讯",
+   "summary": "问董秘",
+   "fields": "symbol,event_date,qa_id,question_time,question,answer_time,answer,revision_no,version_ambiguous",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001.SZ,600000.SH",
+     "desc": "股票代码，支持单个、逗号分隔字符串或数组；首期仅支持沪深 A 股（SH/SZ），北交所（BJ）代码返回业务 code=503 / UNSUPPORTED_MARKET；统一 /api 的 HTTP 状态仍为 200；不传时查询全部已发布沪深标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260626",
+     "desc": "回答日期区间的开始日期，格式：YYYYMMDD；可单独传，未传 enddate 时截至所查股票的最新完整覆盖日期。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260726",
+     "desc": "回答日期区间的结束日期，格式：YYYYMMDD；可单独传，未传 startdate 时从完整覆盖起点开始。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "本次返回的最大记录数，最大 2000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "分页偏移量。"
+    },
+    "date": {
+     "type": "string",
+     "required": false,
+     "example": "20260726",
+     "desc": "回答日期，格式：YYYYMMDD；不能与 startdate/enddate 同时传。"
+    },
+    "qa_id": {
+     "type": "string/array",
+     "required": false,
+     "example": "2288573137116577792",
+     "desc": "按问答编号精确筛选；编号仅接受字符串或字符串数组。"
+    },
+    "keyword": {
+     "type": "string",
+     "required": false,
+     "example": "分红",
+     "desc": "同时在问题和回答正文中进行关键词搜索。"
+    },
+    "version": {
+     "type": "string",
+     "required": false,
+     "example": "latest",
+     "desc": "latest 返回每个问答编号的最新回答版本；all 返回全部历史修订版本。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_news",
+   "apiname": "news",
+   "path": "/api/reference-proxy/news",
+   "tag": "资讯",
+   "summary": "新闻",
+   "fields": "time_label,source_name,title,display_at,summary,url,published_at",
+   "params": {
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "100",
+     "desc": "每个列表或来源分组最多返回的记录数，取值范围 1～500。"
+    },
+    "view": {
+     "type": "string",
+     "required": false,
+     "example": "time",
+     "desc": "展示方式：time 按时间列表返回，source 按来源分组返回。"
+    },
+    "sources": {
+     "type": "string/array",
+     "required": false,
+     "example": "cls_depth_1000,yicai_home",
+     "desc": "新闻来源过滤条件。当前支持 cls_depth_1000、cls_depth_1003、cls_hot_article、yicai_home。"
+    },
+    "keyword": {
+     "type": "string",
+     "required": false,
+     "example": "人工智能",
+     "desc": "关键词，按标题和摘要模糊搜索。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_level2_file-download",
+   "apiname": "file_download",
+   "path": "/api/reference-proxy/level2/file-download",
+   "tag": "逐笔历史",
+   "summary": "文件下载",
+   "fields": "",
+   "params": {
+    "data_type": {
+     "type": "string",
+     "required": true,
+     "example": "level2",
+     "desc": "数据类型，首期仅支持逐笔。"
+    },
+    "year": {
+     "type": "integer",
+     "required": true,
+     "example": "2026",
+     "desc": "2017年至当前年份。"
+    }
+   },
+   "stream": false,
+   "download": true,
+   "source": "spec"
+  },
+  {
+   "op": "reference_level2_order-history",
+   "apiname": "level2_order_history",
+   "path": "/api/reference-proxy/level2/order-history",
+   "tag": "逐笔历史",
+   "summary": "逐笔委托",
+   "fields": "symbol,tradedate,time,order_id,exchange_order_id,order_type,order_code,price,volume,amount",
+   "params": {
+    "symbol": {
+     "type": "string",
+     "required": true,
+     "example": "000001",
+     "desc": "单只股票代码，支持 6 位代码或带交易所后缀代码。Level-2 明细接口不支持一次查询多只股票。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260617",
+     "desc": "可选交易日期，格式：YYYYMMDD；不填时与 daily 一致，取交易日历最新交易日。只查询单日；当日未入库则返回无数据，不自动回退。"
+    },
+    "start_time": {
+     "type": "string",
+     "required": false,
+     "example": "09:30:00",
+     "desc": "可选开始时间，支持 HH:MM、HH:MM:SS、HHMMSS 或 HHMMSSmmm。需要毫秒精度时再传 9 位 HHMMSSmmm。"
+    },
+    "end_time": {
+     "type": "string",
+     "required": false,
+     "example": "10:00:00",
+     "desc": "可选结束时间，支持 HH:MM、HH:MM:SS、HHMMSS 或 HHMMSSmmm。需要毫秒精度时再传 9 位 HHMMSSmmm。"
+    },
+    "page_size": {
+     "type": "integer",
+     "required": false,
+     "example": "10000",
+     "desc": "每页返回行数。默认且最大为 10000；传入更大值时服务端自动按 10000 返回。"
+    },
+    "cursor": {
+     "type": "string",
+     "required": false,
+     "example": "eyJ2Ijoib3JkZXItdGltZS1vZmZzZXQtMSIsInRpbWUiOjkxNTAwMDAwLCJvZmZzZXQiOjF9",
+     "desc": "第一页不传；后续原样传 next_cursor，无需解析。新游标固定首次查询日期；省略日期仍沿用首次日期，显式日期须一致。不带日期的时间偏移游标需填写原日期。按时间及同一毫秒内已读条数续取，不依赖委托编号唯一或非零。翻页期间保持证券、日期和时间范围不变；数据重建后须重新开始。旧版游标返回业务 code=422，请清空 "
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_level2_quote-history",
+   "apiname": "level2_quote_history",
+   "path": "/api/reference-proxy/level2/quote-history",
+   "tag": "逐笔历史",
+   "summary": "十档盘口",
+   "fields": "symbol,tradedate,time,close,volume,amount,bid1,bid_vol1,ask1,ask_vol1",
+   "params": {
+    "symbol": {
+     "type": "string",
+     "required": true,
+     "example": "000001",
+     "desc": "单只股票代码，支持 6 位代码或带交易所后缀代码。Level-2 明细接口不支持一次查询多只股票。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260617",
+     "desc": "可选交易日期，格式：YYYYMMDD；不填时与 daily 一致，取交易日历最新交易日。只查询单日；当日未入库则返回无数据，不自动回退。"
+    },
+    "start_time": {
+     "type": "string",
+     "required": false,
+     "example": "09:30:00",
+     "desc": "可选开始时间，支持 HH:MM、HH:MM:SS、HHMMSS 或 HHMMSSmmm。需要毫秒精度时再传 9 位 HHMMSSmmm。"
+    },
+    "end_time": {
+     "type": "string",
+     "required": false,
+     "example": "10:00:00",
+     "desc": "可选结束时间，支持 HH:MM、HH:MM:SS、HHMMSS 或 HHMMSSmmm。需要毫秒精度时再传 9 位 HHMMSSmmm。"
+    },
+    "page_size": {
+     "type": "integer",
+     "required": false,
+     "example": "10000",
+     "desc": "每页返回行数。默认且最大为 10000；传入更大值时服务端自动按 10000 返回。"
+    },
+    "cursor": {
+     "type": "string",
+     "required": false,
+     "example": "eyJ0aW1lIjo5MTUwMDAwMH0",
+     "desc": "游标分页参数。第一页不传；后续请求传上一页返回的 next_cursor。新游标固定首次查询日期，跨日翻页不改变日期；显式日期必须与游标一致。旧游标需同时填写原交易日。响应 data.tradedate 为实际查询日期。返回 has_more=false 或 next_cursor=null 表示已经结束。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_level2_trade-history",
+   "apiname": "level2_trade_history",
+   "path": "/api/reference-proxy/level2/trade-history",
+   "tag": "逐笔历史",
+   "summary": "逐笔成交",
+   "fields": "symbol,tradedate,time,trade_id,trade_code,order_code,bs_flag,bid_order_id,ask_order_id,price,volume,amount",
+   "params": {
+    "symbol": {
+     "type": "string",
+     "required": true,
+     "example": "000001",
+     "desc": "单只股票代码，支持 6 位代码或带交易所后缀代码。Level-2 明细接口不支持一次查询多只股票。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260617",
+     "desc": "可选交易日期，格式：YYYYMMDD；不填时与 daily 一致，取交易日历最新交易日。只查询单日；当日未入库则返回无数据，不自动回退。"
+    },
+    "start_time": {
+     "type": "string",
+     "required": false,
+     "example": "09:30:00",
+     "desc": "可选开始时间，支持 HH:MM、HH:MM:SS、HHMMSS 或 HHMMSSmmm。需要毫秒精度时再传 9 位 HHMMSSmmm。"
+    },
+    "end_time": {
+     "type": "string",
+     "required": false,
+     "example": "10:00:00",
+     "desc": "可选结束时间，支持 HH:MM、HH:MM:SS、HHMMSS 或 HHMMSSmmm。需要毫秒精度时再传 9 位 HHMMSSmmm。"
+    },
+    "page_size": {
+     "type": "integer",
+     "required": false,
+     "example": "10000",
+     "desc": "每页返回行数。默认且最大为 10000；传入更大值时服务端自动按 10000 返回。"
+    },
+    "cursor": {
+     "type": "string",
+     "required": false,
+     "example": "eyJ0aW1lIjo5MTUwMDAwMH0",
+     "desc": "游标分页参数。第一页不传；后续请求传上一页返回的 next_cursor。新游标固定首次查询日期，跨日翻页不改变日期；显式日期必须与游标一致。旧游标需同时填写原交易日。响应 data.tradedate 为实际查询日期。返回 has_more=false 或 next_cursor=null 表示已经结束。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_auc-kp",
+   "apiname": "auc_kp",
+   "path": "/api/reference-proxy/stock/auc-kp",
+   "tag": "集合竞价",
+   "summary": "涨停委买",
+   "fields": "tradedate,symbol,name,ztwme,ztwme20,pre_ztwme,prev_ztwme,auc_net_amount,auc_pct_chg,theme_names_kpl,auc_amount,auc_turnover,fd_amount",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_auction-file-download",
+   "apiname": "file_download",
+   "path": "/api/reference-proxy/stock/auction-file-download",
+   "tag": "集合竞价",
+   "summary": "文件下载",
+   "fields": "",
+   "params": {
+    "data_type": {
+     "type": "string",
+     "required": true,
+     "example": "auction_tick",
+     "desc": "竞价分笔文件。"
+    },
+    "year": {
+     "type": "integer",
+     "required": true,
+     "example": "2026",
+     "desc": "2022年至当前年份，实际可下载范围以已发布文件为准。"
+    }
+   },
+   "stream": false,
+   "download": true,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_daily_auc",
+   "apiname": "daily_auc",
+   "path": "/api/reference-proxy/stock/daily_auc",
+   "tag": "集合竞价",
+   "summary": "竞价指标",
+   "fields": "tradedate,symbol,name,m_price,auc_pct_chg,open_bid_pct,auc_amt,auc_vol,auc_vol_ratio,auc_to_pre_vol_pct,auc_to_pre_auc_vol_ratio,um_vol,auc_turnover_rate,auc_turnover",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_daily_auc_detail",
+   "apiname": "daily_auc_detail",
+   "path": "/api/reference-proxy/stock/daily_auc_detail",
+   "tag": "集合竞价",
+   "summary": "竞价分笔",
+   "fields": "tradedate,symbol,time,m_price,auc_pct_chg,auc_vol,auc_amt,um_vol,um_side,auc_turnover_rate,auc_turnover,auc_to_pre_vol_pct",
+   "params": {
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 startdate/enddate 同时传。不传 tradedate 时默认最新交易日。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。 普通历史明细的日期范围跨月时，只查询结束日期所在月份：开始日期调整为该月第一天，结束日期不变；同月和单日范围不变。例如 20241225–20250403 实际查询 20250401–20250403；成功或无数据响应的 message 会说明请"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。 跨月时保留该结束日期，仅调整开始日期至结束月份第一天。"
+    },
+    "recentdays": {
+     "type": "integer",
+     "required": false,
+     "example": "5",
+     "desc": "最近 N 个交易日覆盖的日期区间。不能与 tradedate/startdate/enddate 同时传。 解析出的范围跨月时，仅查询结束月份第一天至结束日期，实际返回可能不足 N 个交易日。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日。"
+    },
+    "order_dir": {
+     "type": "string",
+     "required": false,
+     "example": "asc",
+     "desc": "普通分笔模式按日期和时间排序，asc=升序、desc=降序。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "500",
+     "desc": "返回条数。普通分笔模式默认 500，快照模式默认 6000；最大 6000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "偏移量，用于翻页。"
+    },
+    "start_time": {
+     "type": "string",
+     "required": false,
+     "example": "09:15:00",
+     "desc": "普通分笔模式的起始时间，格式 HH:MM:SS，默认 09:15:00；不能与 trademin 同时传。"
+    },
+    "end_time": {
+     "type": "string",
+     "required": false,
+     "example": "09:26:00",
+     "desc": "普通分笔模式的结束时间，格式 HH:MM:SS，默认 09:26:00；不能与 trademin 同时传。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_daily_auc_fd",
+   "apiname": "daily_auc_fd",
+   "path": "/api/reference-proxy/stock/daily_auc_fd",
+   "tag": "集合竞价",
+   "summary": "竞价一字",
+   "fields": "tradedate,symbol,name,auc_pct_chg,theme_names_kpl,theme_names_xgb,auc_amt,auc_turnover,fa_0915,fa_0916,fa_0917,fa_0918,fa_0919,fa_0920,fa_0921,fa_0922,fa_0923,fa_0924,fa_0925,fa_0920f,fa_0925l,is_st",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不传时默认最新交易日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_last-tick",
+   "apiname": "tick_history",
+   "path": "/api/reference-proxy/stock/last-tick",
+   "tag": "集合竞价",
+   "summary": "竞价抢筹",
+   "fields": "tradedate,symbol,time,close,bid1,bid_vol1,bid_vol2,ask_vol2",
+   "params": {
+    "asset": {
+     "type": "string",
+     "required": false,
+     "example": "stock",
+     "desc": "资产类型，固定为 stock。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "一个或多个股票代码，支持英文逗号分隔字符串或数组，最多 200 个；不传时查询股票全市场。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260730",
+     "desc": "查询单个交易日，格式：YYYYMMDD；不能与 tradedate_offset 同时传。不传时默认最新交易日。"
+    },
+    "tradedate_offset": {
+     "type": "integer",
+     "required": false,
+     "example": "-1",
+     "desc": "相对最新交易日的单日偏移，0 表示最新交易日，-1 表示上一交易日；不能与 tradedate 同时传。"
+    },
+    "limit": {
+     "type": "integer",
+     "required": false,
+     "example": "6000",
+     "desc": "最多返回的标的行数，默认 6000，最大 6000。"
+    },
+    "offset": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "增强查询偏移量，用于分页。"
+    },
+    "trademin": {
+     "type": "string",
+     "required": false,
+     "example": "0925",
+     "desc": "边界分钟，格式 HHMM；本入口默认 0925，可由请求值覆盖。"
+    },
+    "side": {
+     "type": "string",
+     "required": false,
+     "example": "before",
+     "desc": "边界快照方向；本入口默认 before，可改为 after。before 取严格早于边界的最后一条，after 取等于或晚于边界的第一条。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_anomaly-forecast",
+   "apiname": "anomaly_forecast",
+   "path": "/api/reference-proxy/stock/anomaly-forecast",
+   "tag": "风险提示",
+   "summary": "严重异动预测",
+   "fields": "tradedate,symbol,name,pct_chg,rule,elapsed_days,deviation_pct,required_pct_chg,trigger_price,status",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询交易日，格式：YYYYMMDD；查询最新已完成交易日时同时返回下一交易日预测，其他日期仅返回指定日期。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_point-monitor",
+   "apiname": "point_monitor",
+   "path": "/api/reference-proxy/stock/point-monitor",
+   "tag": "风险提示",
+   "summary": "交易监管",
+   "fields": "type,symbol,name,startdate,enddate,reason",
+   "params": {
+    "type": {
+     "type": "string/array",
+     "required": false,
+     "example": "交易所风险提示",
+     "desc": "监管类型，支持 交易所风险提示 / 严重异常波动。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_st",
+   "apiname": "st",
+   "path": "/api/reference-proxy/stock/st",
+   "tag": "风险提示",
+   "summary": "ST列表",
+   "fields": "tradedate,symbol,name,type,type_name",
+   "params": {
+    "type": {
+     "type": "string/array",
+     "required": false,
+     "example": "ST",
+     "desc": "ST 类型，如 ST、*ST，支持逗号分隔或数组。"
+    },
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_stock_suspend",
+   "apiname": "suspend",
+   "path": "/api/reference-proxy/stock/suspend",
+   "tag": "风险提示",
+   "summary": "停牌复牌",
+   "fields": "symbol,tradedate,suspend_type,suspend_timing",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "000001,600000",
+     "desc": "股票代码，支持单个、多个逗号分隔或数组；不传则默认全市场标的。"
+    },
+    "startdate": {
+     "type": "string",
+     "required": false,
+     "example": "20260701",
+     "desc": "查询区间开始日期，格式：YYYYMMDD；仅传该参数时查询至最新交易日。"
+    },
+    "enddate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "查询区间结束日期，格式：YYYYMMDD；仅传该参数时按该交易日查询。"
+    },
+    "suspend_type": {
+     "type": "string/array",
+     "required": false,
+     "example": "停牌",
+     "desc": "停复牌类型，支持 S/R/停牌/复牌。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_longhubang_hot-money",
+   "apiname": "longhubang_hot_money",
+   "path": "/api/reference-proxy/longhubang/hot-money",
+   "tag": "龙虎榜",
+   "summary": "游资名单",
+   "fields": "name,description,seats",
+   "params": {
+    "name": {
+     "type": "string",
+     "required": false,
+     "example": "T王",
+     "desc": "游资名称，精确匹配；不传时返回当前完整名单。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_longhubang_seat",
+   "apiname": "longhubang_seat",
+   "path": "/api/reference-proxy/longhubang/seat",
+   "tag": "龙虎榜",
+   "summary": "买卖席位",
+   "fields": "tradedate,symbol,name,reason,side,seat_name,buy,buy_rate,sell,sell_rate,net_buy",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "600000,000001.SZ,920001.BJ",
+     "desc": "证券代码，支持 6 位代码或带 SH、SZ、BJ 市场后缀的完整代码；可传单个、多个英文逗号分隔或数组，不传则查询全市场。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日查询日期，格式：YYYYMMDD。不传时默认最新已完成披露日。"
+    },
+    "side": {
+     "type": "integer",
+     "required": false,
+     "example": "0",
+     "desc": "榜单方向：0 表示买入榜，1 表示卖出榜。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  },
+  {
+   "op": "reference_longhubang_stock",
+   "apiname": "longhubang_stock",
+   "path": "/api/reference-proxy/longhubang/stock",
+   "tag": "龙虎榜",
+   "summary": "上榜个股",
+   "fields": "tradedate,symbol,name,close,pct_chg,turnover_rate,amount,lhb_sell,lhb_buy,lhb_amount,net_amount,net_rate,amount_rate,float_value,reason",
+   "params": {
+    "symbols": {
+     "type": "string/array",
+     "required": false,
+     "example": "600000,000001.SZ,920001.BJ",
+     "desc": "证券代码，支持 6 位代码或带 SH、SZ、BJ 市场后缀的完整代码；可传单个、多个英文逗号分隔或数组，不传则查询全市场。"
+    },
+    "tradedate": {
+     "type": "string",
+     "required": false,
+     "example": "20260724",
+     "desc": "单日查询日期，格式：YYYYMMDD。不传时默认最新已完成披露日。"
+    }
+   },
+   "stream": false,
+   "download": false,
+   "source": "spec"
+  }
+ ]
+}

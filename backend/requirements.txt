@@ -11,3 +11,5 @@ python-dotenv
 openai
 pydantic
 pydantic-settings
+cryptography>=43,<47
+ijson>=3.4,<4

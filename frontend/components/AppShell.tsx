@@ -14,6 +14,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
   const isLoginPage = pathname === '/login';
   const isV5Workbench = pathname === '/market';
+  const isRoundtable = pathname === '/trading-roundtable';
   const isFullscreenWorkbench = pathname.startsWith('/market/v4') || pathname === '/strong-stock-decision' || pathname.startsWith('/wildman');
 
   useEffect(() => {
@@ -39,6 +40,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
   // V5 owns its full terminal chrome. V4 and the strong-stock module use the
   // compact cross-module navigation without adding a second bar to V5.
   if (isV5Workbench) {
+    return <main className="flex-1">{children}</main>;
+  }
+
+  if (isRoundtable) {
     return <main className="flex-1">{children}</main>;
   }
 

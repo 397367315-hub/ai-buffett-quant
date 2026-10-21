@@ -1,0 +1,7 @@
+{
+  "release_id": "rc-20261022-84ff309c13b8",
+  "zip_sha256": "e35dd898f71434ebd856f43e098141e365939960f83b7034403a42fedc7d57c4",
+  "source_folder": "/Users/zhengchenggong/Desktop/交易圆桌_十三席_WORK",
+  "imported_files": 287,
+  "excluded": "credentials, runtime, cached market data, old frontend artifacts, original books, node_modules"
+}

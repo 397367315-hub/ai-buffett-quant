@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Activity, BarChart3, Bell, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge, Database, Crosshair, History as HistoryIcon } from 'lucide-react';
+import { Activity, BarChart3, Bell, BookOpen, Bot, Menu, X, TrendingUp, DollarSign, Sparkles, Zap, ChevronDown, LogOut, User, Users, BrainCircuit, LineChart, Bookmark, CalendarDays, ChartNoAxesCombined, Globe2, NotebookPen, PieChart, Flame, Microscope, ShieldAlert, Gauge, Database, Crosshair, History as HistoryIcon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 
@@ -103,6 +103,9 @@ export default function Navbar() {
         <Link href="/ai" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm transition-colors ${pathname.startsWith('/ai') ? 'bg-[#1F6FEB22] text-accent font-medium' : 'text-text-secondary hover:text-text hover:bg-[#21262D]'}`}>
           <Bot size={16} /> AI助手
         </Link>
+        <a href="/trading-roundtable" target="_blank" rel="noopener" className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm text-text-secondary hover:text-text hover:bg-[#21262D]">
+          <Users size={16} /> 交易圆桌
+        </a>
       </div>
 
       {/* 用户区 */}
@@ -159,6 +162,9 @@ export default function Navbar() {
             <Link href="/ai" className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
               <Bot size={14} />AI助手
             </Link>
+          <a href="/trading-roundtable" target="_blank" rel="noopener" className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm text-text-secondary hover:text-text" onClick={() => setMenuOpen(false)}>
+            <Users size={14} />交易圆桌
+          </a>
           </div>
           <div className="border-t border-border mt-2 pt-3 flex items-center justify-between">
             <span className="text-xs text-text-secondary">{username}</span>

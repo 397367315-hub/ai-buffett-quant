@@ -1,0 +1,100 @@
+{
+  "status": "legacy_unverified",
+  "note": "本文件按 03_测试与效果验证.md §7 建立，登记旧回测的已知限制；原报告字节不改，结论按此重读。",
+  "sources": [
+    {
+      "file": "records/roundtable/2026-10-19-席位回测/README.md",
+      "issue": "同一篇里既称跑的是真实代码 42 日结果，又称 backtest_seats 路线没跑通；总标题易被读成 13 席都做过同一试验",
+      "required_display": "按 per-seat 显示实际 artifact、采样数、脚本/数据哈希与 provenance；无运行证据的记『无法核验』"
+    },
+    {
+      "file": "records/roundtable/2026-10-19-席位回测/backtest_seats.py",
+      "issue": "每 10 日采样；聚合用当前 names；候选 top30；记录了 gate 但计算候选收益时未据 gate 过滤；注释与实际 T+1 开盘口径曾不一致",
+      "required_display": "区分『候选排序代理』与『按纪律成交的策略』；不得继承标题当作原书完整检验"
+    },
+    {
+      "file": "records/roundtable/2026-10-19-席位回测/gate_backtest.py",
+      "issue": "用日线推涨跌停、简化连续涨停与闸门；养家注释写『昨日涨停今日表现』，实际开关只用涨停数大于均值；未完整建模历史 ST 与例外交易制度",
+      "required_display": "保存 proxy_version 与 rule_fidelity 限制；另做技能一致性 fixture；不接受『无代理误差』自述为证据"
+    },
+    {
+      "file": "records/roundtable/2026-10-19-席位回测/backtest_value.py",
+      "issue": "用当前分红年数套历史、当前行业信息；未来分红不能倒填历史",
+      "required_display": "标 lookahead_contaminated，不计 clean 绩效；受污染结果没有数学保证是上界，不能继承『只能当上界』的说法"
+    },
+    {
+      "file": "records/roundtable/2026-10-19-席位回测/README.md#重叠修正",
+      "issue": "N/5 只是启发式，不能代替序列相关估计",
+      "required_display": "保留原值与说明；新分析用预注册 HAC 或时间块 bootstrap，结论不足时 inconclusive"
+    }
+  ],
+  "common_limits": [
+    "固定双边 0.06% 成本、日线价格：无排队、停牌、跌停无法退出的建模",
+    "42 个采样日既不自动证明无效，也不自动免除负证据",
+    "正确结论是：该版本、该样本、该口径未提供可靠正超额证据，并存在已披露的实现与数据限制"
+  ],
+  "correction_doc": "records/roundtable/2026-10-19-席位回测/README-勘误与重读-20261019.md",
+  "source_frozen": true,
+  "source_note": "原 README.md 与 4 个脚本位于只读源包，未修改一个字节；本目录为旁文件。",
+  "reanalysis": {
+    "script": "reanalysis/gate_filtered.py",
+    "result": "reanalysis/gate_filtered.json",
+    "question": "按纪律只在闸门开着时出手，选股超额是否改变？",
+    "method": "不重跑席位代码，按 results.json 逐日 gate.open 过滤后重聚合；候选腿扣双边 0.06%",
+    "reproduces_published_unfiltered": true,
+    "findings": {
+      "trading-jianmen-v1": {
+        "gate_open_days": 20,
+        "unfiltered_excess_pct": -1.47,
+        "gate_filtered_excess_pct": -1.88,
+        "t": -1.99
+      },
+      "trading-boardtech-v1": {
+        "gate_open_days": 42,
+        "unfiltered_excess_pct": -1.46,
+        "gate_filtered_excess_pct": -1.46,
+        "t": -2.4
+      },
+      "trading-gushiguifei-v1": {
+        "gate_open_days": 42,
+        "unfiltered_excess_pct": 0.04,
+        "gate_filtered_excess_pct": 0.04,
+        "t": 0.11
+      },
+      "trading-wyckoff-v1": {
+        "gate_open_days": 39,
+        "unfiltered_excess_pct": -0.17,
+        "gate_filtered_excess_pct": -0.17,
+        "t": -0.55
+      },
+      "trading-livermore-v1": {
+        "gate_open_days": 42,
+        "unfiltered_excess_pct": -0.32,
+        "gate_filtered_excess_pct": -0.32,
+        "t": -0.59
+      },
+      "trading-chenkai-v1": {
+        "gate_open_days": 42,
+        "unfiltered_excess_pct": -0.18,
+        "gate_filtered_excess_pct": -0.18,
+        "t": -0.58
+      },
+      "trading-yangnan-v1": {
+        "gate_open_days": 0,
+        "note": "42 个采样日闸门从未打开，样本 0，不可判定"
+      },
+      "trading-yangjia-v1": {
+        "gate_open_days": 0,
+        "note": "results.json 无该席采样，选股层面未测"
+      }
+    },
+    "interpretation": "闸门过滤没有救回选股层；剑门闸门的价值只体现在大盘择时(+0.52%)，不能外推到选股"
+  },
+  "retracted_claims": [
+    {
+      "claim": "达尔文 −1.74% 只能当上界看",
+      "reason": "受污染估计没有数学保证是上界；方向不可知",
+      "status": "retracted"
+    }
+  ]
+}

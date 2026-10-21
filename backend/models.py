@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Text, Float, Date, DateTime,
-    Boolean, JSON, ForeignKey, UniqueConstraint, Index
+    Boolean, JSON, LargeBinary, ForeignKey, UniqueConstraint, Index
 )
 from sqlalchemy.orm import relationship
 from database import Base
@@ -3274,3 +3274,31 @@ class WildmanTradeReview(Base):
 
 # Descriptive alias for integrations that use the full document name.
 ABOpportunitySnapshot = ABOppSnapshot
+
+
+class RoundtableRuntimeSnapshot(Base):
+    """Versioned, opaque checkpoint for the isolated roundtable runtime.
+
+    The payload is a compressed archive produced by the runtime layer.  It is
+    deliberately separate from the application business tables and contains
+    no provider plaintext credentials.
+    """
+
+    __tablename__ = "roundtable_runtime_snapshots"
+
+    key = Column(String(120), primary_key=True)
+    revision = Column(BigInteger, nullable=False, default=0)
+    payload = Column(LargeBinary, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RoundtableRuntimeBlob(Base):
+    """Content addressed, gzip encoded immutable runtime file."""
+
+    __tablename__ = "roundtable_runtime_blobs"
+
+    sha256 = Column(String(64), primary_key=True)
+    size = Column(BigInteger, nullable=False)
+    payload = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

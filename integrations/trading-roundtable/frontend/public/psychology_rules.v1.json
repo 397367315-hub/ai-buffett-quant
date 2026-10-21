@@ -1,0 +1,26 @@
+{
+  "schema": "psychology_rules_v1",
+  "rule_set_version": "psychology_rules_v1_20261020",
+  "title": "下单前心理自检",
+  "source": "《交易心理分析》（Mark Douglas）中译本第 11 章「七大原则」；提取文本分页不可靠，按章引用",
+  "origin_policy": "author_quote 只放原文且可定位到章节；编者把原文翻译成可执行问题的写法标 editorial_summary；系统的工程限制标 engineering_policy；用户自己写的规则标 user_rule。四类分开显示，工程规则不冒充作者原话。",
+  "diagnosis_policy": "自检只记录事前回答，不判断心理健康、不给情绪诊断、不据此评价个人。",
+  "rules": [
+    {"rule_id": "psy_author_p1", "rule_origin": "author_quote", "origin_ref": "《交易心理分析》第11章「七大原则」(1)", "text": "我客观地看出自己的优势。", "check": "info"},
+    {"rule_id": "psy_author_p2", "rule_origin": "author_quote", "origin_ref": "《交易心理分析》第11章「七大原则」(2)", "text": "我事先界定每一笔交易的风险。", "check": "info"},
+    {"rule_id": "psy_author_p3", "rule_origin": "author_quote", "origin_ref": "《交易心理分析》第11章「七大原则」(3)", "text": "我完全接受风险，并愿意放弃交易。", "check": "info"},
+    {"rule_id": "psy_author_p4", "rule_origin": "author_quote", "origin_ref": "《交易心理分析》第11章「七大原则」(4)", "text": "我根据自己的优势行动，毫无保留或犹豫。", "check": "info"},
+    {"rule_id": "psy_author_p5", "rule_origin": "author_quote", "origin_ref": "《交易心理分析》第11章「七大原则」(5)", "text": "市场让我赚钱时，我会酬谢自己。", "check": "info"},
+    {"rule_id": "psy_author_p6", "rule_origin": "author_quote", "origin_ref": "《交易心理分析》第11章「七大原则」(6)", "text": "我不断检视自己犯错的可能性。", "check": "info"},
+    {"rule_id": "psy_author_p7", "rule_origin": "author_quote", "origin_ref": "《交易心理分析》第11章「七大原则」(7)", "text": "我了解这些长期成功原则绝对必要，因此从来没有违反过。", "check": "info"},
+    {"rule_id": "psy_editor_q1", "rule_origin": "editorial_summary", "origin_ref": "records/roundtable/2026-10-19-原书精读/06-交易心理分析.md 自检七问 1（编者把原则 1 翻译成问题，不是原文）", "text": "我能不能用一句话说出这个席位定义优势的变量？", "check": "must_yes"},
+    {"rule_id": "psy_editor_q2", "rule_origin": "editorial_summary", "origin_ref": "records/roundtable/2026-10-19-原书精读/06-交易心理分析.md 自检七问 2（对应原则 2）", "text": "止损价、每股风险、占总资金比例，三个数是否都写下来了？", "check": "must_yes"},
+    {"rule_id": "psy_editor_q3", "rule_origin": "editorial_summary", "origin_ref": "records/roundtable/2026-10-19-原书精读/06-交易心理分析.md 自检七问 3（对应原则 3）", "text": "如果这笔立刻止损，我是否接受，并且不会马上找下一笔翻本？", "check": "warn_if_no"},
+    {"rule_id": "psy_editor_q4", "rule_origin": "editorial_summary", "origin_ref": "records/roundtable/2026-10-19-原书精读/06-交易心理分析.md 自检七问 4（对应原则 4）", "text": "我没有因为「再等一个确认」而准备跳过这个已经出现的信号。", "check": "warn_if_no"},
+    {"rule_id": "psy_editor_q5", "rule_origin": "editorial_summary", "origin_ref": "records/roundtable/2026-10-19-原书精读/06-交易心理分析.md 自检七问 5（对应原则 5）", "text": "我已经想好怎么减码、落袋。", "check": "warn_if_no"},
+    {"rule_id": "psy_editor_q6", "rule_origin": "editorial_summary", "origin_ref": "records/roundtable/2026-10-19-原书精读/06-交易心理分析.md 自检七问 6（对应原则 6）", "text": "我没有在席位变量之外又去找「其他证据」来壮胆。", "check": "warn_if_no"},
+    {"rule_id": "psy_editor_q7", "rule_origin": "editorial_summary", "origin_ref": "records/roundtable/2026-10-19-原书精读/06-交易心理分析.md 自检七问 7（对应原则 7）", "text": "为了下这一单，我没有违反自己写过的任何一条规则。", "check": "must_yes"},
+    {"rule_id": "psy_eng_cooldown", "rule_origin": "engineering_policy", "origin_ref": "ADR-psy-1：冷却期只暂停新增风险（新开仓/加仓），卖出、取消与记录始终可用", "text": "冷却期内本系统不接受模拟买入；减仓与风险退出照常。", "check": "info"},
+    {"rule_id": "psy_eng_sample20", "rule_origin": "engineering_policy", "origin_ref": "ADR-psy-2：书中 20 笔样本练习的工程化计数（不是原文规则）", "text": "同一做法未满 20 笔前不改参数；系统只计数，不据此评价你。", "check": "info"}
+  ]
+}

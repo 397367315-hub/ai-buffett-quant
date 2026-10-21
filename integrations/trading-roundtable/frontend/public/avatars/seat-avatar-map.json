@@ -1,0 +1,56 @@
+[
+  {
+    "seatId": "05",
+    "name": "退学炒股",
+    "avatar": "/avatars/seat_05_tuixue.webp",
+    "fallbackPng": "/avatars/seat_05_tuixue.png"
+  },
+  {
+    "seatId": "06",
+    "name": "一路奔行",
+    "avatar": "/avatars/seat_06_yilubenxing.webp",
+    "fallbackPng": "/avatars/seat_06_yilubenxing.png"
+  },
+  {
+    "seatId": "07",
+    "name": "威科夫",
+    "avatar": "/avatars/seat_07_wyckoff.webp",
+    "fallbackPng": "/avatars/seat_07_wyckoff.png"
+  },
+  {
+    "seatId": "08",
+    "name": "蜡烛图",
+    "avatar": "/avatars/seat_08_candle.webp",
+    "fallbackPng": "/avatars/seat_08_candle.png"
+  },
+  {
+    "seatId": "09",
+    "name": "利弗莫尔",
+    "avatar": "/avatars/seat_09_livermore.webp",
+    "fallbackPng": "/avatars/seat_09_livermore.png"
+  },
+  {
+    "seatId": "10",
+    "name": "达尔文",
+    "avatar": "/avatars/seat_10_darwin.webp",
+    "fallbackPng": "/avatars/seat_10_darwin.png"
+  },
+  {
+    "seatId": "11",
+    "name": "陈凯",
+    "avatar": "/avatars/seat_11_chenkai.webp",
+    "fallbackPng": "/avatars/seat_11_chenkai.png"
+  },
+  {
+    "seatId": "12",
+    "name": "李大霄",
+    "avatar": "/avatars/seat_12_lidaxiao.webp",
+    "fallbackPng": "/avatars/seat_12_lidaxiao.png"
+  },
+  {
+    "seatId": "13",
+    "name": "明发·阿荣",
+    "avatar": "/avatars/seat_13_boardtech.webp",
+    "fallbackPng": "/avatars/seat_13_boardtech.png"
+  }
+]

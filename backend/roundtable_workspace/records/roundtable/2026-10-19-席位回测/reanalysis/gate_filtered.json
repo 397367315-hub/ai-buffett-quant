@@ -1,0 +1,143 @@
+{
+  "source": "/sessions/sharp-dreamy-pasteur/mnt/Desktop/交易圆桌_AI交接包_20261019/records/roundtable/2026-10-19-席位回测/data/results.json",
+  "cost": 0.0006,
+  "method": "按逐日 gate.open 过滤后重聚合；不重跑席位代码；候选腿扣双边 0.06%",
+  "seats": {
+    "trading-jianmen-v1": {
+      "sample_days_total": 42,
+      "gate_open_days": 20,
+      "unfiltered": {
+        "n": 42,
+        "mean": -0.014725453509269362,
+        "win": 42.857142857142854,
+        "t": -2.139086605135311
+      },
+      "gate_filtered": {
+        "n": 20,
+        "mean": -0.018821296395675226,
+        "win": 50.0,
+        "t": -1.9864737023603434
+      },
+      "avg_candidates_open": 30.0
+    },
+    "trading-yangnan-v1": {
+      "sample_days_total": 42,
+      "gate_open_days": 0,
+      "unfiltered": {
+        "n": 0,
+        "mean": null,
+        "win": null,
+        "t": null
+      },
+      "gate_filtered": {
+        "n": 0,
+        "mean": null,
+        "win": null,
+        "t": null
+      },
+      "avg_candidates_open": null
+    },
+    "trading-yangjia-v1": {
+      "sample_days_total": 0,
+      "gate_open_days": 0,
+      "unfiltered": {
+        "n": 0,
+        "mean": null,
+        "win": null,
+        "t": null
+      },
+      "gate_filtered": {
+        "n": 0,
+        "mean": null,
+        "win": null,
+        "t": null
+      },
+      "avg_candidates_open": null
+    },
+    "trading-gushiguifei-v1": {
+      "sample_days_total": 42,
+      "gate_open_days": 42,
+      "unfiltered": {
+        "n": 42,
+        "mean": 0.00042454334742751974,
+        "win": 57.142857142857146,
+        "t": 0.1071692003991867
+      },
+      "gate_filtered": {
+        "n": 42,
+        "mean": 0.00042454334742751974,
+        "win": 57.142857142857146,
+        "t": 0.1071692003991867
+      },
+      "avg_candidates_open": 25.19047619047619
+    },
+    "trading-wyckoff-v1": {
+      "sample_days_total": 42,
+      "gate_open_days": 39,
+      "unfiltered": {
+        "n": 39,
+        "mean": -0.0017272812481389582,
+        "win": 35.8974358974359,
+        "t": -0.5536808834795667
+      },
+      "gate_filtered": {
+        "n": 39,
+        "mean": -0.0017272812481389582,
+        "win": 35.8974358974359,
+        "t": -0.5536808834795667
+      },
+      "avg_candidates_open": 18.846153846153847
+    },
+    "trading-livermore-v1": {
+      "sample_days_total": 42,
+      "gate_open_days": 42,
+      "unfiltered": {
+        "n": 42,
+        "mean": -0.0031813693956921274,
+        "win": 50.0,
+        "t": -0.5860313722110719
+      },
+      "gate_filtered": {
+        "n": 42,
+        "mean": -0.0031813693956921274,
+        "win": 50.0,
+        "t": -0.5860313722110719
+      },
+      "avg_candidates_open": 28.88095238095238
+    },
+    "trading-chenkai-v1": {
+      "sample_days_total": 42,
+      "gate_open_days": 42,
+      "unfiltered": {
+        "n": 42,
+        "mean": -0.001795108170706786,
+        "win": 42.857142857142854,
+        "t": -0.5751691446453738
+      },
+      "gate_filtered": {
+        "n": 42,
+        "mean": -0.001795108170706786,
+        "win": 42.857142857142854,
+        "t": -0.5751691446453738
+      },
+      "avg_candidates_open": 29.666666666666668
+    },
+    "trading-boardtech-v1": {
+      "sample_days_total": 42,
+      "gate_open_days": 42,
+      "unfiltered": {
+        "n": 42,
+        "mean": -0.014636676891744967,
+        "win": 35.714285714285715,
+        "t": -2.40236318273002
+      },
+      "gate_filtered": {
+        "n": 42,
+        "mean": -0.014636676891744967,
+        "win": 35.714285714285715,
+        "t": -2.40236318273002
+      },
+      "avg_candidates_open": 29.071428571428573
+    }
+  }
+}

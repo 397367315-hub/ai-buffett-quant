@@ -1,0 +1,2027 @@
+{
+ "generated_from": "contracts/openapi.yaml",
+ "openapi_version": "1.0.0-draft",
+ "operation_count": 56,
+ "operations": [
+  {
+   "operation_id": "get_api_v1_health_data",
+   "method": "GET",
+   "path": "/api/v1/health/data",
+   "phase": "P0",
+   "summary": "进程、存储、行情分别报告就绪状态",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "HealthData",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_snapshots_latest",
+   "method": "GET",
+   "path": "/api/v1/snapshots/latest",
+   "phase": "P0",
+   "summary": "获取最新不可变快照",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "allow_stale",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "boolean",
+      "default": false
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "MarketSnapshot",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_llm_config",
+   "method": "POST",
+   "path": "/api/v1/llm/config",
+   "phase": "P3",
+   "summary": "在页面里修改模型配置（供应商/模型/接口地址/密钥环境变量/预算/JSON 模式）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_llm_profiles",
+   "method": "POST",
+   "path": "/api/v1/llm/profiles",
+   "phase": "P3",
+   "summary": "模型存档（保存 / 设为当前 / 复制 / 删除）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_llm_models",
+   "method": "POST",
+   "path": "/api/v1/llm/models",
+   "phase": "P3",
+   "summary": "拉取某份存档可用的模型清单（供应商 /models）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_llm_seat_model",
+   "method": "POST",
+   "path": "/api/v1/llm/seat-model",
+   "phase": "P3",
+   "summary": "给某一席单独绑定模型存档（或解除绑定）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_llm_test",
+   "method": "POST",
+   "path": "/api/v1/llm/test",
+   "phase": "P3",
+   "summary": "试连（用某份存档发一次极短请求，算进当天额度）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_llm_status",
+   "method": "GET",
+   "path": "/api/v1/llm/status",
+   "phase": "P3",
+   "summary": "模型状态（是否配置密钥、预算用量、模型名）",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_seats_seat_id_ask",
+   "method": "POST",
+   "path": "/api/v1/seats/{seat_id}/ask",
+   "phase": "P3",
+   "summary": "问这一席（用自己的书回答，引用可回查）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "seat_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_commander_sessions",
+   "method": "POST",
+   "path": "/api/v1/commander/sessions",
+   "phase": "P3",
+   "summary": "总指挥：派活给任意席位组合，最后给汇总报告",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_seats_seat_id_chat",
+   "method": "POST",
+   "path": "/api/v1/seats/{seat_id}/chat",
+   "phase": "P3",
+   "summary": "让这一席自己查资料再回答（工具循环）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "seat_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_seats_seat_id_analyze",
+   "method": "POST",
+   "path": "/api/v1/seats/{seat_id}/analyze",
+   "phase": "P3",
+   "summary": "个股分析（规则结论 × 席位解读，模型必须表态）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "seat_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_reports_postmarket_interpret",
+   "method": "POST",
+   "path": "/api/v1/reports/postmarket/interpret",
+   "phase": "P3",
+   "summary": "盘后复盘的模型解读（可选联网补缺）",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_roundtable_sessions",
+   "method": "POST",
+   "path": "/api/v1/roundtable/sessions",
+   "phase": "P3",
+   "summary": "圆桌联动：1–4 席依次作答，并列结论不投票",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_snapshots_snapshot_id_postmarket",
+   "method": "GET",
+   "path": "/api/v1/snapshots/{snapshot_id}/postmarket",
+   "phase": "P1",
+   "summary": "盘后复盘（确定性规则版）",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "snapshot_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_snapshots_snapshot_id",
+   "method": "GET",
+   "path": "/api/v1/snapshots/{snapshot_id}",
+   "phase": "P0",
+   "summary": "按ID读取不可变快照",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "snapshot_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "MarketSnapshot",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_snapshots",
+   "method": "POST",
+   "path": "/api/v1/snapshots",
+   "phase": "P0",
+   "summary": "手动触发行情采集",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "SnapshotCreateRequest",
+   "responses": {
+    "202": {
+     "schema": "JobAccepted",
+     "headers": [
+      "Location",
+      "Retry-After"
+     ]
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_seats_registry",
+   "method": "GET",
+   "path": "/api/v1/seats/registry",
+   "phase": "P0",
+   "summary": "读取现存13席注册表",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "SeatRegistry",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_jobs_job_id",
+   "method": "GET",
+   "path": "/api/v1/jobs/{job_id}",
+   "phase": "P0",
+   "summary": "查询持久任务状态",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "job_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "Job",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_seat_runs",
+   "method": "POST",
+   "path": "/api/v1/seat-runs",
+   "phase": "P1",
+   "summary": "提交单席独立任务",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "SeatRunRequest",
+   "responses": {
+    "202": {
+     "schema": "JobAccepted",
+     "headers": [
+      "Location",
+      "Retry-After"
+     ]
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_seat_runs",
+   "method": "GET",
+   "path": "/api/v1/seat-runs",
+   "phase": "P1",
+   "summary": "按快照或圆桌查询席位结果",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "snapshot_id",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "case_id",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "cursor",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string"
+     }
+    },
+    {
+     "name": "limit",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 50
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "SeatRunList",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_seat_runs_seat_run_id",
+   "method": "GET",
+   "path": "/api/v1/seat-runs/{seat_run_id}",
+   "phase": "P1",
+   "summary": "读取单席状态和结果",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "seat_run_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "SeatRun",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_cases",
+   "method": "POST",
+   "path": "/api/v1/cases",
+   "phase": "P1",
+   "summary": "创建圆桌并编排独立首轮、质询、综合",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "CaseCreateRequest",
+   "responses": {
+    "202": {
+     "schema": "JobAccepted",
+     "headers": [
+      "Location",
+      "Retry-After"
+     ]
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_cases_case_id",
+   "method": "GET",
+   "path": "/api/v1/cases/{case_id}",
+   "phase": "P1",
+   "summary": "获取圆桌状态和已完成席位ID",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "case_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "RoundtableCase",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_cases_case_id_final",
+   "method": "GET",
+   "path": "/api/v1/cases/{case_id}/final",
+   "phase": "P1",
+   "summary": "读取圆桌最终结果",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "case_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "RoundtableCase",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_plans",
+   "method": "POST",
+   "path": "/api/v1/plans",
+   "phase": "P1",
+   "summary": "创建计划第1版草稿",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "PlanCreateRequest",
+   "responses": {
+    "201": {
+     "schema": "DecisionPlan",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_plans_plan_id",
+   "method": "GET",
+   "path": "/api/v1/plans/{plan_id}",
+   "phase": "P1",
+   "summary": "读取计划最新版本",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "plan_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "DecisionPlan",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_plans_plan_id_versions_version",
+   "method": "GET",
+   "path": "/api/v1/plans/{plan_id}/versions/{version}",
+   "phase": "P1",
+   "summary": "读取指定计划版本",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "plan_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "version",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "integer",
+      "minimum": 1
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "DecisionPlan",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_plans_plan_id_versions",
+   "method": "POST",
+   "path": "/api/v1/plans/{plan_id}/versions",
+   "phase": "P1",
+   "summary": "从指定版本复制产生新草稿",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "plan_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "PlanVersionRequest",
+   "responses": {
+    "201": {
+     "schema": "DecisionPlan",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_plans_plan_id_freeze",
+   "method": "POST",
+   "path": "/api/v1/plans/{plan_id}/freeze",
+   "phase": "P1",
+   "summary": "冻结指定当前版本并计算哈希",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "plan_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "PlanFreezeRequest",
+   "responses": {
+    "200": {
+     "schema": "DecisionPlan",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_reviews",
+   "method": "POST",
+   "path": "/api/v1/reviews",
+   "phase": "P1",
+   "summary": "按指定版本生成事前审查或事后复盘",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "ReviewCreateRequest",
+   "responses": {
+    "202": {
+     "schema": "JobAccepted",
+     "headers": [
+      "Location",
+      "Retry-After"
+     ]
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_reviews_review_id",
+   "method": "GET",
+   "path": "/api/v1/reviews/{review_id}",
+   "phase": "P1",
+   "summary": "读取复盘状态和结果",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "review_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "ReviewResult",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_journal_events",
+   "method": "POST",
+   "path": "/api/v1/journal/events",
+   "phase": "P1",
+   "summary": "追加日志或模拟成交事件",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "JournalEventCreateRequest",
+   "responses": {
+    "201": {
+     "schema": "JournalEvent",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_journal_events",
+   "method": "GET",
+   "path": "/api/v1/journal/events",
+   "phase": "P1",
+   "summary": "查询追加式事件",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "portfolio_id",
+     "in": "query",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "cursor",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string"
+     }
+    },
+    {
+     "name": "limit",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 50
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "JournalEventList",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_portfolios",
+   "method": "POST",
+   "path": "/api/v1/portfolios",
+   "phase": "P1",
+   "summary": "创建独立组合并写期初事件",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "PortfolioCreateRequest",
+   "responses": {
+    "201": {
+     "schema": "Portfolio",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_portfolios_portfolio_id",
+   "method": "GET",
+   "path": "/api/v1/portfolios/{portfolio_id}",
+   "phase": "P1",
+   "summary": "读取事件投影与可用持仓",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "portfolio_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "snapshot_id",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "Portfolio",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_portfolio_import_legacy",
+   "method": "POST",
+   "path": "/api/v1/portfolio/import-legacy",
+   "phase": "P1",
+   "summary": "校验或迁移旧账本至独立新组合",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "LegacyImportRequest",
+   "responses": {
+    "200": {
+     "schema": "LegacyImportResult",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_replays",
+   "method": "POST",
+   "path": "/api/v1/replays",
+   "phase": "P2",
+   "summary": "创建严格历史盲回放",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "ReplayCreateRequest",
+   "responses": {
+    "202": {
+     "schema": "JobAccepted",
+     "headers": [
+      "Location",
+      "Retry-After"
+     ]
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_replays_replay_id",
+   "method": "GET",
+   "path": "/api/v1/replays/{replay_id}",
+   "phase": "P2",
+   "summary": "读取回放当前可见状态",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "replay_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "ReplaySession",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_replays_replay_id_step",
+   "method": "POST",
+   "path": "/api/v1/replays/{replay_id}/step",
+   "phase": "P2",
+   "summary": "推进一个交易日",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "replay_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "ReplayStepRequest",
+   "responses": {
+    "200": {
+     "schema": "ReplaySession",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_replays_replay_id_reveal",
+   "method": "POST",
+   "path": "/api/v1/replays/{replay_id}/reveal",
+   "phase": "P2",
+   "summary": "结束训练并揭晓固定窗口",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "replay_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "ReplayRevealRequest",
+   "responses": {
+    "200": {
+     "schema": "ReplaySession",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_validations",
+   "method": "POST",
+   "path": "/api/v1/validations",
+   "phase": "P2",
+   "summary": "提交可复现策略验证",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "ValidationCreateRequest",
+   "responses": {
+    "202": {
+     "schema": "JobAccepted",
+     "headers": [
+      "Location",
+      "Retry-After"
+     ]
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_validations_validation_id",
+   "method": "GET",
+   "path": "/api/v1/validations/{validation_id}",
+   "phase": "P2",
+   "summary": "读取策略验证结果与限制",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "validation_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "ValidationRun",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_alerts",
+   "method": "GET",
+   "path": "/api/v1/alerts",
+   "phase": "P4",
+   "summary": "读取本地提醒事件",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "cursor",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string"
+     }
+    },
+    {
+     "name": "limit",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 50
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "AlertList",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_alerts_alert_id_acknowledge",
+   "method": "POST",
+   "path": "/api/v1/alerts/{alert_id}/acknowledge",
+   "phase": "P4",
+   "summary": "确认已读提醒",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "alert_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "AlertAcknowledgeRequest",
+   "responses": {
+    "200": {
+     "schema": "AlertEvent",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_decks",
+   "method": "POST",
+   "path": "/api/v1/decks",
+   "phase": "P3",
+   "summary": "由已有研究产物派生学习卡片",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "DeckCreateRequest",
+   "responses": {
+    "201": {
+     "schema": "CardDeck",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_decks_deck_id",
+   "method": "GET",
+   "path": "/api/v1/decks/{deck_id}",
+   "phase": "P3",
+   "summary": "读取学习卡片",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "deck_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "CardDeck",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_legacy_dashboard",
+   "method": "GET",
+   "path": "/api/dashboard",
+   "phase": "P0",
+   "summary": "legacy QuantPageData兼容适配",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "universe",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "enum": [
+       "all",
+       "main"
+      ],
+      "default": "all"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": null,
+     "headers": [
+      "X-API-Compatibility"
+     ]
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_session_bootstrap",
+   "method": "POST",
+   "path": "/api/v1/session/bootstrap",
+   "phase": "P0",
+   "summary": "同源本地会话引导",
+   "needs_session": false,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [],
+   "request_schema": "SessionBootstrapRequest",
+   "responses": {
+    "201": {
+     "schema": "SessionContext",
+     "headers": [
+      "Set-Cookie"
+     ]
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_session_context",
+   "method": "GET",
+   "path": "/api/v1/session/context",
+   "phase": "P0",
+   "summary": "读取server绑定上下文与CSRF令牌",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "SessionContext",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_session_context",
+   "method": "POST",
+   "path": "/api/v1/session/context",
+   "phase": "P0",
+   "summary": "显式切换本地会话上下文",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "SessionContextChangeRequest",
+   "responses": {
+    "200": {
+     "schema": "SessionContext",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_plans_plan_id_events",
+   "method": "POST",
+   "path": "/api/v1/plans/{plan_id}/events",
+   "phase": "P1",
+   "summary": "追加计划生命周期事实",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "plan_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "PlanLifecycleEventCreateRequest",
+   "responses": {
+    "201": {
+     "schema": "PlanLifecycleEvent",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_plans_plan_id_events",
+   "method": "GET",
+   "path": "/api/v1/plans/{plan_id}/events",
+   "phase": "P1",
+   "summary": "查询计划生命周期事件",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "plan_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "version",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "integer",
+      "minimum": 1
+     }
+    },
+    {
+     "name": "cursor",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "PlanLifecycleEventList",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "post_api_v1_portfolios_portfolio_id_controls_events",
+   "method": "POST",
+   "path": "/api/v1/portfolios/{portfolio_id}/controls/events",
+   "phase": "P1",
+   "summary": "按预设策略启用、解除或结束冷却",
+   "needs_session": true,
+   "needs_csrf": true,
+   "idempotency_required": true,
+   "params": [
+    {
+     "name": "Idempotency-Key",
+     "in": "header",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+     }
+    },
+    {
+     "name": "portfolio_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": "PortfolioControlEventCreateRequest",
+   "responses": {
+    "201": {
+     "schema": "PortfolioControlEvent",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_portfolios_portfolio_id_controls_events",
+   "method": "GET",
+   "path": "/api/v1/portfolios/{portfolio_id}/controls/events",
+   "phase": "P1",
+   "summary": "读取组合冷却控制事件",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "portfolio_id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    },
+    {
+     "name": "cursor",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "string"
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "PortfolioControlEventList",
+     "headers": []
+    }
+   }
+  },
+  {
+   "operation_id": "get_api_v1_workspace_index",
+   "method": "GET",
+   "path": "/api/v1/workspace/index",
+   "phase": "P1",
+   "summary": "当前会话命名空间内可见的研究对象索引（只读）",
+   "needs_session": true,
+   "needs_csrf": false,
+   "idempotency_required": false,
+   "params": [
+    {
+     "name": "limit",
+     "in": "query",
+     "required": false,
+     "schema": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "default": 100
+     }
+    },
+    {
+     "name": "X-Replay-Id",
+     "in": "header",
+     "required": false,
+     "schema": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{1,95}$"
+     }
+    }
+   ],
+   "request_schema": null,
+   "responses": {
+    "200": {
+     "schema": "WorkspaceIndex",
+     "headers": []
+    }
+   }
+  }
+ ]
+}

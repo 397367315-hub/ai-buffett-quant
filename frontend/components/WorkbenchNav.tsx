@@ -27,6 +27,7 @@ const LINKS = [
   ['/pro/robot', 'AI机器人池'],
   ['/numcat', '猫爪数据中枢'],
   ['/ai', 'AI助手'],
+  ['/trading-roundtable', '交易圆桌'],
 ] as const;
 
 export default function WorkbenchNav() {
@@ -37,10 +38,14 @@ export default function WorkbenchNav() {
     <div className="workbench-nav-inner">
       <Link href="/market" className="workbench-nav-brand">AI量化系统</Link>
       <nav className="workbench-nav-links" aria-label="系统功能导航">
-        {LINKS.map(([href, label]) => <Link key={href} href={href} className={active(href) ? 'is-active' : ''}>{label}</Link>)}
+        {LINKS.map(([href, label]) => href === '/trading-roundtable'
+          ? <a key={href} href={href} target="_blank" rel="noopener" className={active(href) ? 'is-active' : ''}>{label}</a>
+          : <Link key={href} href={href} className={active(href) ? 'is-active' : ''}>{label}</Link>)}
       </nav>
       <button type="button" className="workbench-nav-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-label={open ? '关闭系统功能导航' : '打开系统功能导航'} title={open ? '关闭导航' : '打开导航'}>{open ? <X size={16} /> : <Menu size={16} />}</button>
     </div>
-    {open && <div className="workbench-nav-mobile"><div className="workbench-nav-mobile-grid">{LINKS.map(([href, label]) => <Link key={href} href={href} className={active(href) ? 'is-active' : ''} onClick={() => setOpen(false)}>{label}<ChevronRight size={12} /></Link>)}</div></div>}
+    {open && <div className="workbench-nav-mobile"><div className="workbench-nav-mobile-grid">{LINKS.map(([href, label]) => href === '/trading-roundtable'
+      ? <a key={href} href={href} target="_blank" rel="noopener" className={active(href) ? 'is-active' : ''} onClick={() => setOpen(false)}>{label}<ChevronRight size={12} /></a>
+      : <Link key={href} href={href} className={active(href) ? 'is-active' : ''} onClick={() => setOpen(false)}>{label}<ChevronRight size={12} /></Link>)}</div></div>}
   </div>;
 }

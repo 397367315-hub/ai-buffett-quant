@@ -12,3 +12,18 @@ AI巴菲特量化分析系统-完整交接文档.md
 .netlify
 .playwright-cli/
 output/
+
+# Private book excerpts and runtime state stay out of the public repository.
+backend/roundtable_workspace/knowledge/
+backend/roundtable_workspace/skills/
+backend/roundtable_workspace/runtime/
+backend/roundtable_workspace/artifacts/
+backend/roundtable_workspace/**/*.sqlite3*
+backend/roundtable_workspace/**/node_modules/
+integrations/trading-roundtable/frontend/node_modules/
+integrations/trading-roundtable/frontend/dist/
+integrations/trading-roundtable/frontend/vite.config.js
+integrations/trading-roundtable/frontend/vite.config.d.ts
+frontend/public/roundtable/
+*.env
+*llm_secrets.json

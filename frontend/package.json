@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "build:roundtable": "node ../scripts/build_roundtable_frontend.mjs",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
