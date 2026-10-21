@@ -158,10 +158,25 @@ def _dashboard_stats(path) -> dict[str, Any]:
     except (OSError, ValueError):
         return {"available": False, "reason": "dashboard缺失"}
     seats = payload.get("seats") or payload.get("results") or []
-    candidates = sum(len(s.get("candidates") or []) for s in seats if isinstance(s, dict))
-    return {"available": True, "asof": payload.get("asof"),
-            "seat_count": len(seats), "candidate_count": candidates,
-            "feature_rows": len(payload.get("features") or [])}
+    candidate_rows = payload.get("candidates")
+    if isinstance(candidate_rows, list):
+        unique = set()
+        for row in candidate_rows:
+            if isinstance(row, dict):
+                identity = row.get("symbol") or row.get("code") or row.get("stock_code")
+                unique.add(("id", str(identity)) if identity else ("row", json.dumps(row, ensure_ascii=False, sort_keys=True)))
+            else:
+                unique.add(("value", str(row)))
+        candidate_count = len(unique)
+    else:
+        candidate_count = None
+    data_status = payload.get("dataStatus") if isinstance(payload.get("dataStatus"), dict) else {}
+    asof = payload.get("quoteDate") or data_status.get("quote_date")
+    features = payload.get("features")
+    feature_rows = len(features) if isinstance(features, list) else None
+    return {"available": True, "asof": asof,
+            "seat_count": len(seats), "candidate_count": candidate_count,
+            "feature_rows": feature_rows}
 
 
 def _memory_limit_mb() -> int | None:
