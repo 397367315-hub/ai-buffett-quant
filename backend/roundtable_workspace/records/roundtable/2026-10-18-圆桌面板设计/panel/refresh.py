@@ -133,7 +133,7 @@ def _cache_usable(f, day):
     return (mt.hour, mt.minute) >= (15, 5)
 
 
-def fetch_daily(days=70):
+def fetch_daily(days=70, progress=None):
     """逐日取全市场日线，带本地缓存。只补缺的日期。"""
     import concurrent.futures as cf
     from datetime import date, timedelta
@@ -158,22 +158,29 @@ def fetch_daily(days=70):
         f = cache / f"{d}.json"
         if f.exists() and _cache_usable(f, d):
             with f.open(encoding="utf-8") as source:
-                return f, len(json.load(source))
+                cached = json.load(source)
+            rows = [r for r in cached if str(r.get("tradedate", "")).replace("-", "")[:8] == str(d).replace("-", "")[:8]]
+            if len(rows) != len(cached):
+                write_feature_rows(f, rows)
+            return f, len(rows)
         try:
             rows = meoz("reference_stock_daily", "daily",
                         "tradedate,symbol,name,open,high,low,close,pre_close,pct_chg,amount,vol",
                         {"tradedate": d})
         except Exception:
             return f, 0
+        rows = [r for r in rows if str(r.get("tradedate", "")).replace("-", "")[:8] == str(d).replace("-", "")[:8]]
         if rows:
             write_feature_rows(f, rows)
         return f, len(rows)
 
     files = []
     with cf.ThreadPoolExecutor(max_workers=6) as ex:
-        for path, count in ex.map(one, dates):
+        for done, (path, count) in enumerate(ex.map(one, dates), 1):
             if count:
                 files.append((path, count))
+            if progress and (done % 10 == 0 or done == len(dates)):
+                progress(f"日线已同步 {done}/{len(dates)} 个交易日，可用 {len(files)} 日")
     return CachedDailyRows(files), dates[-1]
 
 
@@ -1332,7 +1339,7 @@ def build(asof=None, verbose=True, universe="all", history_days: int = 130, prog
     history_days = max(30, min(int(history_days), 130))
     if progress:
         progress(f"同步 {history_days} 个交易日的市场日线")
-    feats, last = fetch_daily(history_days)
+    feats, last = fetch_daily(history_days, progress=progress)
     feats, dropped = trim_partial(feats)
     if dropped:
         asof = max(str(r["tradedate"]) for r in feats)
@@ -1427,6 +1434,8 @@ def build(asof=None, verbose=True, universe="all", history_days: int = 130, prog
         if universe == "all":
             PANEL.write_text(html)          # 单文件快照只出「含创业板」这一版
     payload = build_dashboard(results, feats, asof, detail, rules, universe)
+    payload["dataStatus"]["history_requested_sessions"] = history_days
+    payload["dataStatus"]["history_available_sessions"] = len(feats.files) if isinstance(feats, CachedDailyRows) else len({r["tradedate"] for r in feats})
     payload["universe"] = {"id": universe, "label": UNIVERSES[universe], "counts": sample_counts(feats, asof)}
     out_name = "dashboard.json" if universe == "all" else f"dashboard_{universe}.json"
     (DATA / out_name).write_text(json.dumps(payload, ensure_ascii=False))

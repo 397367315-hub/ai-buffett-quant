@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+from decimal import Decimal
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -23,6 +24,19 @@ class RoundtableStreamingTests(unittest.TestCase):
         self.assertEqual(row["amount"], 9007199254740993)
         self.assertEqual(row["ratio"], Decimal("0.123456789012"))
         self.assertIsNone(row["missing"])
+
+    def test_feature_rows_mmap_columns_preserve_dynamic_and_exact_values(self):
+        rows = FeatureRows([
+            {"symbol": "600000", "large": 9007199254740993, "ratio": Decimal("0.123456789012"), "dynamic_ret20": None},
+            {"symbol": "000001", "large": 7, "ratio": 1.25, "dynamic_ret20": "pending"},
+        ])
+        self.assertEqual(rows[0]["large"], 9007199254740993)
+        self.assertEqual(rows[0]["ratio"], Decimal("0.123456789012"))
+        self.assertIsNone(rows[0]["dynamic_ret20"])
+        self.assertEqual(rows[1]["dynamic_ret20"], "pending")
+        rows[0]["dynamic_ret20"] = Decimal("2.5")
+        self.assertEqual(rows[0]["dynamic_ret20"], Decimal("2.5"))
+        rows.close()
 
     def test_cached_daily_rows_are_repeatable_and_filterable(self):
         with tempfile.TemporaryDirectory() as tmp:
