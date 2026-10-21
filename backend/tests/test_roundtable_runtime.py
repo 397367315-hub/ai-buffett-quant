@@ -97,6 +97,9 @@ class FakeStoreSession:
         return self.row
 
     async def execute(self, statement, parameters=None):
+        updated = statement.compile().params.get("updated_at")
+        if updated is not None:
+            assert updated.tzinfo is None, "PostgreSQL TIMESTAMP WITHOUT TIME ZONE requires naive UTC"
         return SimpleNamespace(rowcount=self.rowcount)
 
     def add(self, row):

@@ -86,7 +86,7 @@ class RoundtableRuntimeStore:
                     RoundtableRuntimeSnapshot.revision == int(expected_revision),
                 )
                 .values(revision=next_revision, payload=bindparam("checkpoint_blob"), sha256=digest,
-                        updated_at=datetime.now(timezone.utc)),
+                        updated_at=datetime.now(timezone.utc).replace(tzinfo=None)),
                 {"checkpoint_blob": blob},
             )
             if result.rowcount != 1:
