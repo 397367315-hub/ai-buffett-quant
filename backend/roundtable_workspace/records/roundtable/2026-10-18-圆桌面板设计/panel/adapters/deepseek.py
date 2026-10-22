@@ -73,6 +73,11 @@ class DeepSeekClient(BaseProvider):
                                                          {"role": "user", "content": prompt}],
                        "temperature": temperature, "max_tokens": output_cap, "stream": False,
                        "response_format": {"type": "json_object"}}
+            # DeepSeek's official endpoint currently enables thinking by default.
+            # Structured JSON calls need the visible answer budget reserved for JSON.
+            # Do not send this vendor-specific field to custom compatible endpoints.
+            if self.base_url == DEFAULT_BASE:
+                payload["thinking"] = {"type": "disabled"}
             return self._post("/chat/completions", payload)
 
         return chat_json_with_retry(self, system, user, max_tokens=max_tokens,

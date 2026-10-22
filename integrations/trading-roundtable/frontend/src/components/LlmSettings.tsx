@@ -304,7 +304,7 @@ export function LlmSettingsDialog({ open, onClose, onSaved }:
           </Field>
           <label className="check"><input type="checkbox" checked={clearKey}
             onChange={e => { setClearKey(e.target.checked); setDirty(true); }} />清除这份存档已保存的密钥</label>
-          <p className="note">输出格式由系统自动处理，无需选择模式。回答不完整时，系统会自动重试一次。</p>
+          <p className="note">{draft.provider === 'deepseek' ? 'DeepSeek 使用普通分析模式，已关闭深度思考。' : ''}输出格式由系统自动处理，无需选择模式。回答不完整时，系统会自动重试一次。</p>
           {draft.provider === 'openai_compatible' && <details>
             <summary>第三方接口高级兼容设置（通常无需调整）</summary>
             <label className="check"><input type="checkbox" checked={draft.jsonMode}

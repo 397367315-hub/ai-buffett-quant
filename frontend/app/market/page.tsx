@@ -605,15 +605,7 @@ function Sparkline({ values, color = '#4C8DFF', label = '数据轨迹' }: { valu
 
 function ProbabilityDonut({ item }: { item: ForecastHorizon }) {
   if (!item.probability_qualified) {
-    return (
-      <div className="v5-probability-chart" role="img" aria-label={`${shortHorizonLabel(item)}尚未完成概率校准`}>
-        <div className="v5-probability-donut">
-          <svg viewBox="0 0 44 44" aria-hidden="true"><circle className="v5-probability-track" cx="22" cy="22" r="15.5" /></svg>
-          <strong className="text-[8px]">待校准</strong>
-        </div>
-        <div className="v5-probability-legend"><span><i style={{ backgroundColor: '#667085' }} />当前只输出方向研究，不作为成功概率</span></div>
-      </div>
-    );
+    return null;
   }
   const parts = [
     { key: 'upside', label: '上行', value: item.probabilities?.upside, color: '#EF5350' },
@@ -802,23 +794,33 @@ function ForecastTimeline({
   return (
     <section id="forecast" className="v5-panel v5-forecast-panel">
       <SectionHeader icon={BrainCircuit} title="AI市场前瞻预测引擎" subtitle="基于多因子共振与因果链推演" action={<div className="v5-panel-header-meta"><span>预测更新时间：{localTime(forecast.generated_at)}</span><button type="button" className="v5-mini-refresh" onClick={onRefresh} title="刷新预测" aria-label="刷新预测"><RefreshCw size={12} />刷新预测</button></div>} />
-      <div className="v5-forecast-caption">未来市场路径概率 <span>（多周期时间线预测）</span></div>
-      <div className="v5-timeline">
-        {timeline.map((item) => (
-          <article key={item.id} className="v5-horizon">
+      <div className="v5-forecast-caption">多周期市场研判 <span>方向与关键证据</span></div>
+      {timeline.some(item => !item.probability_qualified) && <div className="v5-calibration-note"><span className="v5-calibration-pill">研究参考</span><span>未完成校准的周期仅展示方向与证据，不显示成功概率。</span></div>}
+      <div className="v5-forecast-layout">
+        <div className="v5-timeline">
+          {timeline.map((item) => (
+            <article key={item.id} className="v5-horizon">
             {(() => {
               const direction = directionFor(item);
               return <>
-                <div className="flex items-center justify-between gap-2"><span className="text-[11px] text-text-secondary">{shortHorizonLabel(item)}</span><span className={`font-mono text-[10px] ${toneClass(item.state)}`}>{item.probability_qualified ? `${percent(item.confidence_pct)} 置信` : '研究级 · 待校准'}</span></div>
-                <div className={`mt-2 min-h-[34px] text-[15px] font-semibold ${toneClass(item.state)}`} title={item.state || '核验中'}><span>{horizonStateLabel(item.state)}</span></div>
-                <div className={`v5-horizon-signal v5-horizon-signal-${direction.color}`}><strong>{item.probability_qualified ? percent(finite(item.probabilities.main) ? item.probabilities.main : item.confidence_pct) : (item.tendency_strength || '研究倾向')}</strong><span className={`v5-direction v5-direction-${direction.color}`} aria-hidden="true">{direction.glyph}</span></div>
+                <div className="v5-horizon-top"><span className="v5-horizon-badge">{shortHorizonLabel(item)}</span><span className={`v5-horizon-confidence ${toneClass(item.state)}`}>{item.probability_qualified ? `${percent(item.confidence_pct)} 置信` : '研究级'}</span></div>
+                <div className={`v5-horizon-state ${toneClass(item.state)}`} title={item.state || '核验中'}>{horizonStateLabel(item.state)}</div>
+                <div className={`v5-horizon-signal v5-horizon-signal-${direction.color}`}><strong>{item.probability_qualified ? percent(finite(item.probabilities.main) ? item.probabilities.main : item.confidence_pct) : (item.tendency_strength || '研究倾向')}</strong>{item.probability_qualified && <span>主情景</span>}</div>
                 <ProbabilityDonut item={item} />
-                <div className="v5-horizon-reasons">{(item.key_factors || []).slice(0, 3).map((factor) => <div key={factor} className="truncate">{factorLabel(factor)}</div>)}</div>
+                <div className="v5-horizon-reasons" aria-label={`${shortHorizonLabel(item)}关键证据`}>{(item.key_factors || []).slice(0, 3).map((factor) => <div key={factor} className="truncate"><i />{factorLabel(factor)}</div>)}</div>
               </>;
             })()}
-          </article>
-        ))}
-        <article className="v5-horizon v5-current-horizon"><div className="text-[11px] text-text-secondary">当前判断</div><div className={`mt-2 min-h-[40px] line-clamp-2 text-[13px] leading-5 font-semibold ${toneClass(forecast.risk_preference.label)}`} title={forecast.risk_preference.label || '震荡分化'}>{forecast.risk_preference.label || '震荡分化'}</div><div className="v5-current-orbit"><CircleGauge size={38} strokeWidth={1} /></div><div className="mt-2 border-t border-border pt-2 text-[10px] text-text-secondary">建议策略</div><div className="mt-1 text-[10px] leading-4 text-text-secondary">控制仓位 · 精选结构性机会</div></article>
+            </article>
+          ))}
+        </div>
+        <aside className="v5-current-assessment">
+          <div className="v5-assessment-kicker"><CircleGauge size={14} />当前判断</div>
+          <div className={`v5-assessment-state ${toneClass(forecast.risk_preference.label)}`} title={forecast.risk_preference.label || '震荡分化'}>{forecast.risk_preference.label || '震荡分化'}</div>
+          <p>对照各周期的方向、分歧与共振。</p>
+          <div className="v5-assessment-rule" />
+          <span>建议策略</span>
+          <strong>控制仓位 · 精选结构性机会</strong>
+        </aside>
       </div>
       <div className="v5-resonance-strip">
         <div className="v5-resonance-item"><div className="flex justify-between text-[10px]"><span className="text-text-secondary">风险偏好收缩形成度</span><b className="font-mono text-warn">{percent(forecast.resonance.defensive_resonance_pct)}</b></div><ThinBar value={forecast.resonance.defensive_resonance_pct} color="warn" /></div>

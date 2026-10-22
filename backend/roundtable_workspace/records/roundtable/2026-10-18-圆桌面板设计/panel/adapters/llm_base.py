@@ -122,21 +122,28 @@ def chat_json_with_retry(provider: "BaseProvider", system: str, user: str, *,
     ``request`` receives ``(user_prompt, output_cap)`` and performs the HTTP
     call. Every attempt checks the shared budget before sending and records the
     provider-reported usage immediately afterward, including a failed first
-    attempt. The returned token count and raw response describe the accepted
-    final attempt only; the budget ledger retains both attempts.
+    attempt. The returned token count includes both attempts; raw response
+    contains only the accepted final answer.
     """
     output_cap = max(1, int(max_tokens))
+    total_tokens = 0
+    diagnostics: list[dict] = []
     for attempt in range(2):
         provider.budget.check(estimate=output_cap)
         prompt = user if attempt == 0 else user + _JSON_RETRY_INSTRUCTION
         doc = request(prompt, output_cap)
         usage = doc.get("usage") or {}
         tokens = int(usage.get("total_tokens") or 0)
+        total_tokens += tokens
         provider.budget.add(tokens)
         try:
             content = doc["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
             content = None
+        try:
+            reasoning = doc["choices"][0]["message"].get("reasoning_content")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            reasoning = None
         finish_reason = None
         try:
             finish_reason = doc["choices"][0].get("finish_reason")
@@ -147,12 +154,34 @@ def chat_json_with_retry(provider: "BaseProvider", system: str, user: str, *,
         except ValueError:
             data = None
 
+        completion_details = usage.get("completion_tokens_details") or {}
+        numeric_usage = {k: int(usage[k]) for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+                         if isinstance(usage.get(k), (int, float))}
+        if isinstance(completion_details, dict) and isinstance(completion_details.get("reasoning_tokens"), (int, float)):
+            numeric_usage["reasoning_tokens"] = int(completion_details["reasoning_tokens"])
         if data is not None and finish_reason != "length":
+            failure_category = None
+        elif not isinstance(content, str) or not content.strip():
+            failure_category = "reasoning_length" if finish_reason == "length" and reasoning else "empty"
+        elif finish_reason == "length":
+            failure_category = "truncated"
+        else:
+            failure_category = "malformed"
+        diagnostics.append({"attempt": attempt + 1, "finish_reason": finish_reason,
+                            "content_length": len(content) if isinstance(content, str) else 0,
+                            "reasoning_length": len(reasoning) if isinstance(reasoning, str) else 0,
+                            "usage": numeric_usage, "parse_failure_category": failure_category})
+        provider.last_llm_diagnostics = list(diagnostics)
+
+        if data is not None and finish_reason != "length":
+            provider.last_llm_diagnostics = diagnostics
             return {"data": data, "raw": content, "usage": usage,
-                    "model": doc.get("model") or provider.model, "tokens": tokens}
+                    "model": doc.get("model") or provider.model, "tokens": total_tokens,
+                    "diagnostics": diagnostics}
         if attempt == 0:
             output_cap = min(_JSON_RETRY_MAX_TOKENS, max(4096, output_cap * 2))
             continue
+        provider.last_llm_diagnostics = diagnostics
         raise LlmUnavailable(
             "LLM_BAD_JSON",
             "系统已自动重试，但模型回答仍不完整或格式异常，请稍后点击重试。",
@@ -266,6 +295,7 @@ class BaseProvider:
         self.transport = transport
         self.config = config or {}
         self.calls: list[dict] = []          # 只记方法/路径/状态/耗时，不记正文
+        self.last_llm_diagnostics: list[dict] = []
 
     # ── 密钥与状态 ──
     @property
@@ -395,4 +425,4 @@ class BaseProvider:
         return {"kind": kind, "provider_id": self.provider_id, "model_id": model or self.model,
                 "prompt_sha256": prompt_sha, "output_sha256": output_sha, "status": status,
                 "tokens": tokens, "error_codes": error_codes or [], "at": clock.utc_iso(),
-                "calls": list(self.calls)}
+                "calls": list(self.calls), "llm_diagnostics": list(self.last_llm_diagnostics)}

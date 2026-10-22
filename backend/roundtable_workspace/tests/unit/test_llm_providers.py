@@ -139,14 +139,84 @@ class TestProviders(unittest.TestCase):
 
         os.environ["DEEPSEEK_API_KEY"] = "sk-test"
         try:
-            p = DeepSeekClient(model="m", base_url="http://x", runtime_dir=self.tmp,
+            p = DeepSeekClient(model="m", base_url="https://api.deepseek.com", runtime_dir=self.tmp,
                                transport=transport)
             out = p.chat_json("sys", "schema", max_tokens=64)
             self.assertEqual(out["data"], {"a": 1})
             self.assertEqual(len(requests), 2)
             self.assertEqual([r["max_tokens"] for r in requests], [64, 4096])
             self.assertIn("原始 schema", requests[1]["messages"][1]["content"])
+            self.assertEqual(requests[0]["thinking"], {"type": "disabled"})
+            self.assertEqual(requests[1]["thinking"], {"type": "disabled"})
             self.assertEqual(p.budget.used(), 10)
+        finally:
+            os.environ.pop("DEEPSEEK_API_KEY", None)
+
+    def test_deepseek_custom_endpoint_does_not_receive_vendor_thinking_option(self):
+        seen = []
+
+        def transport(method, url, headers, body):
+            seen.append(json.loads(body))
+            return 200, b'{"model":"m","usage":{"total_tokens":1},"choices":[{"finish_reason":"stop","message":{"content":"{\\"ok\\":true}"}}]}'
+
+        os.environ["DEEPSEEK_API_KEY"] = "sk-test"
+        try:
+            p = DeepSeekClient(model="m", base_url="http://compatible.example/v1", runtime_dir=self.tmp,
+                               transport=transport)
+            p.chat_json("sys", "json")
+            self.assertNotIn("thinking", seen[0])
+        finally:
+            os.environ.pop("DEEPSEEK_API_KEY", None)
+
+    def test_reasoning_cannot_substitute_for_content_and_diagnostics_are_safe(self):
+        requests = []
+
+        def transport(method, url, headers, body):
+            requests.append(json.loads(body))
+            if len(requests) == 1:
+                response = {"model": "deepseek-flash", "usage": {"prompt_tokens": 4, "completion_tokens": 8,
+                            "total_tokens": 12, "completion_tokens_details": {"reasoning_tokens": 7}},
+                            "choices": [{"finish_reason": "length", "message": {
+                                "content": "", "reasoning_content": "private reasoning"}}]}
+            else:
+                response = {"model": "deepseek-flash", "usage": {"prompt_tokens": 4, "completion_tokens": 5,
+                            "total_tokens": 9, "completion_tokens_details": {"reasoning_tokens": 0}},
+                            "choices": [{"finish_reason": "stop", "message": {"content": '{"ok":true}'}}]}
+            return 200, json.dumps(response).encode()
+
+        os.environ["DEEPSEEK_API_KEY"] = "sk-secret-value"
+        try:
+            p = DeepSeekClient(model="m", base_url="https://api.deepseek.com", runtime_dir=self.tmp,
+                               transport=transport)
+            out = p.chat_json("sys", "json", max_tokens=64)
+            self.assertEqual(out["tokens"], 21)
+            self.assertEqual(out["data"], {"ok": True})
+            self.assertEqual(out["diagnostics"][0]["parse_failure_category"], "reasoning_length")
+            self.assertEqual(out["diagnostics"][0]["reasoning_length"], len("private reasoning"))
+            self.assertEqual(out["diagnostics"][1]["parse_failure_category"], None)
+            audit = p.audit_entry("test", prompt_sha="p", output_sha="o", status="ok", tokens=out["tokens"])
+            serialized = json.dumps(audit, ensure_ascii=False)
+            self.assertNotIn("private reasoning", serialized)
+            self.assertNotIn("sk-secret-value", serialized)
+            self.assertEqual(audit["llm_diagnostics"][0]["usage"]["reasoning_tokens"], 7)
+        finally:
+            os.environ.pop("DEEPSEEK_API_KEY", None)
+
+    def test_json_failure_diagnostics_distinguish_empty_truncated_and_malformed(self):
+        cases = [("stop", "", "empty"), ("length", '{"x":', "truncated"),
+                 ("stop", '{"x":', "malformed")]
+        os.environ["DEEPSEEK_API_KEY"] = "sk-test"
+        try:
+            for finish_reason, content, category in cases:
+                def transport(method, url, headers, body, finish_reason=finish_reason, content=content):
+                    response = {"usage": {"total_tokens": 1}, "choices": [{"finish_reason": finish_reason,
+                                "message": {"content": content}}]}
+                    return 200, json.dumps(response).encode()
+                p = DeepSeekClient(model="m", base_url="https://api.deepseek.com", runtime_dir=self.tmp,
+                                   transport=transport)
+                with self.assertRaises(LlmUnavailable):
+                    p.chat_json("sys", "json", max_tokens=8)
+                self.assertEqual(p.last_llm_diagnostics[-1]["parse_failure_category"], category)
         finally:
             os.environ.pop("DEEPSEEK_API_KEY", None)
 
