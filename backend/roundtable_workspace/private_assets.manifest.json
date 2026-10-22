@@ -2,7 +2,7 @@
   "format": "AES-256-GCM",
   "version": 1,
   "file_count": 118,
-  "encrypted_bytes": 2613677,
-  "sha256": "cde6586a5065dc45d0bf4c474b1d8de2387191487683f9c64efc104011c658e2",
+  "encrypted_bytes": 2614200,
+  "sha256": "5cb5e96f65a6669d57a967c1ad0c1e71423ec3e73744bf2a42345cb39a2a1533",
   "key_environment": "ROUNDTABLE_ASSET_KEY"
 }

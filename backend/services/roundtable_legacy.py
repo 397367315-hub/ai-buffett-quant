@@ -194,4 +194,29 @@ def _memory_limit_mb() -> int | None:
     return None
 
 
+def memory_observation() -> dict[str, Any]:
+    """Admin-only diagnostics for the web process and its calculation children."""
+    from pathlib import Path
+    result: dict[str, Any] = {"limit_mb": _memory_limit_mb()}
+    for key, path in (("current_bytes", "/sys/fs/cgroup/memory.current"),
+                      ("peak_bytes", "/sys/fs/cgroup/memory.peak")):
+        try:
+            result[key] = int(Path(path).read_text().strip())
+        except (OSError, ValueError):
+            pass
+    try:
+        fields = dict(line.split() for line in Path("/sys/fs/cgroup/memory.stat").read_text().splitlines())
+        result.update({key + "_bytes": int(fields[key]) for key in ("anon", "file", "shmem") if key in fields})
+    except (OSError, ValueError):
+        pass
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                result["web_rss_bytes"] = int(line.split()[1]) * 1024
+                break
+    except (OSError, ValueError, IndexError):
+        pass
+    return result
+
+
 roundtable_legacy_refresh = RoundtableLegacyRefresh()

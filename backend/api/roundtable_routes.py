@@ -58,11 +58,13 @@ async def roundtable_host_status():
     try:
         runtime = await get_roundtable_runtime()
         from panel.domain.seat_registry import registry_payload
+        from services.roundtable_legacy import memory_observation
         skills_root = runtime.asset_root / "skills" if runtime.asset_root else runtime.vendor_root / "skills"
         payload = registry_payload(skills_root)
         return {"code": 0, "data": {
             "name": "交易圆桌", "upstream_release": "rc-20261022-84ff309c13b8",
             "ready": not runtime.unavailable, "seat_count": len(payload.get("seats") or []),
+            "memory": memory_observation(),
             "persistence": {"mode": "host_database_checkpoint", "revision": runtime.revision,
                             "available": not runtime.unavailable},
             "shared_providers": {"numcat_configured": numcat_gateway.configured,
