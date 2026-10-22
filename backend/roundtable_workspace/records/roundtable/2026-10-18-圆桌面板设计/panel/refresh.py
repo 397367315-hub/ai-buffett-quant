@@ -308,9 +308,25 @@ def run_seat(name, features_path, industry_path=None, extra=None):
     return result
 
 
+def _run_book_script(cmd):
+    # Child interpreters do not inherit the host's sys.path. Make the bounded
+    # reader available explicitly, as in the v1 runner, instead of silently
+    # falling back to loading the entire market as JSON dictionaries.
+    panel_parent = str(HERE.parent)
+    launcher = (f"import runpy,sys;sys.path.insert(0,{panel_parent!r});"
+                "p=sys.argv.pop(1);sys.argv[0]=p;runpy.run_path(p,run_name='__main__')")
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+           "LANG": "C.UTF-8", "PYTHONHASHSEED": "0"}
+    return subprocess.run([cmd[0], "-I", "-c", launcher, *cmd[1:]],
+                          capture_output=True, text=True, timeout=300, env=env)
+
+
 def _run_seat(name, features_path, industry_path=None, extra=None):
     script = SKILLS / name / "scripts" / ("review.py" if name == "trading-tuixue-v1" else "screen.py")
     out = DATA / f"seat_{name}.json"
+    output_key = name.split("-")[1]
+    output_path = DATA / ("screen.json" if name == "trading-wildman-v2" else f"{output_key}.json")
+    output_path.unlink(missing_ok=True)
     cmd = [sys.executable, str(script)]
     if name == "trading-tuixue-v1":
         return None      # 审查席不参与刷新
@@ -320,12 +336,12 @@ def _run_seat(name, features_path, industry_path=None, extra=None):
             return None
         # 野人哥要两步：先 build_features 生成 compact，再 screen
         compact = DATA / "features_compact.json"
+        compact.unlink(missing_ok=True)
         bf = SKILLS / name / "scripts" / "build_features.py"
-        b = subprocess.run([sys.executable, str(bf), "--daily", str(features_path),
+        b = _run_book_script([sys.executable, str(bf), "--daily", str(features_path),
                             "--out", str(compact)] +
-                           (["--industry", str(industry_path)] if industry_path else []),
-                           capture_output=True, text=True)
-        if not compact.exists():
+                           (["--industry", str(industry_path)] if industry_path else []))
+        if b.returncode != 0 or not compact.exists():
             print(f"  ! {name} build_features 失败: {(b.stderr or b.stdout)[:160]}")
             return None
         cmd += ["--features", str(compact), "--limit-pool", str(lp)]
@@ -345,9 +361,9 @@ def _run_seat(name, features_path, industry_path=None, extra=None):
             cmd += ["--limit-events", str(le)]
         cmd += ["--top", "20"]
         cmd += ["--out", str(DATA)]
-        p_ = subprocess.run(cmd, capture_output=True, text=True)
+        p_ = _run_book_script(cmd)
         f_ = DATA / "boardtech.json"
-        if not f_.exists():
+        if p_.returncode != 0 or not f_.exists():
             print(f"  ! {name} 无输出: {(p_.stderr or p_.stdout)[:160]}")
             return None
         return json.loads(f_.read_text())
@@ -366,10 +382,10 @@ def _run_seat(name, features_path, industry_path=None, extra=None):
             cmd += ["--dividend-years", str(dv)]
         cmd += ["--top", "50"]
     cmd += ["--out", str(DATA)]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    p = _run_book_script(cmd)
     key = name.split("-")[1]
     f = DATA / ("screen.json" if name == "trading-wildman-v2" else f"{key}.json")
-    if name == "trading-wildman-v2" and f.exists():
+    if name == "trading-wildman-v2" and p.returncode == 0 and f.exists():
         raw = json.loads(f.read_text())
         st = raw.get("stage") or {}
         label = str(st.get("stage") or "")
@@ -380,7 +396,7 @@ def _run_seat(name, features_path, industry_path=None, extra=None):
                 "candidates": [],
                 "note": f"周期定位与角色标注已输出 {len(raw.get('roles') or [])} 只；买点需按 §6.1–6.5 逐条核，"
                         f"脚本不直接出票。"}
-    if not f.exists():
+    if p.returncode != 0 or not f.exists():
         err = (p.stderr or p.stdout or "").strip().splitlines()[-1:] or ["未知错误"]
         print(f"  ! {name} 失败: {err[0][:160]}")
         return {"seat": name, "gate": {"open": False, "state": "取数失败",

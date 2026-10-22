@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 from decimal import Decimal
 import unittest
@@ -17,6 +18,29 @@ from panel.services.seat_runner import _rows_from_blob
 from services.roundtable_legacy import RoundtableLegacyRefresh
 from api.roundtable_legacy_routes import _bound_runtime
 class RoundtableStreamingTests(unittest.TestCase):
+    def test_legacy_child_uses_bounded_reader_without_provider_credentials(self):
+        from panel.refresh import _run_book_script
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = root / "features.json"
+            data.write_text('[{"symbol":"600000","amount":null}]')
+            script = root / "probe.py"
+            script.write_text(
+                "import json,os,sys\n"
+                "from panel.services.feature_rows import FeatureRows,load_feature_rows\n"
+                "rows=load_feature_rows(sys.argv[1])\n"
+                "print(json.dumps({'mapped':isinstance(rows,FeatureRows),"
+                "'secret_present':'NUMCAT_API_KEY' in os.environ,'row':dict(rows[0])}))\n"
+                "rows.close()\n"
+            )
+            with patch.dict(os.environ, {"NUMCAT_API_KEY": "test-placeholder", "PYTHONPATH": "/invalid"}):
+                child = _run_book_script([sys.executable, str(script), str(data)])
+            self.assertEqual(child.returncode, 0, child.stderr)
+            self.assertEqual(json.loads(child.stdout), {
+                "mapped": True, "secret_present": False,
+                "row": {"symbol": "600000", "amount": None},
+            })
+
     def test_feature_rows_preserve_null_decimal_and_large_integer(self):
         rows = FeatureRows([{"symbol": "600000", "amount": 9007199254740993,
                              "ratio": Decimal("0.123456789012"), "missing": None}])
