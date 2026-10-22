@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +48,116 @@ class LlmUnavailable(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+_JSON_RETRY_MAX_TOKENS = 8192
+_JSON_RETRY_INSTRUCTION = (
+    "\n\n上一次响应未通过完整 JSON 对象校验。请严格遵循原始 schema，"
+    "只输出一个完整、有效、简洁的 JSON 对象；不要输出 Markdown 代码围栏、解释文字、"
+    "多个对象，也不要省略或猜测字段。"
+)
+
+
+def parse_json_object_reply(content: object) -> dict:
+    """Parse one complete JSON object without repairing or inventing content.
+
+    Providers occasionally put a valid object in a markdown fence or a short
+    prose wrapper.  We accept those cases only when exactly one complete object
+    can be decoded; arrays, scalar JSON, multiple objects and truncated output
+    remain rejected.
+    """
+    if not isinstance(content, str):
+        raise ValueError("content is not text")
+    text = content.strip()
+    if not text:
+        raise ValueError("empty content")
+
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+
+    try:
+        direct = json.loads(text)
+    except (TypeError, ValueError):
+        direct = None
+    if isinstance(direct, dict):
+        return direct
+    if direct is not None:
+        # A valid JSON array/scalar is still an invalid response for this API.
+        raise ValueError("response is not a JSON object")
+    if text.startswith(("{", "[", '"')):
+        raise ValueError("incomplete or invalid JSON document")
+
+    decoder = json.JSONDecoder()
+    candidates: list[tuple[int, int, dict]] = []
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, end = decoder.raw_decode(text, start)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            candidates.append((start, end, value))
+
+    # Nested objects produce nested candidates. Keep only outermost decoded
+    # objects, then require exactly one object in the surrounding prose.
+    outer = [candidate for candidate in candidates
+             if not any(other[0] < candidate[0] and candidate[1] <= other[1]
+                        for other in candidates)]
+    if len(outer) == 1:
+        start, end, value = outer[0]
+        # A candidate nested in an unterminated object must not be mistaken
+        # for prose-wrapped JSON (this would amount to repairing truncation).
+        if "{" in text[:start] or "}" in text[end:]:
+            raise ValueError("surrounding text contains an unmatched object delimiter")
+        return value
+    raise ValueError("response does not contain exactly one complete JSON object")
+
+
+def chat_json_with_retry(provider: "BaseProvider", system: str, user: str, *,
+                         max_tokens: int, temperature: float, request) -> dict:
+    """Run a provider request with at most one JSON-validation retry.
+
+    ``request`` receives ``(user_prompt, output_cap)`` and performs the HTTP
+    call. Every attempt checks the shared budget before sending and records the
+    provider-reported usage immediately afterward, including a failed first
+    attempt. The returned token count and raw response describe the accepted
+    final attempt only; the budget ledger retains both attempts.
+    """
+    output_cap = max(1, int(max_tokens))
+    for attempt in range(2):
+        provider.budget.check(estimate=output_cap)
+        prompt = user if attempt == 0 else user + _JSON_RETRY_INSTRUCTION
+        doc = request(prompt, output_cap)
+        usage = doc.get("usage") or {}
+        tokens = int(usage.get("total_tokens") or 0)
+        provider.budget.add(tokens)
+        try:
+            content = doc["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            content = None
+        finish_reason = None
+        try:
+            finish_reason = doc["choices"][0].get("finish_reason")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            pass
+        try:
+            data = parse_json_object_reply(content)
+        except ValueError:
+            data = None
+
+        if data is not None and finish_reason != "length":
+            return {"data": data, "raw": content, "usage": usage,
+                    "model": doc.get("model") or provider.model, "tokens": tokens}
+        if attempt == 0:
+            output_cap = min(_JSON_RETRY_MAX_TOKENS, max(4096, output_cap * 2))
+            continue
+        raise LlmUnavailable(
+            "LLM_BAD_JSON",
+            "系统已自动重试，但模型回答仍不完整或格式异常，请稍后点击重试。",
+        )
+    raise AssertionError("unreachable")
 
 
 def env_path(name: str) -> Path | None:

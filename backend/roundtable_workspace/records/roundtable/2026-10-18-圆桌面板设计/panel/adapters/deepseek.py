@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .llm_base import (BaseProvider, Budget, LlmUnavailable, env_path, resolve_secret,
+from .llm_base import (BaseProvider, Budget, LlmUnavailable, chat_json_with_retry, env_path, resolve_secret,
                        configure_shared_llm, clear_shared_llm, shared_llm_config)
 
 DEFAULT_BASE = "https://api.deepseek.com"
@@ -68,20 +68,15 @@ class DeepSeekClient(BaseProvider):
         return resolve_secret(self.api_key_env, self.runtime_dir, self.profile_id)[1]
 
     def chat_json(self, system: str, user: str, *, max_tokens: int = 1200, temperature: float = 0.0) -> dict:
-        self.budget.check(estimate=max_tokens)
-        payload = {"model": self.model, "messages": [{"role": "system", "content": system},
-                                                     {"role": "user", "content": user}],
-                   "temperature": temperature, "max_tokens": max_tokens, "stream": False,
-                   "response_format": {"type": "json_object"}}
-        doc = self._post("/chat/completions", payload)
-        usage = doc.get("usage") or {}
-        tokens = int(usage.get("total_tokens") or 0)
-        self.budget.add(tokens)
-        try:
-            content = doc["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
-            raise LlmUnavailable("LLM_BAD_RESPONSE", "DeepSeek 响应缺少 choices[0].message.content")
-        return _parse_json_reply(content, doc.get("model") or self.model, usage, tokens)
+        def request(prompt: str, output_cap: int) -> dict:
+            payload = {"model": self.model, "messages": [{"role": "system", "content": system},
+                                                         {"role": "user", "content": prompt}],
+                       "temperature": temperature, "max_tokens": output_cap, "stream": False,
+                       "response_format": {"type": "json_object"}}
+            return self._post("/chat/completions", payload)
+
+        return chat_json_with_retry(self, system, user, max_tokens=max_tokens,
+                                    temperature=temperature, request=request)
 
     def search(self, query: str, count: int = 5, need_content: bool = True) -> dict:
         if not self.supports_search:
@@ -102,12 +97,3 @@ class DeepSeekClient(BaseProvider):
         doc = self._post("/v1/tools/fetch", {"url": url})
         self.budget.add(int((doc.get("usage") or {}).get("total_tokens") or 0))
         return {"url": doc.get("url") or url, "title": doc.get("title"), "content": doc.get("content")}
-
-
-def _parse_json_reply(content: str, model: str, usage: dict, tokens: int) -> dict:
-    import json
-    try:
-        data = json.loads(content)
-    except ValueError:
-        raise LlmUnavailable("LLM_BAD_JSON", "模型没有按 JSON 输出（已拒收，不猜内容）")
-    return {"data": data, "raw": content, "usage": usage, "model": model, "tokens": tokens}

@@ -304,9 +304,13 @@ export function LlmSettingsDialog({ open, onClose, onSaved }:
           </Field>
           <label className="check"><input type="checkbox" checked={clearKey}
             onChange={e => { setClearKey(e.target.checked); setDirty(true); }} />清除这份存档已保存的密钥</label>
-          <label className="check"><input type="checkbox" checked={draft.jsonMode}
-            onChange={e => edit({ jsonMode: e.target.checked })} />
-            使用 JSON 模式（多数接口支持；不支持的实现会自动退回普通输出再解析）</label>
+          <p className="note">输出格式由系统自动处理，无需选择模式。回答不完整时，系统会自动重试一次。</p>
+          {draft.provider === 'openai_compatible' && <details>
+            <summary>第三方接口高级兼容设置（通常无需调整）</summary>
+            <label className="check"><input type="checkbox" checked={draft.jsonMode}
+              onChange={e => edit({ jsonMode: e.target.checked })} />
+              请求接口返回结构化结果（不支持时自动兼容）</label>
+          </details>}
 
           <div className="row">
             <button className="btn" disabled={busy} onClick={save} data-testid="llm-save">{busy ? '保存中…' : '保存'}</button>

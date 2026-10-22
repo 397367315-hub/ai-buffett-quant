@@ -14,7 +14,8 @@ from types import SimpleNamespace
 from tests.support.harness import Harness  # noqa: F401  （设置 sys.path）
 
 from panel.adapters import llm_registry as reg
-from panel.adapters.llm_base import LlmUnavailable
+from panel.adapters.llm_base import LlmUnavailable, parse_json_object_reply
+from panel.adapters.deepseek import DeepSeekClient
 from panel.adapters.openai_compatible import OpenAICompatibleProvider
 from panel.adapters.anthropic_compatible import AnthropicProvider
 
@@ -109,6 +110,64 @@ class TestProviders(unittest.TestCase):
             self.assertEqual(cm.exception.code, "LLM_SEARCH_UNSUPPORTED")
         finally:
             os.environ.pop("LLM_API_KEY", None)
+
+    def test_json_parser_accepts_fence_and_single_prose_object(self):
+        self.assertEqual(parse_json_object_reply("```json\n{\"a\": 1}\n```"), {"a": 1})
+        self.assertEqual(parse_json_object_reply("结果如下： {\"a\": {\"b\": 2}}。"),
+                         {"a": {"b": 2}})
+
+    def test_json_parser_rejects_truncation_nonobject_and_multiple_objects(self):
+        for content in ('{"a": {"b": 1}', '[1, 2]', '[{"a": 1}', '"prefix {"a": 1}', '{"a": 1} and {"b": 2}'):
+            with self.assertRaises(ValueError):
+                parse_json_object_reply(content)
+
+    def test_deepseek_json_retry_is_bounded_and_accounts_both_attempts(self):
+        requests = []
+
+        def transport(method, url, headers, body):
+            payload = json.loads(body)
+            requests.append(payload)
+            if len(requests) == 1:
+                response = {"model": "m", "usage": {"total_tokens": 3},
+                            "choices": [{"finish_reason": "length",
+                                         "message": {"content": '{"a":'}}]}
+            else:
+                response = {"model": "m", "usage": {"total_tokens": 7},
+                            "choices": [{"finish_reason": "stop",
+                                         "message": {"content": '{"a": 1}'}}]}
+            return 200, json.dumps(response).encode()
+
+        os.environ["DEEPSEEK_API_KEY"] = "sk-test"
+        try:
+            p = DeepSeekClient(model="m", base_url="http://x", runtime_dir=self.tmp,
+                               transport=transport)
+            out = p.chat_json("sys", "schema", max_tokens=64)
+            self.assertEqual(out["data"], {"a": 1})
+            self.assertEqual(len(requests), 2)
+            self.assertEqual([r["max_tokens"] for r in requests], [64, 4096])
+            self.assertIn("原始 schema", requests[1]["messages"][1]["content"])
+            self.assertEqual(p.budget.used(), 10)
+        finally:
+            os.environ.pop("DEEPSEEK_API_KEY", None)
+
+    def test_json_retry_exhaustion_is_friendly_and_never_repairs(self):
+        def transport(method, url, headers, body):
+            return 200, json.dumps({"usage": {"total_tokens": 2},
+                                    "choices": [{"finish_reason": "stop",
+                                                 "message": {"content": '{"a":'}}]}).encode()
+
+        os.environ["DEEPSEEK_API_KEY"] = "sk-test"
+        try:
+            p = DeepSeekClient(model="m", base_url="http://x", runtime_dir=self.tmp,
+                               transport=transport)
+            with self.assertRaises(LlmUnavailable) as cm:
+                p.chat_json("sys", "schema", max_tokens=64)
+            self.assertEqual(cm.exception.code, "LLM_BAD_JSON")
+            self.assertIn("自动重试", str(cm.exception))
+            self.assertNotIn("JSON", str(cm.exception))
+            self.assertEqual(p.budget.used(), 4)
+        finally:
+            os.environ.pop("DEEPSEEK_API_KEY", None)
 
     def test_openai_compatible_without_json_mode(self):
         seen = {}

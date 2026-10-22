@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .llm_base import BaseProvider, LlmUnavailable
+from .llm_base import BaseProvider, LlmUnavailable, chat_json_with_retry
 
 
 class OpenAICompatibleProvider(BaseProvider):
@@ -30,32 +30,20 @@ class OpenAICompatibleProvider(BaseProvider):
         self.json_mode = bool((config or {}).get("json_mode", True))
 
     def chat_json(self, system: str, user: str, *, max_tokens: int = 1200, temperature: float = 0.0) -> dict:
-        self.budget.check(estimate=max_tokens)
-        payload = {"model": self.model, "messages": [{"role": "system", "content": system},
-                                                     {"role": "user", "content": user}],
-                   "temperature": temperature, "max_tokens": max_tokens, "stream": False}
-        if self.json_mode:
-            payload["response_format"] = {"type": "json_object"}
-        try:
-            doc = self._post("/chat/completions", payload)
-        except LlmUnavailable as ex:
-            # 有些兼容实现不认 response_format：去掉再试一次（仍失败就如实报错）
-            if self.json_mode and ex.code == "LLM_ERROR" and "response_format" in str(ex):
-                payload.pop("response_format", None)
-                doc = self._post("/chat/completions", payload)
-            else:
+        def request(prompt: str, output_cap: int) -> dict:
+            payload = {"model": self.model, "messages": [{"role": "system", "content": system},
+                                                         {"role": "user", "content": prompt}],
+                       "temperature": temperature, "max_tokens": output_cap, "stream": False}
+            if self.json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            try:
+                return self._post("/chat/completions", payload)
+            except LlmUnavailable as ex:
+                # 有些兼容实现不认 response_format：去掉再试一次（仍失败就如实报错）
+                if self.json_mode and ex.code == "LLM_ERROR" and "response_format" in str(ex):
+                    payload.pop("response_format", None)
+                    return self._post("/chat/completions", payload)
                 raise
-        usage = doc.get("usage") or {}
-        tokens = int(usage.get("total_tokens") or 0)
-        self.budget.add(tokens)
-        try:
-            content = doc["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
-            raise LlmUnavailable("LLM_BAD_RESPONSE", "响应缺少 choices[0].message.content")
-        import json
-        try:
-            data = json.loads(content)
-        except ValueError:
-            raise LlmUnavailable("LLM_BAD_JSON", "模型没有按 JSON 输出（已拒收，不猜内容）")
-        return {"data": data, "raw": content, "usage": usage, "model": doc.get("model") or self.model,
-                "tokens": tokens}
+
+        return chat_json_with_retry(self, system, user, max_tokens=max_tokens,
+                                    temperature=temperature, request=request)
