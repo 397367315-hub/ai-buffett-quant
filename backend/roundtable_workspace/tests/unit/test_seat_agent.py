@@ -53,9 +53,11 @@ class ScriptedClient(FakeClient):
 
     def __init__(self, payloads: list[dict]):
         self._queue = list(payloads)
+        self.calls = []
         super().__init__({"answer": "unused", "kb_refs": []})
 
     def chat_json(self, system, user, *, max_tokens=1200, temperature=0.0):
+        self.calls.append((system, user, max_tokens))
         data = self._queue.pop(0) if self._queue else {"step": "final", "answer": {}}
         return {"data": data, "raw": json.dumps(data, ensure_ascii=False), "usage": {},
                 "model": "deepseek-flash", "tokens": 10}
@@ -164,6 +166,7 @@ class TestSeatAgent(unittest.TestCase):
         self.assertTrue(out["steps"][0]["ok"])
         self.assertGreaterEqual(out["kb_hits"], 1)
         self.assertEqual(out["answer"]["kb_refs"][0]["kb_id"], kid)
+        self.assertEqual(len(client.calls), 2)
         row = self.h.db.one("SELECT status FROM model_runs WHERE model_run_id=?", (out["audit"]["model_run_id"],))
         self.assertEqual(row["status"], "accepted")
 
@@ -191,11 +194,34 @@ class TestSeatAgent(unittest.TestCase):
         self.assertEqual(cm.exception.code, "LLM_BAD_PROTOCOL")
 
     def test_agent_chat_final_still_needs_citation(self):
-        client = ScriptedClient([{"step": "final", "answer": {"answer": "没出处的结论", "kb_refs": []}}])
+        invalid = {"step": "final", "answer": {"answer": "没出处的结论", "kb_refs": []}}
+        client = ScriptedClient([invalid, invalid])
         with self.assertRaises(seat_agent.AgentRejected) as cm:
             seat_agent.agent_chat(self.h.db, self.settings, seat_id=SEAT, question="q", snapshot=self.snap,
                                   client=client)
         self.assertEqual(cm.exception.code, "LLM_NO_CITATION")
+
+    def test_agent_chat_repairs_policy_once_and_aggregates_tokens(self):
+        kid = self._kb_id()
+        invalid = {"step": "final", "answer": {"answer": "可以买入，目标价 12 元。", "kb_refs": []}}
+        client = ScriptedClient([invalid, self._final(kid)])
+        out = seat_agent.agent_chat(self.h.db, self.settings, seat_id=SEAT, question="q", snapshot=self.snap,
+                                    client=client)
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["answer"]["kb_refs"][0]["kb_id"], kid)
+        self.assertEqual(out["tokens"], 20)
+        self.assertEqual(len(client.calls), 2)
+        self.assertNotIn("可用工具", client.calls[1][0])
+
+    def test_agent_chat_repair_does_not_accept_fake_citation(self):
+        kid = self._kb_id()
+        invalid = {"step": "final", "answer": {"answer": "可以买入。", "kb_refs": []}}
+        fake = {"step": "final", "answer": {"answer": "中性研究表述。", "kb_refs": [{"kb_id": kid, "quote": "书里没有"}]}}
+        client = ScriptedClient([invalid, fake])
+        with self.assertRaises(seat_agent.AgentRejected) as cm:
+            seat_agent.agent_chat(self.h.db, self.settings, seat_id=SEAT, question="q", snapshot=self.snap,
+                                  client=client)
+        self.assertEqual(cm.exception.code, "LLM_BAD_CITATION")
 
     def test_agent_chat_includes_ui_context(self):
         kid = self._kb_id()

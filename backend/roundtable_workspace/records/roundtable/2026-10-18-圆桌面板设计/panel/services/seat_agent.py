@@ -263,6 +263,20 @@ AGENT_SYSTEM = """你是交易圆桌里的一位席位分析师。这次你可�
 5. 最多 {max_steps} 步；步数用完还没给出结论就按失败处理。
 """
 
+AGENT_FINAL_REPAIR_SYSTEM = """你是交易圆桌的最终答案校正器。
+只重写最终答案，不执行工具，不提出 step=tool；必须直接输出一个 step=final 的 JSON。
+只能使用当前上下文中已经提供的 fact_id、kb_id 和对应片段的逐字短引用；没有依据的内容写入 missing_inputs。
+使用中性的研究表述，不给买卖指令、目标价、胜率或保证性结论。
+正文避免出现这些操作性词组（包括否定句和书籍转述）：直接买、可以买、立即买入、马上买、满仓、梭哈、帮你下单。
+将风险控制说明为仓位约束、集中敞口、证据和失效条件；书籍原句只放在 kb_refs 的 quote 中。
+
+输出格式：
+{"step":"final","answer":{"answer":"3-6句中文","facts_used":[],"kb_refs":[{"kb_id":"…","quote":"片段中的逐字短句"}],"uncertainties":[],"missing_inputs":[],"action":"explain_only"}}
+"""
+
+_REPAIRABLE_FINAL_ERRORS = {"LLM_POLICY", "LLM_BAD_CITATION", "LLM_UNKNOWN_FACT",
+                            "LLM_NO_CITATION", "LLM_EMPTY_ANSWER"}
+
 
 def agent_chat(db, settings, *, seat_id: str, question: str, snapshot: dict | None = None,
                symbols: list[str] | None = None, replay_id: str | None = None,
@@ -307,8 +321,28 @@ def agent_chat(db, settings, *, seat_id: str, question: str, snapshot: dict | No
             if step == "final" or (not step and isinstance(data.get("answer"), dict)):
                 answer_obj = data.get("answer") if isinstance(data.get("answer"), dict) else \
                     {k: v for k, v in data.items() if k != "step"}
-                validated = validate_answer(answer_obj, facts, list(state["kb_hits"].values()))
-                audit = _audit(db, settings, client, "seat_agent", prompt=f"{system}\n\n{user}",
+                audit_prompt = f"{system}\n\n{user}"
+                try:
+                    validated = validate_answer(answer_obj, facts, list(state["kb_hits"].values()))
+                except AgentRejected as first_rejection:
+                    if first_rejection.code not in _REPAIRABLE_FINAL_ERRORS:
+                        raise
+                    # Send only a static machine error code back. The rejected
+                    # answer itself is never echoed into the repair prompt.
+                    repair_user = (user + "\n\n【校验反馈】最终答案未通过校验，错误代码：" +
+                                   first_rejection.code +
+                                   "。请仅按校正器格式重写最终答案；不要调用工具。")
+                    repair_res = client.chat_json(AGENT_FINAL_REPAIR_SYSTEM, repair_user, max_tokens=1200)
+                    audit_prompt = f"{AGENT_FINAL_REPAIR_SYSTEM}\n\n{repair_user}"
+                    tokens += int(repair_res.get("tokens") or 0)
+                    last_raw = repair_res.get("raw")
+                    res = repair_res
+                    repair_data = repair_res.get("data") or {}
+                    repair_step = str(repair_data.get("step") or "").strip().lower()
+                    if repair_step != "final" or not isinstance(repair_data.get("answer"), dict):
+                        raise AgentRejected("LLM_BAD_PROTOCOL", "最终答案校正未返回 step=final")
+                    validated = validate_answer(repair_data["answer"], facts, list(state["kb_hits"].values()))
+                audit = _audit(db, settings, client, "seat_agent", prompt=audit_prompt,
                                output=last_raw, status="ok", tokens=tokens)
                 return {"status": "ok", "mode": "agent", "seat_id": seat_id, "seat_name": seat_name,
                         "question": question, "answer": validated, "steps": steps,
