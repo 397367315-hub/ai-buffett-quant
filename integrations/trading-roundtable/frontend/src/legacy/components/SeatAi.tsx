@@ -13,7 +13,7 @@ interface ChatOut { status: string; mode?: string; steps?: AiStep[]; answer: AiA
 
 function pickContext(p: SeatPick): string {
   const bits = [`股票：${p.name}（${p.code}）`, `所属池：${p.poolLabel || p.pool}`, p.role ? `角色：${p.role}` : '',
-    p.close != null ? `收盘：${p.close}` : '', p.stop != null ? `脚本给的止损：${p.stop}（${p.risk_pct?.toFixed(2)}%）` : '',
+    p.close != null ? `日线快照价格：${p.close}` : '', p.stop != null ? `脚本给的止损：${p.stop}（${p.risk_pct?.toFixed(2)}%）` : '',
     p.risk_flag ? `风险标记：${p.risk_flag}` : '', p.stage ? `阶段：${p.stage}` : ''];
   return bits.filter(Boolean).join('；');
 }

@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import shutil
@@ -15,12 +16,14 @@ import stat
 import tarfile
 import tempfile
 import threading
+import traceback
 from http.cookies import SimpleCookie
 from typing import Any, Callable
 
 from roundtable_runtime_store import RoundtableRuntimeCASConflict, RoundtableRuntimeStore
 from services.roundtable_assets import prepare_roundtable_assets, encrypt_private_state, decrypt_private_state
 
+logger = logging.getLogger(__name__)
 
 class RoundtableRuntimeError(RuntimeError):
     pass
@@ -57,6 +60,7 @@ class RoundtableRuntime:
         self._stopped = False
         self._unavailable = False
         self.persistence_error: str | None = None
+        self.persistence_diagnostic: str | None = None
         self._last_archive_digest: str | None = None
         self._archive_unchanged = False
         self._last_data_version: int | None = None
@@ -213,8 +217,19 @@ class RoundtableRuntime:
                 raise
             except Exception as exc:
                 self._unavailable = True
-                self.persistence_error = str(exc)
+                self.persistence_error = self._format_persistence_error(exc)
+                self.persistence_diagnostic = self.persistence_error
+                logger.error("Roundtable checkpoint failed: %s", self.persistence_diagnostic)
                 return
+
+    @staticmethod
+    def _format_persistence_error(exc: Exception) -> str:
+        """Stable diagnostic without SQL parameters, cookies, or credentials."""
+        frame = traceback.extract_tb(exc.__traceback__)[-1] if exc.__traceback__ else None
+        where = f" @ {Path(frame.filename).name}:{frame.lineno} {frame.name}" if frame else ""
+        # Exception text can contain SQL parameters or provider credentials.
+        # Only class and code location are safe to expose or log.
+        return f"{type(exc).__name__}{where}"
 
     def _read_data_version(self) -> int:
         if self._monitor_conn is None:
@@ -407,6 +422,11 @@ class RoundtableRuntime:
         assert self.runtime_dir is not None
         candidates = []
         for path in root.rglob("*"):
+            # EvidenceStore and atomic JSON writers use hidden sibling files
+            # while rename is in progress. They are not runtime artifacts and
+            # must never enter a checkpoint or race stat/open.
+            if any(part.startswith(".") or part.endswith(".tmp") for part in path.relative_to(root).parts):
+                continue
             if not path.is_file():
                 continue
             if any(path.match(pattern) or path.name == pattern for pattern in excluded):
@@ -593,7 +613,11 @@ class RoundtableRuntime:
     @staticmethod
     def _assert_tree_safe(root: Path) -> None:
         for path in [root, *root.rglob("*")]:
-            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+            if path.is_symlink():
+                raise RoundtableRuntimeError(f"unsafe runtime path: {path}")
+            if path != root and any(part.startswith(".") or part.endswith(".tmp") for part in path.relative_to(root).parts):
+                continue
+            if not (path.is_dir() or path.is_file()):
                 raise RoundtableRuntimeError(f"unsafe runtime path: {path}")
 
     def _load_session_map(self, runtime_dir: Path) -> None:

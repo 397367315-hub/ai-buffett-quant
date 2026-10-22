@@ -396,6 +396,9 @@ export function LegacyApp({ loc }: { loc: { ws: string; id: string | null; sub: 
           <div className="breadcrumb"><span>策略工作台</span><Icon name="chevron" size={13}/><strong>{page === 'funnel' ? '智能选股漏斗' : page === 'seats' ? '独立策略席位' : page === 'candidates' ? '今日候选池' : page === 'portfolio' ? '我的个人池' : page === 'backtest' ? '回测验证' : page === 'environment' ? '环境概览' : page === 'roundtable' ? '圆桌' : page === 'commander' ? '总指挥' : '案例研究'}</strong><span className="breadcrumb-right">AGI / TRADING INTELLIGENCE <b>2026</b></span></div>
           {data.marketGate && <MarketGateBar gate={data.marketGate}/>}
           {dataError && <div className="data-warning" role="status"><Icon name="info" size={15}/>真实接口连接失败：{dataError}。当前无可用数据，等待同步。</div>}
+          {!dataError && data.dataStatus?.quality_reason
+            ? <div className="data-warning" role="status" data-testid="legacy-data-quality"><Icon name="info" size={15}/>{data.dataStatus.quality_reason}</div>
+            : null}
           {refreshStatus?.status === 'failed' && !dataError
             ? <div className="data-warning" role="status" data-testid="legacy-refresh-error"><Icon name="info" size={15}/>刷新失败：{refreshStatus.error || '服务端没有提供失败原因'}。</div>
             : null}

@@ -204,6 +204,34 @@ class RoundtableRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(second_calls, 1)  # checkpoint only; daily blob is reused
             await runtime.shutdown()
 
+    async def test_checkpoint_skips_atomic_writer_temp_files_and_formats_failure(self):
+        store = BlobMemoryCheckpointStore()
+        with tempfile.TemporaryDirectory() as parent:
+            runtime = RoundtableRuntime(self.vendor, store=store, runtime_parent=parent)
+            await runtime.initialize()
+            tmp = runtime.runtime_dir / "evidence" / "blobs" / "aa" / ".tmp-race-writer"
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_bytes(b"partial")
+            original_stat = Path.stat
+            def renamed_during_scan(path, *args, **kwargs):
+                if path == tmp:
+                    raise FileNotFoundError("atomic writer already renamed its temporary file")
+                return original_stat(path, *args, **kwargs)
+            with patch.object(Path, "stat", renamed_during_scan):
+                await runtime.flush(force=True)
+            with tarfile.open(fileobj=io.BytesIO(store.payload), mode="r:gz") as tf:
+                manifest = json.loads(tf.extractfile("runtime/artifact_manifest.json").read())
+            self.assertFalse(any(item["path"].endswith(".tmp-race-writer") for item in manifest))
+            try:
+                raise OSError("database unavailable secret-placeholder SQL parameters")
+            except OSError as exc:
+                error = RoundtableRuntime._format_persistence_error(exc)
+            self.assertTrue(error.startswith("OSError"))
+            self.assertNotIn("secret-placeholder", error)
+            self.assertNotIn("SQL parameters", error)
+            self.assertIn("test_roundtable_runtime.py:", error)
+            await runtime.shutdown()
+
     async def test_user_model_credentials_survive_only_as_encrypted_checkpoint(self):
         key = base64.urlsafe_b64encode(os.urandom(32)).decode()
         store = MemoryCheckpointStore()

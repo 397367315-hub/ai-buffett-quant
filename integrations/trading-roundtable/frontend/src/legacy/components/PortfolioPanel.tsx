@@ -237,8 +237,8 @@ export function PortfolioPanel({ data, ledger, saving, onOrder, onRemoveWatch, o
       <div className="disclosure" style={{ marginTop: 22 }}>
         <Icon name="shield" size={16}/>
         <span>
-          模拟盘，不接券商、不下单。成交价取面板最近一次行情快照
-          {data.quoteDate ? `（${data.quoteDate.slice(0, 4)}-${data.quoteDate.slice(4, 6)}-${data.quoteDate.slice(6, 8)} 收盘，每 5 分钟刷新）` : ''}，
+          模拟盘，不接券商、不下单。成交价取面板最近一次日线级行情快照
+          {data.quoteDate ? `（${data.quoteDate.slice(0, 4)}-${data.quoteDate.slice(4, 6)}-${data.quoteDate.slice(6, 8)}；点击同步后更新）` : ''}，
           不是逐笔行情，涨跌停价附近实际可能成交不了。
         </span>
       </div>

@@ -1321,6 +1321,8 @@ def build_dashboard(results, feats, asof, detail=None, rules=None, universe="all
         "quality": "partial",
         "quality_reason": "旧数据没有逐只来源完成标志，bar_status 只能为 unknown",
     }
+    from .adapters.legacy_dashboard import annotate_quote_completion
+    annotate_quote_completion({"dataStatus": data_status})
     return {"source": "live", "asOf": now, "dataStatus": data_status,
             "stages": stages, "seats": seats,
             "marketGate": market_gate,

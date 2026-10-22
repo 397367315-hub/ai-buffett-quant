@@ -102,7 +102,7 @@ function CandleChart({ c }: { c: Candidate }) {
         <text x={L} y={H - 6} fontSize={10} fill="#a39a8e">{k[0].d.slice(4, 6)}-{k[0].d.slice(6, 8)}</text>
         <text x={W - R} y={H - 6} fontSize={10} fill="#a39a8e" textAnchor="end">{k[k.length - 1].d.slice(4, 6)}-{k[k.length - 1].d.slice(6, 8)}</text>
       </svg>
-      <p className="cand-chart-note">K 线为最近 {k.length} 个交易日的原始收盘价（未复权）；均线是收盘价的简单平均，MA60 需要满 60 根才有线。</p>
+      <p className="cand-chart-note">K 线为最近 {k.length} 个交易日的日线级价格（未复权；当日数据可能未收盘）；均线是收盘价的简单平均，MA60 需要满 60 根才有线。</p>
     </div>
   );
 }

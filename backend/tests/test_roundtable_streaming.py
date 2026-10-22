@@ -18,6 +18,21 @@ from panel.services.seat_runner import _rows_from_blob
 from services.roundtable_legacy import RoundtableLegacyRefresh
 from api.roundtable_legacy_routes import _bound_runtime
 class RoundtableStreamingTests(unittest.TestCase):
+    def test_intraday_snapshot_cannot_claim_confirmed_closing_data(self):
+        from panel.adapters.legacy_dashboard import annotate_quote_completion
+        candidates = [{"code": "600000", "score": 1.25}]
+        data = {"candidates": candidates, "dataStatus": {
+            "quote_date": "2026-10-22", "latest_completed_session_date": "2026-10-21",
+            "quality": "partial", "freshness": "fresh",
+            "freshness_reason": "仍是收盘数据",
+        }}
+        result = annotate_quote_completion(data)
+        self.assertIs(result["candidates"], candidates)
+        self.assertEqual(result["candidates"][0]["score"], 1.25)
+        self.assertIn("尚未确认收盘", result["dataStatus"]["freshness_reason"])
+        self.assertIn("仅供观察", result["dataStatus"]["quality_reason"])
+        self.assertEqual(result["dataStatus"]["quality"], "partial")
+
     def test_legacy_child_uses_bounded_reader_without_provider_credentials(self):
         from panel.refresh import _run_book_script
         with tempfile.TemporaryDirectory() as tmp:
